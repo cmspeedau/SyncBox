@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Syncbox</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { margin: 0; padding: 24px; }
+      .ping { font-family: ui-monospace, monospace; color: #3b82f6; }
+    </style>
+  </head>
+  <body>
+    <h1>Syncbox</h1>
+    <p>The desktop shell is up. Sync controls land in the next step.</p>
+    <p class="ping" id="ping">IPC: checking…</p>
+    <script type="module">
+      const el = document.getElementById("ping");
+      try {
+        const { invoke } = window.__TAURI__.core;
+        el.textContent = "IPC: " + (await invoke("ping"));
+      } catch (err) {
+        el.textContent = "IPC: unavailable (" + err + ")";
+      }
+    </script>
+  </body>
+</html>
