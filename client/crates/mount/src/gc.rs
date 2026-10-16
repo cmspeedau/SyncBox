@@ -20,6 +20,8 @@ use std::io;
 use syncbox_crypto::ChunkId;
 use syncbox_index::Index;
 
+use crate::lock::StoreLock;
+
 /// A store that can be inventoried and pruned — everything [`collect`] needs.
 ///
 /// The memory and disk stores implement this next to their layout code, but it
@@ -74,7 +76,8 @@ pub struct GcReport {
 ///
 /// Run it while nothing else holds the pair — a live mount or a sync pass
 /// writes index and store between these two enumerations, and content they add
-/// after the liveness sets were built would look like an orphan.
+/// after the liveness sets were built would look like an orphan. [`maybe_collect`]
+/// is the policy-checked, lock-holding wrapper that enforces this.
 pub fn collect(index: &dyn Index, store: &mut dyn GcStore) -> io::Result<GcReport> {
     let mut live_chunks: HashSet<ChunkId> = HashSet::new();
     let mut live_keys: HashSet<(String, String)> = HashSet::new();
@@ -103,6 +106,99 @@ pub fn collect(index: &dyn Index, store: &mut dyn GcStore) -> io::Result<GcRepor
     }
 
     Ok(report)
+}
+
+/// When a sync pass should run [`collect`] without a human asking.
+///
+/// GC needs no password and no server: liveness is index-derived, so running
+/// it early can only keep too much, never delete too little. What is left to
+/// decide is only *how often* — each pass costs a store walk, so the policy
+/// is a floor on the interval, not a safety mechanism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GcPolicy {
+    /// Only collect when a human runs `syncbox gc`.
+    Off,
+    /// Let [`maybe_collect`] run at most once per `seconds` — the default for
+    /// a configured store.
+    Interval {
+        /// Minimum seconds between collects, persisted in the index.
+        seconds: u64,
+    },
+}
+
+impl GcPolicy {
+    /// The shipped default: collect at most once a day.
+    pub const DAILY: GcPolicy = GcPolicy::Interval {
+        seconds: 24 * 60 * 60,
+    };
+}
+
+/// The index meta key holding the unix time of the last collect attempt.
+pub const LAST_GC_KEY: &str = "last_gc_unix";
+
+/// What a [`maybe_collect`] call decided and did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MaybeGc {
+    /// Policy is off, or the interval has not passed.
+    NotDue,
+    /// Due, but the store is held shared elsewhere — a live mount — so this
+    /// round was skipped rather than queued.
+    Busy,
+    /// Collected. A zero-report means the store was already tight.
+    Collected(GcReport),
+}
+
+/// The policy-checked, lock-holding face of [`collect`], for the end of a
+/// sync pass.
+///
+/// `lock` is the caller's own *shared* store hold, taken at pass start; a due
+/// pass upgrades it in place — atomic, so no second process's GC can slip in
+/// mid-upgrade — and gives it back after. A garbage or missing stamp counts as
+/// due (self-healing), and the stamp is written *before* collecting so a
+/// collect that fails still backs off for one interval instead of retrying on
+/// every pass.
+///
+/// # Errors
+///
+/// Lock or store I/O failure. (Stamping itself cannot fail: the index aborts
+/// the process on a broken database, like every other index write.)
+///
+/// # Panics
+///
+/// Panics if the shared hold cannot be downgraded after collecting, which
+/// leaves the lock exclusive for the guard's remaining lifetime — a bug, not
+/// a condition.
+pub fn maybe_collect(
+    index: &mut dyn Index,
+    store: &mut dyn GcStore,
+    lock: &StoreLock,
+    policy: GcPolicy,
+    now_unix: i64,
+) -> io::Result<MaybeGc> {
+    let seconds = match policy {
+        GcPolicy::Off => return Ok(MaybeGc::NotDue),
+        GcPolicy::Interval { seconds } => seconds as i64,
+    };
+    let due = match index
+        .meta_value(LAST_GC_KEY)
+        .and_then(|stamp| stamp.parse::<i64>().ok())
+    {
+        Some(last) => now_unix.saturating_sub(last) >= seconds,
+        None => true,
+    };
+    if !due {
+        return Ok(MaybeGc::NotDue);
+    }
+    if !lock.try_upgrade()? {
+        return Ok(MaybeGc::Busy);
+    }
+    index.set_meta_value(LAST_GC_KEY, &now_unix.to_string());
+    let report = collect(index, store);
+    // The collect took or failed — either way the visit is over; hand the
+    // shared hold back before bubbling the result.
+    lock.downgrade()
+        .expect("downgrade of an exclusive store lock we own");
+    Ok(MaybeGc::Collected(report?))
 }
 
 #[cfg(test)]
@@ -429,5 +525,191 @@ mod tests {
         let report = collect(&index, &mut store).expect("collect");
         assert_eq!(report.removed_chunks, 0, "a .tmp leaf is not a chunk id");
         assert!(tmp.exists(), "and it is left alone for its writer");
+    }
+
+    /// An orphan waiting to be collected, plus the index that no longer names it.
+    fn orphans(
+        vault: &Vault,
+        store: &mut MemoryStore,
+        index: &mut MemoryIndex,
+        name: &str,
+    ) -> FileEntry {
+        let e = stage(
+            vault,
+            store,
+            &root(vault),
+            name,
+            b"bytes nobody will name again",
+        );
+        index.put_file(e.clone());
+        index.remove_file(&e.path);
+        e
+    }
+
+    #[test]
+    fn the_first_due_pass_collects_and_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let mut index = MemoryIndex::default();
+        let gone = orphans(&vault, &mut store, &mut index, "FIRST");
+        let lock = StoreLock::shared(dir.path()).expect("shared lock");
+
+        let out = maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 1_000_000)
+            .expect("due collect");
+        match out {
+            MaybeGc::Collected(report) => {
+                assert_eq!(report.removed_chunks, gone.chunk_ids.len());
+                assert_eq!(report.removed_manifests, 1);
+            }
+            other => panic!("expected a collection, got {other:?}"),
+        }
+        assert_eq!(
+            index.meta_value(LAST_GC_KEY).as_deref(),
+            Some("1000000"),
+            "the stamp records the visit"
+        );
+
+        // The same pass asking again is simply not due.
+        let out = maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 1_000_001)
+            .expect("not due");
+        assert_eq!(out, MaybeGc::NotDue);
+    }
+
+    #[test]
+    fn the_stamp_gates_the_next_day_and_moves_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let mut index = MemoryIndex::default();
+        let lock = StoreLock::shared(dir.path()).expect("shared lock");
+
+        index.set_meta_value(LAST_GC_KEY, "1000000");
+        // One hour later: still inside a day's interval, store untouched.
+        orphans(&vault, &mut store, &mut index, "WAIT");
+        assert_eq!(
+            maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 1_003_600)
+                .expect("interval holds"),
+            MaybeGc::NotDue
+        );
+        assert!(store.manifest(&root(&vault), "WAIT").is_some());
+
+        // Twenty-five hours on: due again, collects, and the stamp moves.
+        let out = maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 1_090_000)
+            .expect("due again");
+        assert!(matches!(out, MaybeGc::Collected(_)));
+        assert_eq!(
+            index.meta_value(LAST_GC_KEY).as_deref(),
+            Some("1090000"),
+            "the stamp rides with the pass that ran"
+        );
+    }
+
+    #[test]
+    fn off_never_collects_and_garbage_heals() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let mut index = MemoryIndex::default();
+        orphans(&vault, &mut store, &mut index, "OFF");
+        let lock = StoreLock::shared(dir.path()).expect("shared lock");
+
+        assert_eq!(
+            maybe_collect(&mut index, &mut store, &lock, GcPolicy::Off, 9_999_999)
+                .expect("off is quiet"),
+            MaybeGc::NotDue
+        );
+        assert_eq!(index.meta_value(LAST_GC_KEY), None, "off stamps nothing");
+
+        // A stamp that is not a number must mean "due", not "never again".
+        index.set_meta_value(LAST_GC_KEY, "not a timestamp");
+        let out = maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 2_000)
+            .expect("garbage heals");
+        assert!(matches!(out, MaybeGc::Collected(_)));
+    }
+
+    #[test]
+    fn a_live_shared_holder_makes_the_round_busy_not_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let mut index = MemoryIndex::default();
+        let gone = orphans(&vault, &mut store, &mut index, "MOUNTED");
+        // The sync pass's own hold, plus a mount's — the situation in the field.
+        let ours = StoreLock::shared(dir.path()).expect("shared lock");
+        let mount = StoreLock::shared(dir.path()).expect("mount hold");
+
+        assert_eq!(
+            maybe_collect(&mut index, &mut store, &ours, GcPolicy::DAILY, 1_000_000)
+                .expect("busy is not an error"),
+            MaybeGc::Busy,
+            "GC skips a live mount rather than pruning in front of it"
+        );
+        assert_eq!(index.meta_value(LAST_GC_KEY), None, "a skip does not stamp");
+        assert!(
+            store.chunk(&gone.chunk_ids[0]).is_some(),
+            "and nothing was collected"
+        );
+
+        drop(mount);
+        assert!(matches!(
+            maybe_collect(&mut index, &mut store, &ours, GcPolicy::DAILY, 1_000_000)
+                .expect("mount gone"),
+            MaybeGc::Collected(_)
+        ));
+    }
+
+    #[test]
+    fn a_failed_collect_still_stamps_so_retries_back_off() {
+        struct Broken(MemoryStore);
+        impl ContentStore for Broken {
+            fn manifest(&self, d: &DirId, n: &str) -> Option<Vec<u8>> {
+                self.0.manifest(d, n)
+            }
+            fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>> {
+                self.0.chunk(id)
+            }
+        }
+        impl GcStore for Broken {
+            fn all_chunk_ids(&self) -> Vec<ChunkId> {
+                self.0.all_chunk_ids()
+            }
+            fn all_manifest_keys(&self) -> Vec<(String, String)> {
+                self.0.all_manifest_keys()
+            }
+            fn delete_chunk(&mut self, _id: &ChunkId) -> io::Result<u64> {
+                Err(io::Error::other("the disk said no"))
+            }
+            fn delete_manifest(&mut self, _d: &str, _n: &str) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut inner = MemoryStore::new();
+        let mut index = MemoryIndex::default();
+        orphans(&vault, &mut inner, &mut index, "BROKE");
+        let mut store = Broken(inner);
+        let lock = StoreLock::shared(dir.path()).expect("shared lock");
+
+        let error = maybe_collect(&mut index, &mut store, &lock, GcPolicy::DAILY, 500)
+            .expect_err("the store's no bubbles up");
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(
+            index.meta_value(LAST_GC_KEY).as_deref(),
+            Some("500"),
+            "the failed round still stamps: back off a day, not hammer every pass"
+        );
+
+        // And the shared hold came back: a mount may still join.
+        assert!(StoreLock::shared(dir.path()).is_ok());
+        drop(lock);
+        assert!(
+            StoreLock::try_exclusive(dir.path())
+                .expect("free")
+                .is_some(),
+            "the failure left no lock stuck exclusive"
+        );
     }
 }

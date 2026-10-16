@@ -32,10 +32,12 @@ use syncbox_index::{FileEntry, Index};
 use syncbox_sync::{SyncError, Vault};
 
 mod gc;
+mod lock;
 mod store;
 mod write;
 
-pub use gc::{collect, GcReport, GcStore};
+pub use gc::{collect, maybe_collect, GcPolicy, GcReport, GcStore, MaybeGc, LAST_GC_KEY};
+pub use lock::{StoreLock, STORE_LOCK_FILE};
 pub use store::{ContentStore, DiskStore, MemoryStore, WriteStore};
 pub use write::{FsMut, Written};
 

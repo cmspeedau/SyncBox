@@ -16,6 +16,9 @@ syncbox-crypto.workspace = true
 syncbox-index.workspace = true
 syncbox-sync.workspace = true
 thiserror.workspace = true
+# Only for `flock` in `lock.rs` — store coordination, not FUSE; the crate stays
+# libfuse-free so `cargo test --workspace` still passes without it.
+libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true

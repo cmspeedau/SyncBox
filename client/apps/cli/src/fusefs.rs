@@ -953,6 +953,12 @@ mod tests {
         fn clear_deletes(&mut self, keys: &[(syncbox_crypto::names::DirId, String)]) {
             self.0.lock().unwrap().clear_deletes(keys);
         }
+        fn meta_value(&self, key: &str) -> Option<String> {
+            self.0.lock().unwrap().meta_value(key)
+        }
+        fn set_meta_value(&mut self, key: &str, value: &str) {
+            self.0.lock().unwrap().set_meta_value(key, value);
+        }
     }
 
     /// A [`WriteStore`] sharing a [`MemoryStore`] behind `Arc<Mutex<..>>`.

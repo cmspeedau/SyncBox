@@ -114,6 +114,10 @@ impl SqliteIndex {
                  path          TEXT NOT NULL,
                  modified_unix INTEGER NOT NULL,
                  PRIMARY KEY (dir_id, cipher_name)
+             );
+             CREATE TABLE IF NOT EXISTS meta (
+                 key   TEXT PRIMARY KEY,
+                 value TEXT NOT NULL
              );",
         )
     }
@@ -407,5 +411,26 @@ impl Index for SqliteIndex {
                 )
                 .expect("clear delete");
         }
+    }
+
+    fn meta_value(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .expect("read meta")
+    }
+
+    fn set_meta_value(&mut self, key: &str, value: &str) {
+        self.conn
+            .execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )
+            .expect("write meta");
     }
 }
