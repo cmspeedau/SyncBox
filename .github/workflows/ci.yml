@@ -11,7 +11,7 @@ permissions:
 jobs:
   rust:
     name: Client (Rust)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     defaults:
       run:
         working-directory: client
@@ -39,7 +39,7 @@ jobs:
 
   go:
     name: Server (Go)
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     defaults:
       run:
         working-directory: server
@@ -72,7 +72,7 @@ jobs:
 
   image:
     name: Server image builds
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: go
     steps:
       - uses: actions/checkout@v4
