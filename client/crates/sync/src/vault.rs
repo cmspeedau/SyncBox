@@ -21,6 +21,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use syncbox_crypto::content::{chunk_id, NONCE_LEN, TAG_LEN};
 use syncbox_crypto::names::{child_dir_id, decrypt_filename, encrypt_filename, DirId};
 use syncbox_crypto::{
     decode_manifest, encode_manifest, open_chunk, seal_chunk, ChunkEntry, ChunkId, Manifest,
@@ -41,6 +42,22 @@ pub struct Sealed {
     /// The distinct chunks, as id and stored bytes, to offer the server. The
     /// caller uploads only those it reports missing.
     pub chunks: Vec<(ChunkId, Vec<u8>)>,
+    /// Plaintext byte count, carried to the revision's `size`.
+    pub plaintext_size: u64,
+}
+
+/// What a streaming seal learns about a file in one buffered pass: its content
+/// addresses and sealed manifest, without ever holding more than one chunk of
+/// ciphertext — or any ciphertext at all. Produced by [`Vault::plan_seal`] and
+/// consumed by [`Vault::upload_missing`].
+#[derive(Debug)]
+pub struct SealPlan {
+    /// The authenticated manifest bytes, ready to base64 into a revision.
+    pub manifest: Vec<u8>,
+    /// Chunk ids in file order (with repeats, matching the manifest).
+    pub chunk_ids: Vec<ChunkId>,
+    /// The distinct ids, in first-appearance order — what to offer the server.
+    pub distinct: Vec<ChunkId>,
     /// Plaintext byte count, carried to the revision's `size`.
     pub plaintext_size: u64,
 }
@@ -273,6 +290,154 @@ impl Vault {
         }
         Ok((out, ids))
     }
+
+    /// Streams a file into the plan a push needs: chunk ids and the sealed
+    /// manifest, one chunk in memory at a time, and no AES at all — an id is an
+    /// HMAC of the content, so the first pass over a file does not pay for the
+    /// ciphertext it is only going to skip uploading anyway.
+    ///
+    /// The plan is only honest while the file holds still; [`Vault::upload_missing`]
+    /// re-derives every id from the re-read bytes and refuses a file that moved.
+    ///
+    /// # Errors
+    ///
+    /// Propagates reader I/O and chunker, crypto, and manifest errors.
+    pub fn plan_seal<R: std::io::Read>(
+        &self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        reader: &mut R,
+    ) -> Result<SealPlan> {
+        let mut chunker = FastCdc::new();
+        let mut chunk_ids = Vec::new();
+        let mut entries = Vec::new();
+        let mut distinct: Vec<ChunkId> = Vec::new();
+        let mut seen: HashSet<ChunkId> = HashSet::new();
+        let mut size = 0u64;
+
+        chunker.split_stream(reader, |data| {
+            let id = chunk_id(&self.keys.hmac, data)?;
+            size += data.len() as u64;
+            entries.push(ChunkEntry {
+                stored_len: (data.len() + NONCE_LEN + TAG_LEN) as u32,
+                id: id.clone(),
+            });
+            chunk_ids.push(id.clone());
+            if seen.insert(id.clone()) {
+                distinct.push(id);
+            }
+            Ok(())
+        })?;
+
+        let manifest = encode_manifest(
+            &self.keys.primary,
+            dir_id,
+            cipher_name,
+            &Manifest {
+                plaintext_size: size,
+                chunks: entries,
+            },
+        )?;
+        Ok(SealPlan {
+            manifest,
+            chunk_ids,
+            distinct,
+            plaintext_size: size,
+        })
+    }
+
+    /// The push's second pass: stream the file again, seal each chunk, and hand
+    /// the caller the bytes whose ids are `missing` — while proving against
+    /// `plan`, chunk by chunk, that the file did not change underneath the first
+    /// pass.
+    ///
+    /// A file edited mid-push is therefore not a corruption risk: either every
+    /// re-derived id still matches the plan the commit is about to name, or the
+    /// upload aborts and the next pass relists and re-plans the new content.
+    /// Bytes uploaded before such an abort are content-addressed orphans the
+    /// next pass simply will not re-offer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SyncError::Integrity`] if the file changed, and propagates
+    /// reader I/O, crypto, and `upload` errors.
+    pub fn upload_missing<R, F>(
+        &self,
+        reader: &mut R,
+        plan: &SealPlan,
+        missing: &HashSet<ChunkId>,
+        mut upload: F,
+    ) -> Result<usize>
+    where
+        R: std::io::Read,
+        F: FnMut(&ChunkId, &[u8]) -> Result<()>,
+    {
+        let mut chunker = FastCdc::new();
+        let mut index = 0usize;
+        let mut sent: HashSet<ChunkId> = HashSet::new();
+        let mut uploads = 0usize;
+
+        chunker.split_stream(reader, |data| {
+            let (id, stored) = seal_chunk(&self.keys.primary, &self.keys.hmac, data)?;
+            match plan.chunk_ids.get(index) {
+                Some(expected) if *expected == id => {}
+                _ => {
+                    return Err(SyncError::Integrity(
+                        "the file changed while it was being pushed; this pass is abandoned",
+                    ))
+                }
+            }
+            index += 1;
+            if missing.contains(&id) && sent.insert(id.clone()) {
+                upload(&id, &stored)?;
+                uploads += 1;
+            }
+            Ok(())
+        })?;
+
+        if index != plan.chunk_ids.len() {
+            return Err(SyncError::Integrity(
+                "the file changed while it was being pushed; this pass is abandoned",
+            ));
+        }
+        Ok(uploads)
+    }
+
+    /// [`Vault::open`] with the plaintext handed out chunk by chunk instead of
+    /// assembled: a 4 GiB file reassembles through a 64 KiB window.
+    ///
+    /// # Errors
+    ///
+    /// Propagates manifest, chunk, fetch, and `write` errors, and reports an
+    /// integrity failure if the decrypted chunks do not add up to the manifest's
+    /// declared size — a lying manifest can fill the `write` sink, so callers
+    /// should stream to a temporary the rename will not promote until this
+    /// returns.
+    pub fn open_stream(
+        &self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+        fetch: &mut dyn FnMut(&ChunkId) -> Result<Vec<u8>>,
+        write: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<Vec<ChunkId>> {
+        let manifest = decode_manifest(&self.keys.primary, dir_id, cipher_name, manifest)?;
+        let mut ids = Vec::with_capacity(manifest.chunks.len());
+        let mut total = 0u64;
+        for entry in &manifest.chunks {
+            let stored = fetch(&entry.id)?;
+            let plaintext = open_chunk(&self.keys.primary, &entry.id, &stored)?;
+            total += plaintext.len() as u64;
+            write(&plaintext)?;
+            ids.push(entry.id.clone());
+        }
+        if total != manifest.plaintext_size {
+            return Err(SyncError::Integrity(
+                "chunks did not add up to the manifest size",
+            ));
+        }
+        Ok(ids)
+    }
 }
 
 #[cfg(test)]
@@ -393,5 +558,142 @@ mod tests {
         assert!(vault
             .open(&dir_id, &cipher, &sealed.manifest, &mut fetch)
             .is_err());
+    }
+
+    /// Deterministic pseudo-random bytes, so the streaming tests span several
+    /// chunk boundaries reproducibly.
+    fn noisy(len: usize) -> Vec<u8> {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plan_and_upload_reproduce_a_buffered_seal_exactly() {
+        let dir = std::env::temp_dir();
+        let vault = vault(&dir);
+        let data = noisy(250_000);
+        let (dir_id, cipher, _name) = vault.locate("deep/streaming.bin").unwrap();
+
+        let buffered = vault.seal(&dir_id, &cipher, &data).unwrap();
+        let plan = vault
+            .plan_seal(&dir_id, &cipher, &mut data.as_slice())
+            .unwrap();
+        assert_eq!(plan.manifest, buffered.manifest, "same manifest bytes");
+        assert_eq!(plan.chunk_ids, buffered.chunk_ids);
+        assert_eq!(plan.plaintext_size, data.len() as u64);
+        assert_eq!(
+            plan.distinct,
+            buffered
+                .chunks
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        );
+
+        // Uploading everything the plan says is new must yield the buffered
+        // seal's chunks — same ids, same bytes, same deduplicated order.
+        let missing: HashSet<ChunkId> = plan.distinct.iter().cloned().collect();
+        let mut got = Vec::new();
+        let uploads = vault
+            .upload_missing(&mut data.as_slice(), &plan, &missing, |id, stored| {
+                got.push((id.clone(), stored.to_vec()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(uploads, got.len());
+        assert_eq!(got, buffered.chunks);
+    }
+
+    #[test]
+    fn a_file_edited_mid_upload_aborts_the_pass() {
+        let dir = std::env::temp_dir();
+        let vault = vault(&dir);
+        let data = noisy(200_000);
+        let (dir_id, cipher, _name) = vault.locate("moving.bin").unwrap();
+        let plan = vault
+            .plan_seal(&dir_id, &cipher, &mut data.as_slice())
+            .unwrap();
+
+        let mut mutated = data.clone();
+        mutated[1234] ^= 0xFF; // inside the first chunk: the re-derived id cannot match
+        let missing: HashSet<ChunkId> = plan.distinct.iter().cloned().collect();
+        let error = vault
+            .upload_missing(&mut mutated.as_slice(), &plan, &missing, |_, _| Ok(()))
+            .expect_err("a moved file must not be pushed against the old plan");
+        assert!(
+            matches!(error, SyncError::Integrity(_)),
+            "got {error:?}, want an integrity abort"
+        );
+    }
+
+    #[test]
+    fn open_stream_hands_back_what_open_would_return() {
+        let dir = std::env::temp_dir();
+        let vault = vault(&dir);
+        let data = noisy(250_000);
+        let (dir_id, cipher, _name) = vault.locate("reassemble.bin").unwrap();
+        let sealed = vault.seal(&dir_id, &cipher, &data).unwrap();
+
+        let chunks: HashMap<ChunkId, Vec<u8>> = sealed.chunks.iter().cloned().collect();
+        let mut out = Vec::new();
+        let ids = vault
+            .open_stream(
+                &dir_id,
+                &cipher,
+                &sealed.manifest,
+                &mut |id| {
+                    chunks
+                        .get(id)
+                        .cloned()
+                        .ok_or(SyncError::Integrity("test fetch out of range"))
+                },
+                &mut |bytes| {
+                    out.extend_from_slice(bytes);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(ids, sealed.chunk_ids);
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn open_stream_refuses_a_manifest_that_lies_about_size() {
+        let dir = std::env::temp_dir();
+        let vault = vault(&dir);
+        let data = noisy(150_000);
+        let (dir_id, cipher, _name) = vault.locate("liar.bin").unwrap();
+        let sealed = vault.seal(&dir_id, &cipher, &data).unwrap();
+
+        // A manifest edited to promise one byte more than its chunks can deliver —
+        // still a valid blob the keys will open, caught only by the sum.
+        let mut lying =
+            decode_manifest(&vault.keys.primary, &dir_id, &cipher, &sealed.manifest).unwrap();
+        lying.plaintext_size += 1;
+        let lying = encode_manifest(&vault.keys.primary, &dir_id, &cipher, &lying).unwrap();
+
+        let chunks: HashMap<ChunkId, Vec<u8>> = sealed.chunks.iter().cloned().collect();
+        let error = vault
+            .open_stream(
+                &dir_id,
+                &cipher,
+                &lying,
+                &mut |id| {
+                    chunks
+                        .get(id)
+                        .cloned()
+                        .ok_or(SyncError::Integrity("test fetch out of range"))
+                },
+                &mut |_| Ok(()),
+            )
+            .expect_err("a short delivery is an integrity failure");
+        assert!(matches!(error, SyncError::Integrity(_)));
     }
 }

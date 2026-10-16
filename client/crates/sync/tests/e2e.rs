@@ -1120,6 +1120,13 @@ fn an_interrupted_pull_resumes_from_the_chunks_already_stored() {
         );
     }
     assert!(!b_root.path().join("movie.part").exists());
+    assert_eq!(
+        std::fs::read_dir(b_root.path().join(".syncbox-tmp"))
+            .expect("the interrupted pull left its staging directory")
+            .count(),
+        1,
+        "the half-pull exists only as a staged part-file"
+    );
 
     // The next pull reads through the store first: chunk one never goes back to
     // the wire, and the pass finishes from where the drop stopped it.
@@ -1141,5 +1148,60 @@ fn an_interrupted_pull_resumes_from_the_chunks_already_stored() {
         std::fs::read(b_root.path().join("movie.part")).unwrap(),
         bytes,
         "resumed bytes are byte-identical to a clean pull"
+    );
+}
+
+#[test]
+fn pull_staging_is_invisible_to_the_folder_scan() {
+    // A pull interrupted mid-file leaves its part-file in the tree's staging
+    // directory — and the scan that decides what to push must never see it, or a
+    // half-download would climb back to the server as a file of its own.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    write_client(a_root.path(), "quiet.txt", b"nothing to stage here");
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // An abandoned part-file, as an interrupted pull would leave behind, plus one
+    // freshly staged: neither may be scanned, pushed, or reported.
+    let stage = b_root.path().join(".syncbox-tmp");
+    std::fs::create_dir_all(&stage).unwrap();
+    std::fs::write(stage.join("ABCD-EF12.part"), b"half a file").unwrap();
+
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(
+        report.is_quiet(),
+        "staging leaked into the pass: {report:?}"
+    );
+
+    // A deeper directory of the same name is the user's, not staging, and still
+    // syncs — the skip is surgical, not a name ban.
+    let nested = b_root.path().join("work").join(".syncbox-tmp");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("notes.txt"), b"real user content").unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(
+        report.uploaded, 1,
+        "a nested .syncbox-tmp is just a directory"
+    );
+
+    let c_root = tempfile::tempdir().unwrap();
+    // The known-directory rule still applies on the way down: C creates the
+    // directory so it can name the files beneath it, exactly as with any folder.
+    std::fs::create_dir_all(c_root.path().join("work/.syncbox-tmp")).unwrap();
+    let c_root = c_root.path();
+    let mut c = engine(c_root);
+    let mut c_client = client(&shared);
+    c.sync_once(&mut c_client, "2026-10-16").unwrap();
+    assert_eq!(
+        std::fs::read(c_root.join("work/.syncbox-tmp/notes.txt")).unwrap(),
+        b"real user content",
+        "it arrives intact"
     );
 }

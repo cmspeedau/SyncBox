@@ -221,7 +221,15 @@ stages each chunk into the store the moment it arrives and writes the file's man
 interrupted download is a head start: the next pull reads through the store first, so
 a chunk already in hand never goes back over the wire (chunks are content-addressed,
 so a stored chunk is always the right bytes for its id). A file that only the server
-has is readable there too. `syncbox mount <vault> <dir>` shows
+has is readable there too. Whole-file transfers stream at both ends: a push plans the
+file by HMAC-ing it chunk by chunk (ids and manifest, no AES yet), lets the server say
+which ids it lacks, then re-seals and uploads only the shortfall while proving, chunk
+by chunk, that the file has not moved — a file edited mid-push abandons the pass
+rather than committing a torn mix; a pull decrypts chunk by chunk into a part-file
+under `.syncbox-tmp` inside the tree and renames into place, so the folder never sees
+a half-downloaded file and the next scan never pushes one (only the tree's root-level
+name is reserved for this). A 4 GiB file costs a chunk-sized window at each end, not
+4 GiB of RAM. `syncbox mount <vault> <dir>` shows
 the tree read-only over FUSE; the `fuser` adapter is the CLI's optional `mount` feature,
 so the workspace build needs no libfuse. When no FUSE driver is present the command
 falls back to syncing `dir` as an ordinary plaintext folder.
@@ -234,9 +242,15 @@ rule). Writes are buffered per open handle and sealed once on close, so nothing 
 is ever plaintext.
 
 Those edits reach the server through a **folderless** pass: `syncbox sync once` with no
-`--folder` never reads or writes plaintext. Push uploads each dirty record by decrypting
-it back out of the store (default `<vault>/blobs`, where the mount writes) and re-sealing
-it; a mount `unlink` or a rename's old name is queued in the index as a pending delete,
+`--folder` never reads or writes plaintext. Push is a verbatim ciphertext relay: the
+store already holds the sealed chunks and the sealed manifest (in the store — by
+default `<vault>/blobs`, where the mount writes) under exactly the
+coordinates the dirty record names, so the pass asks the server which chunk ids are
+missing and relays exactly those bytes from disk — no decrypt, no re-seal, never more
+than one chunk in memory. (Re-sealing content that is already content-addressed would
+prove only that the store can decrypt; a file's bytes are proven where they are read
+back, under the manifest's AEAD.) A mount `unlink` or a rename's old name is queued in
+the index as a pending delete,
 and the pass commits its tombstone before uploading, clearing the queue only once the
 server has it. A pull then keeps manifest, chunks, and index records and writes no
 plaintext; if the server holds a newer revision while a record is dirty, the local edit

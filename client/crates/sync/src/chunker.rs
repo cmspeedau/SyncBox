@@ -12,6 +12,11 @@ use syncbox_crypto::content::{CHUNK_MAX, CHUNK_MIN, CHUNK_TARGET};
 use crate::error::{Result, SyncError};
 use std::sync::OnceLock;
 
+/// Bytes pulled per fill of [`FastCdc::split_stream`] — I/O granularity, not a
+/// format parameter: boundaries cannot depend on it, and the equivalence tests
+/// prove they do not.
+const STREAM_FILL: usize = 128 * 1024;
+
 /// A half-open byte range of plaintext.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Chunk {
@@ -123,6 +128,134 @@ impl FastCdc {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Splits a reader, handing each finished chunk's bytes to `on_chunk` as soon
+    /// as it is complete, so a 4 GiB file costs one chunk of memory, not four.
+    ///
+    /// The boundaries are byte-for-byte those [`Chunker::split`] would produce for
+    /// the same bytes — the rolling hash is forward-only and resets at every chunk,
+    /// so no look-ahead is needed — which is what keeps content addresses stable
+    /// between the buffered and streaming paths, and between clients that took
+    /// different routes to the same content.
+    ///
+    /// Returns the number of chunks emitted. An empty reader emits none, matching
+    /// [`Chunker::split`] on empty input.
+    ///
+    /// # Errors
+    ///
+    /// Propagates reader I/O, configuration, and [`on_chunk`] errors.
+    pub fn split_stream<R, F>(&mut self, reader: &mut R, mut on_chunk: F) -> Result<usize>
+    where
+        R: std::io::Read,
+        F: FnMut(&[u8]) -> Result<()>,
+    {
+        if !self.is_valid() {
+            return Err(SyncError::ChunkTooLarge {
+                actual: self.max,
+                limit: self.min,
+            });
+        }
+
+        let gear = gear_table();
+        let (hard, easy) = self.masks();
+        let mut buf: Vec<u8> = Vec::with_capacity(self.max + STREAM_FILL);
+        let mut start = 0usize; // the unfinished chunk begins here
+        let mut scan = 0usize; // next byte to feed the hash
+        let mut hash = 0u64;
+        let mut warmed = false; // the minimum region of the current chunk is fed
+        let mut eof = false;
+        let mut emitted = 0usize;
+        let mut scratch = vec![0u8; STREAM_FILL];
+
+        loop {
+            if eof && start == buf.len() {
+                return Ok(emitted);
+            }
+
+            // The tail rule, mirrored from split(): a remainder no longer than the
+            // minimum is one chunk, hashed or not — and only at EOF, because only
+            // EOF proves it is the remainder.
+            if eof && buf.len() - start <= self.min {
+                if buf.len() > start {
+                    on_chunk(&buf[start..])?;
+                    emitted += 1;
+                }
+                buf.clear();
+                start = 0;
+                hash = 0;
+                warmed = false;
+                continue;
+            }
+
+            if !warmed {
+                if buf.len() - start < self.min {
+                    // Not even a minimum has arrived yet: read, then re-check —
+                    // EOF turns this same remainder into the tail above.
+                    if !eof {
+                        match reader.read(&mut scratch) {
+                            Ok(0) => eof = true,
+                            Ok(n) => buf.extend_from_slice(&scratch[..n]),
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(e) => return Err(SyncError::Io(e)),
+                        }
+                    }
+                    continue;
+                }
+                for &byte in &buf[start..start + self.min] {
+                    hash = hash.wrapping_shl(1).wrapping_add(gear[usize::from(byte)]);
+                }
+                scan = start + self.min;
+                warmed = true;
+            }
+
+            // Feed one byte at a time, exactly as split() does, cutting at the
+            // first mask hit — the triggering byte belongs to the NEXT chunk,
+            // because split() breaks before advancing past it.
+            let cap = (start + self.max).min(buf.len());
+            let mut cut = None;
+            while scan < cap {
+                hash = hash
+                    .wrapping_shl(1)
+                    .wrapping_add(gear[usize::from(buf[scan])]);
+                let mask = if scan < start + self.target {
+                    hard
+                } else {
+                    easy
+                };
+                if hash & mask == 0 {
+                    cut = Some(scan);
+                    break;
+                }
+                scan += 1;
+            }
+
+            let end = match cut {
+                Some(end) => end,
+                None if scan >= start + self.max => scan, // clamped to the maximum
+                None if eof => buf.len(), // ran out of file before a cut: the whole remainder
+                None => {
+                    // Buffer exhausted short of the maximum with more to come:
+                    // keep the hash state and read on.
+                    match reader.read(&mut scratch) {
+                        Ok(0) => eof = true,
+                        Ok(n) => buf.extend_from_slice(&scratch[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(SyncError::Io(e)),
+                    }
+                    continue;
+                }
+            };
+
+            if end > start {
+                on_chunk(&buf[start..end])?;
+                emitted += 1;
+            }
+            buf.drain(..end);
+            start = 0;
+            hash = 0;
+            warmed = false;
+        }
     }
 
     /// True when the configuration is usable: the minimum has to sit under the
@@ -336,6 +469,87 @@ mod tests {
         let a = FastCdc::new().split(&data).unwrap();
         let b = FastCdc::new().split(&data).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// A reader that hands out at most `limit` bytes per call, so the streaming
+    /// state machine is exercised at arrival granularities no fill size would
+    /// naturally produce.
+    struct SmallReads<'a, R: std::io::Read> {
+        inner: &'a mut R,
+        limit: usize,
+    }
+
+    impl<R: std::io::Read> std::io::Read for SmallReads<'_, R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.limit.min(buf.len());
+            self.inner.read(&mut buf[..n])
+        }
+    }
+
+    #[test]
+    fn a_streamed_split_cuts_exactly_where_the_buffered_one_does() {
+        // The format promise: chunk ids are content addresses, so the streaming
+        // path may never cut a byte differently from the buffered one — not at a
+        // minimum, not at a maximum, not at a tail, and not at any arrival
+        // granularity. Any drift here corrupts vaults; nothing less passes.
+        let sizes = [
+            0usize,
+            1,
+            7,
+            100,
+            CHUNK_MIN - 1,
+            CHUNK_MIN,
+            CHUNK_MIN + 1,
+            CHUNK_TARGET,
+            CHUNK_TARGET + 1,
+            CHUNK_MAX - 1,
+            CHUNK_MAX,
+            CHUNK_MAX + 1,
+            CHUNK_MAX * 2,
+            CHUNK_MAX * 3 + 12_345,
+            1_500_000,
+        ];
+        for len in sizes {
+            let data = pseudo_random(len);
+            let expected: Vec<Vec<u8>> = FastCdc::new()
+                .split(&data)
+                .expect("splits")
+                .iter()
+                .map(|c| c.slice(&data).to_vec())
+                .collect();
+
+            for limit in [1usize, 64, 4096, STREAM_FILL * 3] {
+                let mut got: Vec<Vec<u8>> = Vec::new();
+                let mut cursor = std::io::Cursor::new(&data);
+                let mut reader = SmallReads {
+                    inner: &mut cursor,
+                    limit,
+                };
+                let count = FastCdc::new()
+                    .split_stream(&mut reader, |chunk| {
+                        got.push(chunk.to_vec());
+                        Ok(())
+                    })
+                    .unwrap_or_else(|e| panic!("len {len} limit {limit}: {e}"));
+                assert_eq!(got, expected, "len {len} limit {limit}");
+                assert_eq!(count, expected.len());
+            }
+        }
+    }
+
+    #[test]
+    fn a_streamed_sink_failure_stops_the_split_right_there() {
+        let data = pseudo_random(CHUNK_MAX * 2);
+        let mut cursor = std::io::Cursor::new(&data);
+        let mut seen = 0usize;
+        let error = FastCdc::new()
+            .split_stream(&mut cursor, |_| {
+                seen += 1;
+                Err(SyncError::Integrity("the sink said no"))
+            })
+            .expect_err("the sink's no is the splitter's no");
+        assert!(matches!(error, SyncError::Integrity(_)));
+        assert_eq!(seen, 1, "the splitter pressed on past a refused chunk");
     }
 
     #[test]
