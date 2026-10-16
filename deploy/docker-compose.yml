@@ -17,6 +17,12 @@ services:
       SYNCBOX_LISTEN_ADDR: 0.0.0.0:8080
       SYNCBOX_DATA_DIR: /data
       SYNCBOX_BACKUP_TARGET: /backups
+      # Object storage works as a target too — set the target to
+      # s3://bucket[/prefix] and supply credentials the way every env here is
+      # supplied (.env); SYNCBOX_S3_ENDPOINT points at MinIO/R2/Wasabi, omit it
+      # for AWS. The bucket needs object lock enabled at creation; sealing then
+      # means COMPLIANCE retention the service enforces, not a permission bit.
+      # See docs/backup.md.
       SYNCBOX_BACKUP_SCHEDULE: ${SYNCBOX_BACKUP_SCHEDULE:-1h}
       # No defaults here on purpose. Compose refuses to start rather than bringing
       # up a server with a generated credential that vanishes on the next restart.

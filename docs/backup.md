@@ -54,12 +54,50 @@ way:
 after sealing, the server process cannot rewrite or delete the bundle.
 
 On the local filesystem that means mode `0550`/`0440`, owned by the backup identity.
-That stops the server process and stops accidents. **It does not stop root.** Object
-storage with object lock — a later milestone — is what makes the guarantee real,
-because there the lock is honoured by the service rather than by a permission bit.
+That stops the server process and stops accidents. **It does not stop root**, and this
+is stated rather than glossed so nobody deploys a local target believing they have WORM
+storage.
 
-This is stated rather than glossed so nobody deploys a local target believing they have
-WORM storage.
+On an `s3://` target the promise is the service's own: sealing issues
+`PutObjectRetention` — `COMPLIANCE` mode, `SYNCBOX_BACKUP_LOCK_DAYS` (default 400) —
+against **every version of every object**, naming each version id. From that moment no
+caller can overwrite or permanently delete those versions before the retention date:
+not the server, not root, not the bucket owner. The MinIO drill put that to the test
+and the service refused destruction with the sealed version's back — `WORM protected`.
+
+What object lock does *not* promise is that readers see the sealed version: on a
+versioned bucket anyone with write access can still stand a **new** version up in
+front of it. The bytes behind the seal survive untouched, and every checksum `verify`
+re-reads fails loudly the moment a substitution is in the way — the backup stays
+tamper-*evident* against an attacker the seal cannot silence. Pinning sealed version
+ids in the manifest and reading by id is the next hardening step, noted under Limits.
+
+## Targets
+
+`SYNCBOX_BACKUP_TARGET` names either kind of target:
+
+```sh
+# a directory — a NAS mount, a second disk
+SYNCBOX_BACKUP_TARGET=/mnt/nas/snapshots
+
+# object storage — AWS S3, or anything that speaks the API
+SYNCBOX_BACKUP_TARGET=s3://syncbox-snapshots/prod
+SYNCBOX_S3_ENDPOINT=http://minio.internal:9000  # omit for AWS S3 itself
+SYNCBOX_S3_REGION=us-east-1                     # AWS_REGION is honored
+SYNCBOX_S3_ACCESS_KEY=AKIA…                     # AWS_ACCESS_KEY_ID as fallback
+SYNCBOX_S3_SECRET_KEY=…                         # AWS_SECRET_ACCESS_KEY as fallback
+SYNCBOX_BACKUP_LOCK_DAYS=400                    # COMPLIANCE horizon at sealing
+```
+
+The S3 client is deliberately hand-rolled — SigV4 pinned against AWS's official test
+vectors in `sigv4_test.go`, six REST calls on top of stdlib — because the server's
+dependency list is a deliberate fact and the surface actually needed is small.
+
+An object-lock bucket must have lock enabled **at creation** (`mc mb --with-lock`; the
+AWS console's Object-lock toggle — neither can be added to an existing bucket later),
+which also turns versioning on. Sealing on any other bucket refuses loudly, and a
+`Create` whose seal was refused cleans its half-written bundle out of the target rather
+than leaving it in the listings.
 
 ## Taking one
 
@@ -138,6 +176,15 @@ syncboxd restore -snapshot 2026-10-16T030000Z-a1b2c3d4 \
 systemctl start syncboxd
 ```
 
+`-target` takes the same location strings as `SYNCBOX_BACKUP_TARGET`, so an `s3://`
+restore works from any machine holding the bucket credentials:
+
+```sh
+syncboxd restore -snapshot 2026-10-16T030000Z-a1b2c3d4 \
+                 -target s3://syncbox-snapshots/prod \
+                 -to /srv/syncbox/data
+```
+
 `restore` verifies every checksum in the manifest before writing a single byte, and it
 refuses a destination that already contains a `metadata.json`. Silently replacing live
 data is the one thing a restore must not do.
@@ -175,6 +222,13 @@ Retention calls `target.RemoveAll`, which clears the seal before deleting. That 
 the maintenance path: the running server never deletes a snapshot to make room, which
 is what a ransomware encryptor would want it to do.
 
+On an `s3://` target `RemoveAll` permanently deletes **every version and every delete
+marker** under the bundle — an unversioned delete would only stand up a marker and
+leave the billed bytes haunting the bucket. While any version's retention is still
+live, the service's refusal is the system working: `RemoveAll` surfaces it as
+`ErrRetained`, `Prune` counts that snapshot as kept (the report says what is true, not
+what was attempted), and a later pass retires it once the retention date has passed.
+
 ## Limits of the current implementation
 
 - **Snapshots are full, not incremental — on purpose.** A snapshot has to be
@@ -187,5 +241,11 @@ is what a ransomware encryptor would want it to do.
   WORM target, or a separate incremental pass) can be added with the space hardening in
   M7 — but it is a tradeoff, not a free win, and it is not the default here.
 - **A backup on the same host as the server** survives deleted files and a broken
-  install. It does not survive a dead disk. The target is meant to be a NAS or a second
-  disk.
+  install. It does not survive a dead disk. The target is meant to be elsewhere — a
+  NAS mount or, properly, an object-lock bucket on a different account.
+- **`verify` and `restore` read the current version of each object.** A sealed version
+  can never be destroyed, and a substitution in front of it trips the manifest
+  checksums the moment anything reads too closely, but the readers follow the bucket's
+  "now" rather than the seal. Recording sealed version ids in the manifest and reading
+  by id is the next hardening step, along with per-rung retention (a monthly snapshot
+  that deserves a longer lock horizon than an hourly one).

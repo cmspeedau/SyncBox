@@ -18,7 +18,7 @@ Go server (single binary; Dockerfile + compose provided)
    API  ·  metadata DB  ·  content-addressed chunk store  ·  rate limiter
          |
          v
-   Docker volume / NAS   +   snapshot target (local first, S3/restic later)
+   Docker volume / NAS   +   snapshot target (local dir or S3 object-lock)
 ```
 
 The client does all encryption. The server never holds keys, real filenames, or
@@ -98,8 +98,12 @@ need. M7 hardening so far: client-side ciphertext GC whose liveness derives
 from the index alone, a defined conflict policy (a local edit outranks a newer
 revision or a tombstone), snapshot verification plus a live restore drill,
 resumable transfers (chunks staged as they arrive; content-addressed dedup makes
-pushes resume for free), the server's per-IP rate limiter, and streaming at
-both ends so a 4 GiB file costs a chunk-sized window of RAM, not 4 GiB.
+pushes resume for free), the server's per-IP rate limiter, streaming at
+both ends so a 4 GiB file costs a chunk-sized window of RAM, not 4 GiB, and an
+automatic GC policy (`--gc 1d` on every sync pass — and a GC never runs in
+front of a live mount). Backups now reach object storage: an `s3://` snapshot
+target seals every object version under COMPLIANCE object lock, and the drill
+watched the service itself refuse root's attempt to destroy a sealed version.
 
 | Milestone | Scope | Done |
 | --- | --- | --- |
@@ -110,11 +114,8 @@ both ends so a 4 GiB file costs a chunk-sized window of RAM, not 4 GiB.
 | M4 | Tauri desktop app | ✅ |
 | M5 | Mount: FUSE (macFUSE / WinFsp deferred) | ✅ |
 | M6 | Packaging: Linux ✅; mac/win + signing deferred | 🟡 |
-| M7 | Hardening: conflicts, GC, verification, restore drills, resume, rate limits, streaming | 🟡 |
-| M8 | Alternate backup targets: S3 object-lock, restic |  |
-
-M7's remaining step is the automatic GC policy: deciding *when* to collect
-without a human invoking `syncbox gc`.
+| M7 | Hardening: conflicts, GC + auto policy, verification, restore drills, resume, rate limits, streaming | ✅ |
+| M8 | Backup targets: S3 object-lock ✅; restic consumer story pending | 🟡 |
 
 ## License
 

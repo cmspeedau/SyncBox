@@ -62,6 +62,72 @@ func TestFromEnvReadsTheDocumentedNames(t *testing.T) {
 	}
 }
 
+func TestS3BackupSettingsAndAwsFallback(t *testing.T) {
+	t.Run("syncbox names shadow the aws ones", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "eu-central-1")
+		t.Setenv("AWS_ACCESS_KEY_ID", "AKIAWS")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "awssecret")
+		t.Setenv("SYNCBOX_BACKUP_TARGET", "s3://syncbox-snapshots/prod")
+		t.Setenv("SYNCBOX_S3_ENDPOINT", "http://127.0.0.1:9000")
+		t.Setenv("SYNCBOX_S3_REGION", "us-east-1")
+		t.Setenv("SYNCBOX_S3_ACCESS_KEY", "AKI SYNCBOX")
+		t.Setenv("SYNCBOX_S3_SECRET_KEY", "syncboxsecret")
+		t.Setenv("SYNCBOX_BACKUP_LOCK_DAYS", "30")
+
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.BackupTarget != "s3://syncbox-snapshots/prod" {
+			t.Errorf("BackupTarget = %q", cfg.BackupTarget)
+		}
+		if cfg.S3Endpoint != "http://127.0.0.1:9000" {
+			t.Errorf("S3Endpoint = %q", cfg.S3Endpoint)
+		}
+		if cfg.S3Region != "us-east-1" {
+			t.Errorf("S3Region = %q, want the SYNCBOX name to win", cfg.S3Region)
+		}
+		if cfg.S3AccessKey != "AKI SYNCBOX" || cfg.S3SecretKey != "syncboxsecret" {
+			t.Errorf("credentials = %q/%q, want the SYNCBOX names to win", cfg.S3AccessKey, cfg.S3SecretKey)
+		}
+		if cfg.BackupLockDays != 30 {
+			t.Errorf("BackupLockDays = %d", cfg.BackupLockDays)
+		}
+	})
+
+	t.Run("aws names and the default horizon apply alone", func(t *testing.T) {
+		t.Setenv("AWS_REGION", "eu-central-1")
+		t.Setenv("AWS_ACCESS_KEY_ID", "AKIAWS")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "awssecret")
+
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv: %v", err)
+		}
+		if cfg.S3Region != "eu-central-1" {
+			t.Errorf("S3Region = %q, want the AWS_REGION fallback", cfg.S3Region)
+		}
+		if cfg.S3AccessKey != "AKIAWS" || cfg.S3SecretKey != "awssecret" {
+			t.Errorf("credentials = %q/%q, want the AWS_* fallback", cfg.S3AccessKey, cfg.S3SecretKey)
+		}
+		if cfg.BackupLockDays != 400 {
+			t.Errorf("BackupLockDays = %d, want the 400-day default", cfg.BackupLockDays)
+		}
+		if cfg.S3Region == "" {
+			t.Error("region must never end up empty when AWS_REGION names one")
+		}
+	})
+}
+
+func TestBackupLockDaysRejectsNonsense(t *testing.T) {
+	for _, value := range []string{"zero", "0", "-5"} {
+		t.Setenv("SYNCBOX_BACKUP_LOCK_DAYS", value)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("SYNCBOX_BACKUP_LOCK_DAYS=%q must be refused", value)
+		}
+	}
+}
+
 func TestRateLimitParsesAndRejects(t *testing.T) {
 	t.Setenv("SYNCBOX_RATE_LIMIT", "12.5")
 	t.Setenv("SYNCBOX_RATE_BURST", "40")

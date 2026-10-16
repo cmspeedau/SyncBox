@@ -19,6 +19,11 @@ var ErrNotFound = errors.New("snapshot target: not found")
 // ErrReadOnly means a write was refused because the path was finalized.
 var ErrReadOnly = errors.New("snapshot target: read only")
 
+// ErrRetained means a delete was refused because the bytes are under
+// immutability retention — object-lock doing its job, not a fault. Maintenance
+// paths treat it as "not yet" and try again on a later pass.
+var ErrRetained = errors.New("snapshot target: retained until its retention date")
+
 // Target stores snapshot bundles under relative paths.
 type Target interface {
 	// Write stores r at rel, replacing any existing object, and reports the

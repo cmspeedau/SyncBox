@@ -172,6 +172,15 @@ func (m *Manager) Create(ctx context.Context, policy Policy) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	if err := m.tgt.ReadOnly(ctx, snapshotRel(id)); err != nil {
+		// A snapshot that could not be sealed is not the snapshot the caller
+		// asked for — and leaving it sitting in the target would advertise it
+		// in every listing as if it were. Best-effort removal; the one seal
+		// failure the drill surfaced (a bucket without object lock, refusing
+		// on the very first object) is exactly the case where nothing is
+		// locked yet and this cleanup fully succeeds.
+		if cleanErr := m.tgt.RemoveAll(ctx, snapshotRel(id)); cleanErr != nil {
+			return Snapshot{}, fmt.Errorf("sealing snapshot %s: %w (and its half-sealed bytes refused cleanup: %v)", id, err, cleanErr)
+		}
 		return Snapshot{}, fmt.Errorf("sealing snapshot %s: %w", id, err)
 	}
 
@@ -347,12 +356,42 @@ func (m *Manager) Prune(ctx context.Context, policy Policy) (kept, dropped []Sna
 	}
 
 	kept, dropped = Prune(snapshots, policy)
+	var refused []Snapshot
 	for _, snapshot := range dropped {
 		if err := m.tgt.RemoveAll(ctx, snapshotRel(snapshot.ID)); err != nil {
+			// A sealed snapshot under live retention refuses deletion, and
+			// that refusal is the system working: the snapshot stays in kept
+			// (it is still there, still whole) and a later pass retires it
+			// once the retention date has passed.
+			if errors.Is(err, target.ErrRetained) {
+				kept = append(kept, snapshot)
+				refused = append(refused, snapshot)
+				continue
+			}
 			return kept, dropped, fmt.Errorf("retiring snapshot %s: %w", snapshot.ID, err)
 		}
 	}
+	if len(refused) > 0 {
+		// Nothing was actually dropped about them, and the report should say
+		// what is true, not what was attempted.
+		dropped = without(dropped, refused)
+	}
 	return kept, dropped, nil
+}
+
+// without drops from `all` every snapshot named in `gone`, by ID.
+func without(all, gone []Snapshot) []Snapshot {
+	drop := make(map[string]bool, len(gone))
+	for _, snapshot := range gone {
+		drop[snapshot.ID] = true
+	}
+	out := all[:0:0]
+	for _, snapshot := range all {
+		if !drop[snapshot.ID] {
+			out = append(out, snapshot)
+		}
+	}
+	return out
 }
 
 // readAll loads an object from the target fully, for checksumming.
