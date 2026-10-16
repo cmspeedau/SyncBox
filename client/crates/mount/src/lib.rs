@@ -21,6 +21,9 @@
 //! Writing mirrors it through [`FsMut`]: a change is [`Vault::seal`]ed, handed to a
 //! [`WriteStore`], and recorded as a dirty [`FileEntry`] the sync loop later pushes.
 //!
+//! And when files go away or are overwritten, [`collect`] reclaims the ciphertext
+//! they leave behind, keeping exactly what the index still references.
+//!
 //! [`fuser`]: https://docs.rs/fuser
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -28,9 +31,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use syncbox_index::{FileEntry, Index};
 use syncbox_sync::{SyncError, Vault};
 
+mod gc;
 mod store;
 mod write;
 
+pub use gc::{collect, GcReport, GcStore};
 pub use store::{ContentStore, DiskStore, MemoryStore, WriteStore};
 pub use write::{FsMut, Written};
 

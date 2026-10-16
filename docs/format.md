@@ -240,6 +240,16 @@ wins the canonical name (the server's version stays in the log, recoverable by
 revision). With a `--folder`, everything above still works, and pending deletes are
 drained the same way alongside the folder scan.
 
+The store, left alone, only grows: each overwrite orphans the previous generation's
+unique chunks, each `unlink` or rename orphans a manifest. `syncbox gc <vault>` reclaims
+them. Liveness is decided by the index alone — every chunk id and manifest key its file
+records name is kept, which includes **dirty** records (a file edited through the mount
+but not yet pushed is as live as a synced one, so GC never eats a folderless vault's own
+pending push). Anything else in the store is deleted, manifests before chunks, so an
+interrupted pass leaves at worst more orphans for the next one. It needs no password:
+the index holds the bookkeeping, and it is exactly what a live mount or sync pass is
+writing, so a collect runs with those at rest.
+
 ## Test vectors
 
 Every value below follows from only the fixed inputs shown, so an independent
