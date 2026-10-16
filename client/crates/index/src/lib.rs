@@ -64,6 +64,14 @@ pub trait Index {
 
     /// Forgets these queued deletions — call once their tombstones are committed.
     fn clear_deletes(&mut self, keys: &[(syncbox_crypto::names::DirId, String)]);
+
+    /// A small durable key-value scratch space for maintenance bookkeeping —
+    /// when the last GC pass ran is what it exists for. `None` for a key that
+    /// was never written.
+    fn meta_value(&self, key: &str) -> Option<String>;
+
+    /// Writes one [`Index::meta_value`] entry, replacing any previous value.
+    fn set_meta_value(&mut self, key: &str, value: &str);
 }
 
 #[cfg(test)]

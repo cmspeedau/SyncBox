@@ -22,6 +22,7 @@ pub struct MemoryIndex {
     files: BTreeMap<String, FileEntry>,
     chunks: HashMap<ChunkId, ChunkRecord>,
     deletes: Vec<DeletedFile>,
+    meta: BTreeMap<String, String>,
 }
 
 impl MemoryIndex {
@@ -128,6 +129,14 @@ impl Index for MemoryIndex {
 
     fn clear_deletes(&mut self, keys: &[(DirId, String)]) {
         self.deletes.retain(|d| !keys.contains(&d.key()));
+    }
+
+    fn meta_value(&self, key: &str) -> Option<String> {
+        self.meta.get(key).cloned()
+    }
+
+    fn set_meta_value(&mut self, key: &str, value: &str) {
+        self.meta.insert(key.to_owned(), value.to_owned());
     }
 }
 

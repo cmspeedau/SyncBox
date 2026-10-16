@@ -21,7 +21,7 @@ use clap::{Parser, Subcommand};
 use syncbox_crypto::content::{CHUNK_MAX, CHUNK_MIN, CHUNK_TARGET};
 use syncbox_crypto::kdf::Params;
 use syncbox_crypto::names::DirId;
-use syncbox_index::SqliteIndex;
+use syncbox_index::{Index as _, SqliteIndex};
 use syncbox_sync::{Engine, SyncReport, Vault};
 use syncbox_transport::{Client, TransportError, UreqHttp};
 use syncbox_vault::{VaultConfig, CONFIG_FILE_NAME, CURRENT_VERSION};
@@ -78,8 +78,9 @@ enum Command {
     /// Deletes stored chunks and manifests that no record in the vault's index
     /// references — orphans left by overwrites, unlinks and renames. Needs no
     /// password: the index holds what is live, and the blobs it names are the
-    /// only things kept. Run it while nothing else is writing the vault (no
-    /// live mount, no sync pass).
+    /// only things kept. Runs are coordination-checked: if a live mount or
+    /// sync pass holds the store, this refuses rather than pruning in front
+    /// of it. `sync once` also collects on its own schedule (`--gc`).
     Gc {
         /// Directory holding `vault.json`, its `index.db`, and local ciphertext blobs.
         vault: PathBuf,
@@ -198,6 +199,12 @@ enum SyncCommand {
         /// folder sync that stores no ciphertext copy.
         #[arg(long)]
         store: Option<PathBuf>,
+        /// Reclaim dead ciphertext from the store at the end of the pass, at most
+        /// this often: `off`, or a span like `1d`, `12h`, `45m` (default `1d`).
+        /// A due round that finds the store held by a live mount skips this pass
+        /// rather than waiting — nothing is ever pruned in front of a writer.
+        #[arg(long, default_value = "1d")]
+        gc: String,
         /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
         #[arg(long)]
         password: Option<String>,
@@ -223,6 +230,7 @@ fn main() -> Result<()> {
                     folder,
                     index,
                     store,
+                    gc,
                     password,
                 },
         } => sync_once(
@@ -232,6 +240,7 @@ fn main() -> Result<()> {
             folder.as_deref(),
             index,
             store,
+            &gc,
             &resolve_password(password)?,
         ),
         Command::Sync {
@@ -301,10 +310,14 @@ fn sync_once(
     folder: Option<&Path>,
     index: Option<PathBuf>,
     store: Option<PathBuf>,
+    gc_spec: &str,
     password: &str,
 ) -> Result<()> {
     let keys =
         syncbox_vault::unlock(vault_dir, password).context("could not unlock the vault to sync")?;
+    // Parse the gc spec before anything expensive: a typo should fail the
+    // command at once, not after a full sync pass has already run.
+    let gc_policy = parse_gc_spec(gc_spec)?;
     let index_path = index.unwrap_or_else(|| vault_dir.join("index.db"));
     let index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
@@ -318,25 +331,105 @@ fn sync_once(
         .token(password)
         .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
 
-    let mut engine = Engine::new(index, vault);
     // Folderless always has a store — it is the only content — defaulting to
     // `<vault>/blobs` exactly where `syncbox mount` looks. With a folder, a store is
     // optional: a pull then also leaves its ciphertext there, so the same directory
     // can be mounted (`syncbox mount`) and serve server-sourced files; without one,
     // the pass is the plain plaintext-folder sync as before.
-    if folder.is_none() {
-        let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
-        engine = engine
-            .with_store(syncbox_mount::DiskStore::new(store_dir))
-            .folderless();
-    } else if let Some(store) = store {
-        engine = engine.with_store(syncbox_mount::DiskStore::new(store));
+    let store_dir = if folder.is_none() {
+        Some(store.unwrap_or_else(|| vault_dir.join("blobs")))
+    } else {
+        store
+    };
+    // Announce this process as a writer of the store for the whole pass — a pull
+    // writes chunks as they arrive even when nothing of the user's is — so a
+    // concurrent `syncbox gc` declines its round rather than pruning in front
+    // of the staging this pass is doing.
+    let store_guard = match &store_dir {
+        Some(dir) => Some(
+            syncbox_mount::StoreLock::shared(dir)
+                .with_context(|| format!("locking store at {}", dir.display()))?,
+        ),
+        None => None,
+    };
+    let mut engine = Engine::new(index, vault);
+    if let Some(dir) = &store_dir {
+        engine = engine.with_store(syncbox_mount::DiskStore::new(dir.clone()));
+        if folder.is_none() {
+            engine = engine.folderless();
+        }
     }
     let report = engine
         .sync_once(&mut client, &today())
         .context("sync pass failed")?;
     print_report(&report);
+
+    // The pass is the quiescent moment GC has been waiting for: nothing else in
+    // this process touches store or index now, so the pass upgrades its own
+    // shared hold to exclusive and collects, or steps aside if a mount holds
+    // the store shared. The engine's index moved into it at construction, so
+    // the stamping opens a second connection to the same database — sequential,
+    // and SQLite takes the write lock for the single upsert.
+    if let (Some(dir), Some(guard)) = (&store_dir, &store_guard) {
+        if gc_policy != syncbox_mount::GcPolicy::Off {
+            let mut gc_index = SqliteIndex::open(&index_path)
+                .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
+            let mut gc_store = syncbox_mount::DiskStore::new(dir);
+            match syncbox_mount::maybe_collect(
+                &mut gc_index,
+                &mut gc_store,
+                guard,
+                gc_policy,
+                unix_now(),
+            )
+            .context("store gc failed")?
+            {
+                syncbox_mount::MaybeGc::Collected(r)
+                    if r.removed_chunks > 0 || r.removed_manifests > 0 =>
+                {
+                    println!(
+                        "gc: reclaimed {} chunk(s) and {} manifest(s), {} byte(s) freed",
+                        r.removed_chunks, r.removed_manifests, r.freed_bytes
+                    );
+                }
+                syncbox_mount::MaybeGc::Collected(_) => println!("gc: store already tight"),
+                syncbox_mount::MaybeGc::Busy => {
+                    println!("gc skipped: the store is held by a live mount");
+                }
+                syncbox_mount::MaybeGc::NotDue => {}
+            }
+        }
+    }
     Ok(())
+}
+
+/// Parses `--gc`: `off`, or a count with a unit suffix (`1d`, `12h`, `45m`).
+/// A zero interval is legal and means "collect at the end of every pass".
+fn parse_gc_spec(spec: &str) -> Result<syncbox_mount::GcPolicy> {
+    let spec = spec.trim().to_ascii_lowercase();
+    if spec == "off" {
+        return Ok(syncbox_mount::GcPolicy::Off);
+    }
+    let per = match spec.chars().last() {
+        Some('d') => 86_400,
+        Some('h') => 3_600,
+        Some('m') => 60,
+        _ => bail!("`--gc` wants `off` or a span like `1d`, `12h`, `45m`; got `{spec}`"),
+    };
+    let count: u64 = spec[..spec.len() - 1]
+        .trim()
+        .parse()
+        .with_context(|| format!("`--gc {spec}` has no leading count"))?;
+    Ok(syncbox_mount::GcPolicy::Interval {
+        seconds: count.saturating_mul(per),
+    })
+}
+
+/// Whole seconds since the unix epoch, for stamping GC rounds.
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
 fn print_report(report: &SyncReport) {
@@ -407,12 +500,26 @@ fn status() -> Result<()> {
 /// own, and what it names is exactly what stays.
 fn gc_cmd(vault_dir: &Path, store: Option<PathBuf>) -> Result<()> {
     let index_path = vault_dir.join("index.db");
-    let index = SqliteIndex::open(&index_path)
+    let mut index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
     let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
+    // The promise `collect` documents, now enforced rather than requested: a
+    // live mount or sync pass holds the store shared, and this non-blocking
+    // claim says so instead of pruning in front of it.
+    let Some(_guard) = syncbox_mount::StoreLock::try_exclusive(&store_dir)
+        .with_context(|| format!("locking store at {}", store_dir.display()))?
+    else {
+        bail!(
+            "the store at {} is held by a live mount or sync pass; nothing was collected",
+            store_dir.display()
+        );
+    };
     let mut store = syncbox_mount::DiskStore::new(&store_dir);
     let report = syncbox_mount::collect(&index, &mut store)
         .with_context(|| format!("collecting garbage in {}", store_dir.display()))?;
+    // A manual round resets the auto-collect clock too: the next opportunistic
+    // pass waits its interval from this one, not from the last automatic round.
+    index.set_meta_value(syncbox_mount::LAST_GC_KEY, &unix_now().to_string());
     let freed = if report.freed_bytes > 0 {
         format!(" ({} bytes freed)", report.freed_bytes)
     } else {
@@ -548,6 +655,9 @@ fn mount_cmd(
                     Some(mountpoint),
                     None,
                     None,
+                    // Folder fallback with no store: there is no ciphertext to
+                    // collect, and `off` states that rather than relying on it.
+                    "off",
                     password,
                 )?;
                 std::thread::sleep(std::time::Duration::from_secs(30));
@@ -573,6 +683,12 @@ fn try_mount(
     let index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
     let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
+    // The session holds the store *shared* until it unmounts — even read-only,
+    // because serving a file the store lacks caches what it fetches. `syncbox
+    // gc` and the opportunistic gc of a sync pass claim the store non-blocking,
+    // so while this runs they politely decline their rounds.
+    let _store_guard = syncbox_mount::StoreLock::shared(&store_dir)
+        .with_context(|| format!("locking store at {}", store_dir.display()))?;
     // The mount derives everything from the index and the local store; a server
     // vault id and a plaintext root are not consulted, so they are placeholders here.
     let vault = Vault::new(keys, String::new(), vault_dir)?;
@@ -665,6 +781,37 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gc_spec_parses_off_and_spans() {
+        assert_eq!(parse_gc_spec("off").unwrap(), syncbox_mount::GcPolicy::Off);
+        assert_eq!(
+            parse_gc_spec("OFF").unwrap(),
+            syncbox_mount::GcPolicy::Off,
+            "case is the user's business"
+        );
+        assert_eq!(
+            parse_gc_spec("1d").unwrap(),
+            syncbox_mount::GcPolicy::Interval { seconds: 86_400 }
+        );
+        assert_eq!(
+            parse_gc_spec(" 12 h ").unwrap(),
+            syncbox_mount::GcPolicy::Interval { seconds: 43_200 },
+            "whitespace is tolerated"
+        );
+        assert_eq!(
+            parse_gc_spec("45m").unwrap(),
+            syncbox_mount::GcPolicy::Interval { seconds: 2_700 }
+        );
+        assert_eq!(
+            parse_gc_spec("0h").unwrap(),
+            syncbox_mount::GcPolicy::Interval { seconds: 0 },
+            "zero means every pass, and says so in numbers"
+        );
+        parse_gc_spec("daily").expect_err("words are not spans");
+        parse_gc_spec("d").expect_err("a unit with no count is a typo");
+        parse_gc_spec("1w").expect_err("weeks are not on the menu");
+    }
 
     #[test]
     fn the_cli_surface_parses() {

@@ -170,6 +170,22 @@ fn paths_are_case_and_byte_exact(index: &mut dyn Index) {
     assert!(index.file("Café/ÄÖÜ.txt").is_some());
 }
 
+/// The maintenance scratch space round-trips and overwrites in place: the GC
+/// stamp is written by one process and read by the next, so whatever a backend
+/// stores, a set must replace — never accumulate.
+fn meta_scratch_round_trips_and_replaces(index: &mut dyn Index) {
+    assert_eq!(index.meta_value("last_gc_unix"), None, "unset is None");
+    index.set_meta_value("last_gc_unix", "100");
+    assert_eq!(index.meta_value("last_gc_unix").as_deref(), Some("100"));
+    index.set_meta_value("last_gc_unix", "200");
+    assert_eq!(
+        index.meta_value("last_gc_unix").as_deref(),
+        Some("200"),
+        "a second write replaces the stamp"
+    );
+    assert_eq!(index.meta_value("other"), None, "keys stay separate");
+}
+
 /// The whole contract, each invariant run against a freshly built backend so the
 /// checks are independent (and a chunk id reused by two checks stays meaningful).
 fn conformance(make: impl Fn() -> Box<dyn Index>) {
@@ -182,6 +198,7 @@ fn conformance(make: impl Fn() -> Box<dyn Index>) {
     sizes_are_recorded_once_and_bytes_sum_over_referenced_chunks(&mut *make());
     releasing_more_than_retaining_does_not_panic(&mut *make());
     deletes_queue_a_tombstone_until_committed(&mut *make());
+    meta_scratch_round_trips_and_replaces(&mut *make());
 }
 
 #[test]

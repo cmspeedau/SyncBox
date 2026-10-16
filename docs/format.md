@@ -278,8 +278,18 @@ records name is kept, which includes **dirty** records (a file edited through th
 but not yet pushed is as live as a synced one, so GC never eats a folderless vault's own
 pending push). Anything else in the store is deleted, manifests before chunks, so an
 interrupted pass leaves at worst more orphans for the next one. It needs no password:
-the index holds the bookkeeping, and it is exactly what a live mount or sync pass is
-writing, so a collect runs with those at rest.
+the index holds the bookkeeping.
+The old promise that a collect runs with writers at rest is now coordination, not
+courtesy: every store holder announces itself with an advisory `flock` on a hidden
+`.store.lock` in the store directory — a mount session and a sync pass hold it *shared*
+for as long as they write, and a GC round claims it *exclusively*, non-blocking only. A
+due round that finds the store held skips that round instead of queueing, so GC can
+never prune in front of a writer; a manual `gc` against a live store refuses with a
+clear message. And GC now runs by policy: `sync once` with a store collects at the end
+of its own pass (which is quiescent by construction — it upgrades its own shared hold),
+at most once per `--gc <span>` (`1d` by default, `off` to disable); the clock is an
+index stamp (`last_gc_unix`) written before collecting, so a failed round backs off for
+one interval rather than retrying every pass, and a manual round resets the same clock.
 
 ## Test vectors
 
