@@ -72,10 +72,11 @@ a real desktop to see the UI.
 **Deferred to M6 packaging** (explicit, not half-done): the **tray icon**, **autostart**
 and **single-instance**. The tray needs `libappindicator`, which is absent here, so
 `tauri` is pulled with `default-features = false, features = ["wry"]` precisely so the
-missing lib (and image decoders) aren't required to compile. Packaging installs the
-lib and turns the tray on; until then the window is the whole UI. Mount control is M5;
-a Node/Svelte frontend behind `frontendDist` (instead of this static one) and code
-signing are M6.
+missing lib (and image decoders) aren't required to compile. The CI packaging runner
+can install it, which is where the tray lands; until then the window is the whole UI.
+Mount control shipped with M5 (read-only + writable + folderless sync); bundling
+shipped as M6's first step (see Packaging). A Node/Svelte frontend behind
+`frontendDist` (instead of this static one) and code signing remain open.
 
 ## Building the app
 
@@ -85,14 +86,36 @@ cargo build --manifest-path client/apps/desktop/src-tauri/Cargo.toml
 
 Needs webkit2gtk-4.1, gtk-3, libsoup-3.0, and javascriptcoregtk-4.1 on Linux, plus a
 C compiler (rusqlite bundles SQLite). It builds without `tauri-cli` (`tauri_build` in
-`build.rs` embeds the frontend and generates the IPC glue). Its unit tests run with
+`build.rs` embeds the frontend and generates the IPC glue) — `tauri-cli` is needed for
+bundling (`cargo-tauri build --bundles deb appimage`) and for `cargo-tauri icon`.
+Its unit tests run with
 `cargo test --manifest-path client/apps/desktop/src-tauri/Cargo.toml` (they need the
 GUI libs to link but open no window).
 
 ## Packaging (M6)
 
-| Platform | Artefacts | Notes |
+**Linux — building and shipping from CI.** `tauri.conf.json` carries real bundle
+metadata (publisher, license, category, descriptions) and `src-tauri/icons/` holds a
+generated icon set (`cargo-tauri icon <1024px source>` regenerates every format).
+`cargo-tauri build --bundles deb appimage` produces:
+
+- `Syncbox_<ver>_amd64.deb` (~5 MB) — desktop entry, hicolor icons, and runtime
+  dependencies derived from linkage (`libwebkit2gtk-4.1-0`, `libgtk-3-0`);
+- `Syncbox_<ver>_amd64.AppImage` — self-contained; the static-pie AppImage runtime
+  means no FUSE is needed even to *build* it.
+
+The `Package (Linux desktop)` CI job rebuilds both on every PR (on `ubuntu-latest`,
+where the Debian packaging tools and webkit dev libraries live) and uploads them as
+build artifacts. They are unsigned, like everything here — publishing and signing
+stay deliberate acts, each to its own runner and identity.
+
+| Platform | Artefacts | Status |
 | --- | --- | --- |
-| Linux | AppImage, `.deb` | AppImage is the primary artefact; installs libappindicator for the tray |
-| macOS | universal `.dmg` | needs notarization; macFUSE is a system extension |
-| Windows | `.msi`, NSIS `.exe` | WinFsp is an install-time dependency |
+| Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
+| macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
+| Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
+
+The tray icon, autostart and single-instance come next for M6: the CI runner can
+`apt-get install libayatana-appindicator3-dev`, which this box lacks — until then
+`tauri` stays on `default-features = false, features = ["wry"]` and the window is
+the whole UI.
