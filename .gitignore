@@ -1,5 +1,6 @@
-# Rust
-target/
+# Rust — anchor to the workspace build dir. A bare `target/` would also swallow
+# the Go package at server/internal/backup/target/.
+/client/target/
 
 # Go
 server/bin/

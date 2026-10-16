@@ -102,18 +102,35 @@ impl Kek {
 /// Derives the key-encryption key for `password`.
 ///
 /// `salt` must be a fresh random value per vault, at least [`MIN_SALT_LEN`]
-/// bytes long.
+/// bytes long. The cost parameters are taken from `params` rather than assumed,
+/// so a vault written before the defaults were raised still unlocks.
 ///
 /// # Errors
 ///
 /// Returns [`CryptoError::InvalidInput`] if the salt is too short, and
-/// [`CryptoError::Unimplemented`] until M1 supplies the Argon2id backend.
+/// [`CryptoError::Backend`] if the parameters are outside what Argon2id accepts.
 pub fn derive_kek(password: &str, salt: &[u8], params: &Params) -> Result<Kek> {
-    let _ = (password, params);
     if salt.len() < MIN_SALT_LEN {
         return Err(CryptoError::InvalidInput("salt shorter than 16 bytes"));
     }
-    Err(CryptoError::Unimplemented("Argon2id key derivation"))
+
+    // Argon2id is the only algorithm this build writes or reads; the algorithm is
+    // checked by the caller (Params::algorithm is fixed), so here we only run it.
+    let cost = argon2::Params::new(
+        params.memory_kib,
+        params.iterations,
+        params.parallelism,
+        Some(usize::try_from(params.output_len).unwrap_or(usize::MAX)),
+    )
+    .map_err(|_| CryptoError::Backend("Argon2id parameters out of range"))?;
+
+    let argon = argon2::Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, cost);
+    let mut output = vec![0u8; usize::try_from(params.output_len).unwrap_or(usize::MAX)];
+    argon
+        .hash_password_into(password.as_bytes(), salt, &mut output)
+        .map_err(|_| CryptoError::Backend("Argon2id derivation failed"))?;
+
+    Ok(Kek::from_bytes(output))
 }
 
 #[cfg(test)]
@@ -143,6 +160,36 @@ mod tests {
         let err = derive_kek("hunter2", b"too-short", &Params::default())
             .expect_err("a short salt must be rejected");
         assert!(matches!(err, CryptoError::InvalidInput(_)));
+    }
+
+    /// Cheap parameters so the derivation tests run in milliseconds rather than
+    /// paying the vault's real 64 MiB cost on every `cargo test`.
+    fn test_params() -> Params {
+        Params {
+            algorithm: Algorithm::Argon2id,
+            memory_kib: 4096,
+            iterations: 2,
+            parallelism: 1,
+            output_len: 32,
+        }
+    }
+
+    #[test]
+    fn derivation_is_deterministic_and_exact_length() {
+        let salt = [0x42u8; 16];
+        let a = derive_kek("correct horse", &salt, &test_params()).unwrap();
+        let b = derive_kek("correct horse", &salt, &test_params()).unwrap();
+        assert_eq!(a.as_bytes().len(), 32);
+        assert_eq!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
+    fn a_different_salt_or_password_gives_a_different_key() {
+        let base = derive_kek("password", &[1u8; 16], &test_params()).unwrap();
+        let other_salt = derive_kek("password", &[2u8; 16], &test_params()).unwrap();
+        let other_pw = derive_kek("Password", &[1u8; 16], &test_params()).unwrap();
+        assert_ne!(base.as_bytes(), other_salt.as_bytes());
+        assert_ne!(base.as_bytes(), other_pw.as_bytes());
     }
 
     #[test]
