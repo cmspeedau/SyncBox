@@ -17,7 +17,7 @@ use syncbox_crypto::ChunkId;
 
 use crate::dto::{
     ChunkCheckRequest, ChunkCheckResponse, CommitRequest, CommitResponse, ErrorResponse,
-    RevisionPage, Snapshot, TokenRequest, TokenResponse,
+    RestoreReport, RevisionPage, Snapshot, TokenRequest, TokenResponse, VerifyReport,
 };
 use crate::error::{error_from_status, Result, TransportError};
 
@@ -107,9 +107,19 @@ fn reason_of(body: &[u8]) -> String {
 }
 
 /// Turns a non-2xx response into the right error, leaving a success untouched.
+///
+/// A refusal body carries the server's stable machine-readable code, which is
+/// a better key than a status guess — `500 corrupt_snapshot` and a generic
+/// `500 internal` are different problems an operator acts on differently. The
+/// status mapping only speaks when the body is not a well-formed refusal.
 fn ensure_ok(response: &Response) -> Result<()> {
     if (200..300).contains(&response.status) {
         Ok(())
+    } else if let Ok(err) = serde_json::from_slice::<ErrorResponse>(&response.body) {
+        Err(TransportError::Refused {
+            code: err.code,
+            reason: err.reason,
+        })
     } else {
         Err(error_from_status(
             response.status,
@@ -303,6 +313,49 @@ impl<H: Http> Client<H> {
     /// server has no backup target.
     pub fn create_backup(&mut self) -> Result<Snapshot> {
         let response = self.call(Method::Post, "/admin/backups".to_owned(), Vec::new(), true)?;
+        ensure_ok(&response)?;
+        parse(&response.body)
+    }
+
+    /// Asks the server to re-hash a snapshot against its own manifest: every
+    /// chunk and the metadata file, byte for byte. The answer is either this
+    /// proof or a refusal — `404 not_found` for a snapshot that never landed,
+    /// `500 corrupt_snapshot` for one whose bytes no longer match.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decoding errors.
+    pub fn verify_backup(&mut self, id: &str) -> Result<VerifyReport> {
+        let response = self.call(
+            Method::Post,
+            format!("/admin/backups/{id}/verify"),
+            Vec::new(),
+            true,
+        )?;
+        ensure_ok(&response)?;
+        parse(&response.body)
+    }
+
+    /// Asks the server to copy a snapshot into `dest_dir` **on the server's
+    /// machine** — the offline restore drill: restore into a fresh directory,
+    /// then run a server pointed at it and let clients sync against the
+    /// resurrection. The server verifies before it copies, and refuses a
+    /// destination that already holds data (`409 restore_target_occupied`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decoding errors.
+    pub fn restore_backup(&mut self, id: &str, dest_dir: &str) -> Result<RestoreReport> {
+        #[derive(Serialize)]
+        struct RestoreRequest<'a> {
+            dest_dir: &'a str,
+        }
+        let response = self.call(
+            Method::Post,
+            format!("/admin/backups/{id}/restore"),
+            json(&RestoreRequest { dest_dir })?,
+            true,
+        )?;
         ensure_ok(&response)?;
         parse(&response.body)
     }
@@ -561,6 +614,74 @@ mod tests {
         let sent = &client.http.calls[0];
         assert_eq!(sent.method, Method::Post);
         assert_eq!(sent.path, "/admin/backups");
+    }
+
+    #[test]
+    fn verify_backup_posts_to_the_snapshot_verify_route() {
+        let body = r#"{"id":"snap1","chunks":7,"chunk_bytes":123,"metadata_sha256":"ab12"}"#;
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 200,
+                body: body.as_bytes().to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        let report = client.verify_backup("snap1").expect("verified");
+        assert_eq!(report.id, "snap1");
+        assert_eq!(report.chunks, 7);
+        assert_eq!(report.metadata_sha256, "ab12");
+
+        let sent = &client.http.calls[0];
+        assert_eq!(sent.method, Method::Post);
+        assert_eq!(sent.path, "/admin/backups/snap1/verify");
+    }
+
+    #[test]
+    fn restore_backup_sends_the_destination_and_reads_the_report() {
+        let body = r#"{"id":"snap1","dest_dir":"/srv/restored","chunks":7,"chunk_bytes":123}"#;
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 200,
+                body: body.as_bytes().to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        let report = client
+            .restore_backup("snap1", "/srv/restored")
+            .expect("restored");
+        assert_eq!(report.dest_dir, "/srv/restored");
+        assert_eq!(report.chunks, 7);
+
+        let sent = &client.http.calls[0];
+        assert_eq!(sent.path, "/admin/backups/snap1/restore");
+        assert_eq!(
+            String::from_utf8(sent.body.clone()).expect("utf-8 body"),
+            r#"{"dest_dir":"/srv/restored"}"#
+        );
+    }
+
+    #[test]
+    fn a_corrupt_snapshot_surfaces_as_a_refusal() {
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 500,
+                body:
+                    br#"{"code":"corrupt_snapshot","reason":"snapshot is corrupt: sha mismatch"}"#
+                        .to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        let error = client.verify_backup("snap1").expect_err("must fail");
+        match error {
+            TransportError::Refused { code, reason } => {
+                assert_eq!(code, "corrupt_snapshot");
+                assert!(reason.contains("sha mismatch"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]

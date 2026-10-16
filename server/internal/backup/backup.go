@@ -64,6 +64,10 @@ var ErrIncomplete = errors.New("snapshot is incomplete")
 // ErrCorrupt means a stored object no longer matches the checksum recorded for it.
 var ErrCorrupt = errors.New("snapshot is corrupt")
 
+// ErrRefusesOverwrite means a restore target already holds restored data, and
+// the manager refused to replace live contents.
+var ErrRefusesOverwrite = errors.New("refuses to overwrite")
+
 // ChunkEntry is one stored chunk and the checksum taken when it was written.
 type ChunkEntry struct {
 	ID     string `json:"id"`
@@ -300,7 +304,8 @@ func (m *Manager) Restore(ctx context.Context, id, destDir string) (Manifest, er
 		return Manifest{}, errors.New("restore needs a destination directory")
 	}
 	if _, err := os.Stat(filepath.Join(destDir, metadataFile)); err == nil {
-		return Manifest{}, fmt.Errorf("refusing to restore over %s, which already holds a metadata.json", destDir)
+		return Manifest{}, fmt.Errorf("%w: %s already holds a metadata.json",
+			ErrRefusesOverwrite, destDir)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Manifest{}, fmt.Errorf("checking %s: %w", destDir, err)
 	}

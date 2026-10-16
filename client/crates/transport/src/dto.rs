@@ -169,6 +169,41 @@ impl BackupManifest {
     }
 }
 
+/// `POST /admin/backups/{id}/verify`: the snapshot the server just re-checked,
+/// in the numbers it re-hashed against. A corrupt snapshot never answers this
+/// body — it fails as `TransportError::Refused { code: "corrupt_snapshot" }`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyReport {
+    /// The verified snapshot's id.
+    pub id: String,
+    /// Chunk objects re-hashed and found byte-for-byte.
+    #[serde(default)]
+    pub chunks: u64,
+    /// Total bytes across those chunks.
+    #[serde(default)]
+    pub chunk_bytes: i64,
+    /// The metadata file's hash the manifest commits to.
+    #[serde(default)]
+    pub metadata_sha256: String,
+}
+
+/// `POST /admin/backups/{id}/restore`: where the contents landed, server-side,
+/// and how much of them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreReport {
+    /// The restored snapshot's id.
+    pub id: String,
+    /// The directory the server wrote a usable data directory into.
+    #[serde(default)]
+    pub dest_dir: String,
+    /// Chunks copied.
+    #[serde(default)]
+    pub chunks: u64,
+    /// Total bytes copied.
+    #[serde(default)]
+    pub chunk_bytes: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
