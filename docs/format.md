@@ -215,7 +215,9 @@ of ciphertext" property as the vault itself:
 ```
 
 The store is populated by local writes (each seals through the vault and marks the index
-record dirty for the next sync) and by a sync pull. `syncbox mount <vault> <dir>` shows
+record dirty for the next sync) and by a pull: a `syncbox sync once --store <dir>` tees
+each file's manifest and downloaded chunks into the store as it fetches them, so a file
+that only the server has is readable there too. `syncbox mount <vault> <dir>` shows
 the tree read-only over FUSE; the `fuser` adapter is the CLI's optional `mount` feature,
 so the workspace build needs no libfuse. When no FUSE driver is present the command
 falls back to syncing `dir` as an ordinary plaintext folder.

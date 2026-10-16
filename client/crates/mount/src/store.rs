@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use syncbox_crypto::{names::DirId, ChunkId};
-use syncbox_sync::Sealed;
+use syncbox_sync::{PullStore, Sealed};
 
 /// Where a file's manifest and chunks are kept (the read side).
 ///
@@ -167,6 +167,41 @@ impl WriteStore for DiskStore {
 
     fn put_manifest(&mut self, dir_id: &DirId, cipher_name: &str, bytes: &[u8]) -> io::Result<()> {
         write_blob(&self.manifest_path(dir_id.as_str(), cipher_name), bytes)
+    }
+}
+
+// A pull hands the engine's downloaded manifest + chunks straight to the write side, so
+// a mounted vault serves server-sourced files. Duplicate chunk ids within a file
+// (repeated content) rewrite the same content-addressed blob — idempotent.
+impl PullStore for MemoryStore {
+    fn put_pulled(
+        &mut self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+        chunks: &[(ChunkId, Vec<u8>)],
+    ) -> io::Result<()> {
+        self.put_manifest(dir_id, cipher_name, manifest)?;
+        for (id, bytes) in chunks {
+            self.put_chunk(id, bytes)?;
+        }
+        Ok(())
+    }
+}
+
+impl PullStore for DiskStore {
+    fn put_pulled(
+        &mut self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+        chunks: &[(ChunkId, Vec<u8>)],
+    ) -> io::Result<()> {
+        self.put_manifest(dir_id, cipher_name, manifest)?;
+        for (id, bytes) in chunks {
+            self.put_chunk(id, bytes)?;
+        }
+        Ok(())
     }
 }
 

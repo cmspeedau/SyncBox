@@ -11,20 +11,21 @@ path = "src/main.rs"
 
 [features]
 default = []
-# The read-only FUSE mount (`syncbox mount`). Off by default so `cargo test
-# --workspace` and the clippy gate compile no `fuser` and link no libfuse; enable it
-# on a box with libfuse3 to build the mount command.
-mount = ["dep:fuser", "dep:syncbox-mount", "dep:libc"]
+# The read-only FUSE mount command (`syncbox mount`). Off by default so `cargo test
+# --workspace` and the clippy gate compile no `fuser` and link no libfuse; enable it on a
+# box with libfuse3. `syncbox-mount` itself is always available (it is libfuse-free) so
+# `sync --store` can populate a ciphertext store for a later mount without this feature.
+mount = ["dep:fuser", "dep:libc"]
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 syncbox-crypto.workspace = true
 syncbox-index.workspace = true
+syncbox-mount.workspace = true
 syncbox-sync.workspace = true
 syncbox-transport = { workspace = true, features = ["ureq"] }
 syncbox-vault.workspace = true
-syncbox-mount = { workspace = true, optional = true }
 fuser = { version = "0.15", optional = true }
 libc = { version = "0.2", optional = true }
 
