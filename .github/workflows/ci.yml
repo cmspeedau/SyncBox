@@ -72,7 +72,10 @@ jobs:
 
   image:
     name: Server image builds
-    runs-on: self-hosted
+    # GitHub-hosted: it ships Docker. The self-hosted runner has no container
+    # toolchain installed, so `docker build` there fails with exit 127. The image is
+    # still only built, never pushed — publishing stays a deliberate act.
+    runs-on: ubuntu-latest
     needs: go
     steps:
       - uses: actions/checkout@v4
