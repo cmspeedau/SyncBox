@@ -1,0 +1,18 @@
+[package]
+name = "syncbox-mount"
+description = "Vault-as-filesystem model: namespace and metadata for the FUSE mount (kernel-free, testable)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# The filesystem *model* lives here with no `fuser`/libfuse dependency, so the
+# namespace, metadata, and (later) read/write logic are unit-tested without a FUSE
+# driver and `cargo test --workspace` still passes on a machine with no libfuse. The
+# `fuser` adapter that turns these operations into FUSE callbacks is a thin layer kept
+# out of this crate.
+
+[dependencies]
+syncbox-index.workspace = true
+
+[dev-dependencies]
+syncbox-crypto.workspace = true

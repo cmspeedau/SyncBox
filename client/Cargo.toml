@@ -7,6 +7,7 @@ members = [
   "crates/sync",
   "crates/transport",
   "crates/agent",
+  "crates/mount",
   "apps/cli",
 ]
 
@@ -28,6 +29,7 @@ syncbox-sync = { path = "crates/sync" }
 syncbox-transport = { path = "crates/transport" }
 syncbox-vault = { path = "crates/vault" }
 syncbox-agent = { path = "crates/agent" }
+syncbox-mount = { path = "crates/mount" }
 
 # External
 anyhow = "1"
