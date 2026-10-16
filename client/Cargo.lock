@@ -984,6 +984,9 @@ version = "0.1.0"
 dependencies = [
  "syncbox-crypto",
  "syncbox-index",
+ "syncbox-sync",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
