@@ -49,12 +49,17 @@ enum Command {
         #[command(subcommand)]
         command: SyncCommand,
     },
-    /// Mount a vault read-only via FUSE (needs the `mount` feature).
+    /// Mount a vault via FUSE, read-only unless `--writable` (needs the `mount` feature).
     Mount {
         /// Directory holding `vault.json`, its `index.db`, and local ciphertext blobs.
         vault: PathBuf,
         /// Existing directory to mount the vault on.
         mountpoint: PathBuf,
+        /// Allow create/write/rename/unlink through the mount. Each write seals into
+        /// the vault and local store and marks its index record dirty, for the next
+        /// sync to push; nothing on disk is ever plaintext.
+        #[arg(long)]
+        writable: bool,
         /// Where local ciphertext blobs live; defaults to `<vault>/blobs`.
         #[arg(long)]
         store: Option<PathBuf>,
@@ -158,6 +163,7 @@ fn main() -> Result<()> {
         Command::Mount {
             vault,
             mountpoint,
+            writable,
             store,
             server,
             vault_id,
@@ -165,6 +171,7 @@ fn main() -> Result<()> {
         } => mount_cmd(
             &vault,
             &mountpoint,
+            writable,
             store,
             server.as_deref(),
             vault_id.as_deref(),
@@ -300,18 +307,20 @@ fn status() -> Result<()> {
     Ok(())
 }
 
-/// Mounts the vault read-only, or — when no FUSE driver is available — falls back to
-/// syncing `mountpoint` as a plaintext folder against `server`.
+/// Mounts the vault (read-only, or writable with `writable`), or — when no FUSE
+/// driver is available — falls back to syncing `mountpoint` as a plaintext folder
+/// against `server`.
 #[cfg(feature = "mount")]
 fn mount_cmd(
     vault_dir: &Path,
     mountpoint: &Path,
+    writable: bool,
     store: Option<PathBuf>,
     server: Option<&str>,
     vault_id: Option<&str>,
     password: &str,
 ) -> Result<()> {
-    match try_mount(vault_dir, mountpoint, store, password) {
+    match try_mount(vault_dir, mountpoint, writable, store, password) {
         Ok(()) => {
             println!("unmounted.");
             Ok(())
@@ -332,12 +341,14 @@ fn mount_cmd(
     }
 }
 
-/// Builds the read-only FUSE view from the vault header, its index, and its local
-/// ciphertext blobs, and mounts it (blocking until unmounted).
+/// Builds the FUSE view from the vault header, its index, and its local ciphertext
+/// blobs, and mounts it (blocking until unmounted). Read-only unless `writable`, in
+/// which case it takes the live index and store so edits seal back through them.
 #[cfg(feature = "mount")]
 fn try_mount(
     vault_dir: &Path,
     mountpoint: &Path,
+    writable: bool,
     store: Option<PathBuf>,
     password: &str,
 ) -> Result<()> {
@@ -347,29 +358,44 @@ fn try_mount(
     let index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
     let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
-    // The read path derives everything from the index and the local store; a server
+    // The mount derives everything from the index and the local store; a server
     // vault id and a plaintext root are not consulted, so they are placeholders here.
     let vault = Vault::new(keys, String::new(), vault_dir)?;
     let store = syncbox_mount::DiskStore::new(store_dir);
-    let fs = syncbox_mount::Fs::from_index(&index);
 
+    let mode = if writable { "writable" } else { "read-only" };
     println!(
-        "mounting {} read-only at {} (Ctrl-C, or `fusermount3 -u {}`, to unmount)",
+        "mounting {} {mode} at {} (Ctrl-C, or `fusermount3 -u {}`, to unmount)",
         vault_dir.display(),
         mountpoint.display(),
         mountpoint.display()
     );
-    let options = [
-        fuser::MountOption::RO,
-        fuser::MountOption::FSName("syncbox".to_owned()),
-        fuser::MountOption::DefaultPermissions,
-    ];
-    fuser::mount2(
-        crate::fusefs::ReadonlyFS::new(fs, vault, store),
-        mountpoint,
-        &options,
-    )
-    .map_err(|e| anyhow::anyhow!("mount failed: {e}"))
+
+    if writable {
+        let options = [
+            fuser::MountOption::FSName("syncbox".to_owned()),
+            fuser::MountOption::DefaultPermissions,
+        ];
+        fuser::mount2(
+            crate::fusefs::WritableFS::new(index, vault, store),
+            mountpoint,
+            &options,
+        )
+        .map_err(|e| anyhow::anyhow!("mount failed: {e}"))
+    } else {
+        let fs = syncbox_mount::Fs::from_index(&index);
+        let options = [
+            fuser::MountOption::RO,
+            fuser::MountOption::FSName("syncbox".to_owned()),
+            fuser::MountOption::DefaultPermissions,
+        ];
+        fuser::mount2(
+            crate::fusefs::ReadonlyFS::new(fs, vault, store),
+            mountpoint,
+            &options,
+        )
+        .map_err(|e| anyhow::anyhow!("mount failed: {e}"))
+    }
 }
 
 /// Without the `mount` feature, `syncbox mount` explains how to build it in.
@@ -377,6 +403,7 @@ fn try_mount(
 fn mount_cmd(
     _vault_dir: &Path,
     _mountpoint: &Path,
+    _writable: bool,
     _store: Option<PathBuf>,
     _server: Option<&str>,
     _vault_id: Option<&str>,

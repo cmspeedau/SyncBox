@@ -196,7 +196,7 @@ nothing across vaults and nothing about what a chunk says. File sizes and modifi
 times are also plaintext, because the client cannot be told how much to fetch without
 them.
 
-## Mounting a vault (read-only)
+## Mounting a vault
 
 A vault can be exposed as a filesystem without ever writing plaintext to disk. The
 mount's **namespace** is the local index (which stores plaintext paths — never sent to
@@ -221,6 +221,15 @@ that only the server has is readable there too. `syncbox mount <vault> <dir>` sh
 the tree read-only over FUSE; the `fuser` adapter is the CLI's optional `mount` feature,
 so the workspace build needs no libfuse. When no FUSE driver is present the command
 falls back to syncing `dir` as an ordinary plaintext folder.
+
+With `syncbox mount --writable <vault> <dir>`, `create`/`write`/`rename`/`unlink` pass
+through the same seams as a local write: each close seals the whole file through the
+vault, stores its chunks and manifest, and marks the index record **dirty** for the next
+sync — nothing on disk is ever plaintext. Writes are buffered per open handle and sealed
+once on close; a `mkdir` is held in memory until a file lands beneath it (matching the
+"directory = a file's prefix" rule). The write is local until it syncs: pushing these
+dirty, store-backed records needs the folderless push that follows this step, so the
+writable mount is an on-device edit surface in the meantime.
 
 ## Test vectors
 
