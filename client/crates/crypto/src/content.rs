@@ -7,11 +7,20 @@
 //! keep the chunks on either side of the insertion identical, which is what makes
 //! delta sync cheap.
 //!
-//! Each chunk is encrypted independently with AES-256-GCM, using a key and nonce
-//! derived from the file key and the chunk's position, so no chunk can be moved
-//! or reordered without detection. The chunk id is an HMAC of the *plaintext*,
-//! which is what lets two clients agree on which chunks already exist without
-//! either revealing content.
+//! A chunk's key and nonce are derived from its **content** — specifically from
+//! the same HMAC digest that forms its id — under the vault's `primaryMasterKey`.
+//! Content-derived keying is what makes deduplication and delta sync work against
+//! the server, which stores each chunk id once and assumes the bytes behind an id
+//! never change: the same plaintext chunk is therefore the same ciphertext bytes
+//! wherever it appears, so an unchanged chunk is already on the server and is
+//! never re-uploaded.
+//!
+//! Because position no longer keys a chunk, reordering and cross-file replay are
+//! not detected here; they are caught one level up, by the authenticated manifest
+//! ([`crate::file`]), which is keyed per file and lists the chunk ids in order.
+//! The chunk id itself is the HMAC of the plaintext, so the AES-GCM tag binds the
+//! stored bytes to the id: a blob that does not decrypt to the chunk its id names
+//! fails the tag check.
 //!
 //! The tradeoff is stated in `docs/format.md`: deterministic chunk ids let the
 //! server notice that two chunks inside one vault are identical. It learns
@@ -78,45 +87,49 @@ impl std::fmt::Display for ChunkId {
 /// # Errors
 ///
 /// Propagates [`CryptoError::Backend`] from HMAC.
-pub fn chunk_id(vault_key: &MasterKey, plaintext: &[u8]) -> Result<ChunkId> {
+pub fn chunk_id(hmac_key: &MasterKey, plaintext: &[u8]) -> Result<ChunkId> {
     Ok(ChunkId(base32_encode(&hmac_sha256(
-        vault_key.as_bytes(),
+        hmac_key.as_bytes(),
         plaintext,
     )?)))
 }
 
-/// Derives a chunk's AES-GCM key and nonce from the file key and its position, so
-/// no two positions of the same file share a nonce and no chunk can be reordered
-/// or moved without detection.
+/// Derives an AES-GCM key and nonce from an input keying material and a
+/// domain-separating `info` string.
 ///
 /// ```text
-/// chunkKey[i] = HKDF(fileKey, "chunk" || uint64be(i))   // 32 bytes
-/// nonce[i]    = HKDF(fileKey, "nonce" || uint64be(i))   // 12 bytes
+/// key   = HKDF(ikm, "chunk" || info)   // 32 bytes
+/// nonce = HKDF(ikm, "nonce" || info)   // 12 bytes
 /// ```
-fn chunk_keys(file_key: &[u8], index: u64) -> Result<(Vec<u8>, [u8; NONCE_LEN])> {
-    let mut position = [0u8; 8];
-    position.copy_from_slice(&index.to_be_bytes());
-
+///
+/// For file chunks `info` is the chunk id, so keying is content-derived. Keeping
+/// the derivation in one place is what guarantees the encrypt and decrypt paths
+/// agree byte for byte.
+fn chunk_keys(ikm: &[u8], info: &[u8]) -> Result<(Vec<u8>, [u8; NONCE_LEN])> {
     let mut key_info = b"chunk".to_vec();
-    key_info.extend_from_slice(&position);
-    let key = hkdf_sha256(file_key, &key_info, 32)?;
+    key_info.extend_from_slice(info);
+    let key = hkdf_sha256(ikm, &key_info, 32)?;
 
     let mut nonce_info = b"nonce".to_vec();
-    nonce_info.extend_from_slice(&position);
-    let derived = hkdf_sha256(file_key, &nonce_info, NONCE_LEN)?;
+    nonce_info.extend_from_slice(info);
+    let derived = hkdf_sha256(ikm, &nonce_info, NONCE_LEN)?;
 
     let mut nonce = [0u8; NONCE_LEN];
     nonce.copy_from_slice(&derived);
     Ok((key, nonce))
 }
 
-/// Encrypts one chunk, returning `nonce || ciphertext || tag` in the stored order.
+/// Encrypts one chunk under `ikm` labelled by `info`, returning `nonce ||
+/// ciphertext || tag` in the stored order.
+///
+/// This is the AES-GCM primitive the file format is built on; [`seal_chunk`] is
+/// the usual caller, and passes the chunk id as `info` so keying is content-derived.
 ///
 /// # Errors
 ///
 /// Returns [`CryptoError::Backend`] if AES-GCM rejects the derived key length.
-pub fn encrypt_chunk(file_key: &[u8], index: u64, plaintext: &[u8]) -> Result<Vec<u8>> {
-    let (key, nonce) = chunk_keys(file_key, index)?;
+pub fn encrypt_chunk(ikm: &[u8], info: &[u8], plaintext: &[u8]) -> Result<Vec<u8>> {
+    let (key, nonce) = chunk_keys(ikm, info)?;
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|_| CryptoError::Backend("AES-GCM key length"))?;
 
@@ -130,7 +143,7 @@ pub fn encrypt_chunk(file_key: &[u8], index: u64, plaintext: &[u8]) -> Result<Ve
     Ok(stored)
 }
 
-/// Decrypts one chunk previously produced by [`encrypt_chunk`].
+/// Decrypts one chunk produced by [`encrypt_chunk`] with the same `ikm` and `info`.
 ///
 /// The nonce is taken from the stored bytes rather than re-derived, so it is the
 /// authoritative one even though derivation would reproduce the same value.
@@ -139,7 +152,7 @@ pub fn encrypt_chunk(file_key: &[u8], index: u64, plaintext: &[u8]) -> Result<Ve
 ///
 /// Returns [`CryptoError::InvalidInput`] if the stored blob is too short to hold a
 /// nonce and a tag, and [`CryptoError::KeyAuth`] when the tag does not verify.
-pub fn decrypt_chunk(file_key: &[u8], index: u64, stored: &[u8]) -> Result<Vec<u8>> {
+pub fn decrypt_chunk(ikm: &[u8], info: &[u8], stored: &[u8]) -> Result<Vec<u8>> {
     if stored.len() < NONCE_LEN + TAG_LEN {
         return Err(CryptoError::InvalidInput(
             "stored chunk shorter than nonce plus tag",
@@ -147,9 +160,7 @@ pub fn decrypt_chunk(file_key: &[u8], index: u64, stored: &[u8]) -> Result<Vec<u
     }
     let (nonce, ciphertext) = stored.split_at(NONCE_LEN);
 
-    // The position still selects the key, so a chunk moved to another index fails
-    // to authenticate even though its stored nonce is intact.
-    let (key, _derived_nonce) = chunk_keys(file_key, index)?;
+    let (key, _derived_nonce) = chunk_keys(ikm, info)?;
     let cipher =
         Aes256Gcm::new_from_slice(&key).map_err(|_| CryptoError::Backend("AES-GCM key length"))?;
 
@@ -158,9 +169,47 @@ pub fn decrypt_chunk(file_key: &[u8], index: u64, stored: &[u8]) -> Result<Vec<u
         .map_err(|_| CryptoError::KeyAuth)
 }
 
+/// Seals one plaintext chunk, returning its id and its stored bytes together.
+///
+/// The id is `chunk_id(hmac_key, plaintext)` and is used both as the server blob
+/// key and as the `info` that derives the encryption key, so the ciphertext is a
+/// function of the content alone: identical chunks are byte-identical everywhere.
+///
+/// # Errors
+///
+/// Propagates HMAC and AES-GCM errors from [`chunk_id`] and [`encrypt_chunk`].
+pub fn seal_chunk(
+    primary_key: &MasterKey,
+    hmac_key: &MasterKey,
+    plaintext: &[u8],
+) -> Result<(ChunkId, Vec<u8>)> {
+    let id = chunk_id(hmac_key, plaintext)?;
+    let stored = encrypt_chunk(primary_key.as_bytes(), id.as_str().as_bytes(), plaintext)?;
+    Ok((id, stored))
+}
+
+/// Opens one stored chunk by the id it claims, under `primary_key`.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::InvalidInput`] for a too-short blob and
+/// [`CryptoError::KeyAuth`] when the bytes do not authenticate to this id — which
+/// covers both tampering and a blob swapped in for a different chunk.
+pub fn open_chunk(primary_key: &MasterKey, id: &ChunkId, stored: &[u8]) -> Result<Vec<u8>> {
+    decrypt_chunk(primary_key.as_bytes(), id.as_str().as_bytes(), stored)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::MasterKey;
+
+    fn primary() -> MasterKey {
+        MasterKey::from_bytes(&[0x20; 32]).unwrap()
+    }
+    fn hmac() -> MasterKey {
+        MasterKey::from_bytes(&[0x00; 32]).unwrap()
+    }
 
     #[test]
     fn chunk_sizes_are_ordered() {
@@ -185,8 +234,8 @@ mod tests {
 
     #[test]
     fn chunk_id_is_deterministic_key_dependent_and_uppercase() {
-        let key = crate::keys::MasterKey::from_bytes(&[1; 32]).unwrap();
-        let other = crate::keys::MasterKey::from_bytes(&[2; 32]).unwrap();
+        let key = MasterKey::from_bytes(&[1; 32]).unwrap();
+        let other = MasterKey::from_bytes(&[2; 32]).unwrap();
         let id = chunk_id(&key, b"hello").unwrap();
         assert_eq!(id.as_str(), chunk_id(&key, b"hello").unwrap().as_str());
         assert_eq!(id.as_str(), id.as_str().to_ascii_uppercase());
@@ -198,59 +247,64 @@ mod tests {
 
     #[test]
     fn chunks_round_trip() {
-        let file_key = [0x11u8; 32];
-        for index in [0u64, 1, 7, u64::MAX] {
-            let stored = encrypt_chunk(&file_key, index, b"hello world").unwrap();
-            // The stored blob is exactly the nonce, the plaintext, and the tag.
-            assert_eq!(stored.len(), NONCE_LEN + b"hello world".len() + TAG_LEN);
-            assert_eq!(
-                decrypt_chunk(&file_key, index, &stored).unwrap(),
-                b"hello world"
-            );
+        for plaintext in [b"hello world".as_slice(), b"", b"a", &[0u8; 100][..]] {
+            let (id, stored) = seal_chunk(&primary(), &hmac(), plaintext).unwrap();
+            assert_eq!(stored.len(), NONCE_LEN + plaintext.len() + TAG_LEN);
+            assert_eq!(open_chunk(&primary(), &id, &stored).unwrap(), plaintext);
         }
     }
 
     #[test]
-    fn encryption_is_position_bound() {
-        let file_key = [0x22u8; 32];
-        let stored = encrypt_chunk(&file_key, 3, b"payload").unwrap();
-        // A chunk replayed at a different position must not authenticate, even
-        // though its stored nonce is untouched, because the position selects key.
+    fn encryption_is_content_bound_not_position_bound() {
+        // The whole point of content-derived keying: the same plaintext seals to
+        // the same bytes every time, so an unchanged chunk is already on the server.
+        let a = seal_chunk(&primary(), &hmac(), b"duplicate me").unwrap();
+        let b = seal_chunk(&primary(), &hmac(), b"duplicate me").unwrap();
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+    }
+
+    #[test]
+    fn a_blob_only_opens_under_its_own_id() {
+        // Content-derived keying means keying is by id: bytes sealed for one id do
+        // not open under another, which is how a swapped-in chunk is rejected.
+        let (id, stored) = seal_chunk(&primary(), &hmac(), b"payload").unwrap();
+        assert_eq!(open_chunk(&primary(), &id, &stored).unwrap(), b"payload");
+        let other = chunk_id(&hmac(), b"different payload").unwrap();
         assert!(matches!(
-            decrypt_chunk(&file_key, 4, &stored),
+            open_chunk(&primary(), &other, &stored),
             Err(CryptoError::KeyAuth)
         ));
     }
 
     #[test]
+    fn the_same_chunk_in_two_vaults_differs() {
+        // Different hmac master keys give different ids, so nothing is shared
+        // across vaults even for identical plaintext.
+        let other_vault = MasterKey::from_bytes(&[0xFF; 32]).unwrap();
+        let here = seal_chunk(&primary(), &hmac(), b"same bytes").unwrap();
+        let there = seal_chunk(&primary(), &other_vault, b"same bytes").unwrap();
+        assert_ne!(here.0, there.0);
+        assert_ne!(here.1, there.1);
+    }
+
+    #[test]
     fn tampered_chunk_fails_authentication() {
-        let file_key = [0x33u8; 32];
-        let mut stored = encrypt_chunk(&file_key, 0, b"payload").unwrap();
+        let (id, mut stored) = seal_chunk(&primary(), &hmac(), b"payload").unwrap();
         let last = stored.len() - 1;
         stored[last] ^= 0x01; // flip a bit of the tag
         assert!(matches!(
-            decrypt_chunk(&file_key, 0, &stored),
+            open_chunk(&primary(), &id, &stored),
             Err(CryptoError::KeyAuth)
         ));
     }
 
     #[test]
     fn truncated_chunk_is_input_invalid_not_a_key_failure() {
+        let id = ChunkId::from_base32("ABCD");
         assert!(matches!(
-            decrypt_chunk(&[0; 32], 0, b"too short"),
+            open_chunk(&primary(), &id, b"too short"),
             Err(CryptoError::InvalidInput(_))
         ));
-    }
-
-    #[test]
-    fn encrypting_the_same_position_twice_gives_identical_bytes() {
-        // Chunk keys and nonces are derived, not random, so encryption is
-        // deterministic. That is what lets the client skip re-encrypting an
-        // unchanged chunk; a random nonce here would silently break that.
-        let file_key = [0x44u8; 32];
-        assert_eq!(
-            encrypt_chunk(&file_key, 5, b"same").unwrap(),
-            encrypt_chunk(&file_key, 5, b"same").unwrap()
-        );
     }
 }

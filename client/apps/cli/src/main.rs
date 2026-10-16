@@ -4,16 +4,28 @@
 //! drives the end-to-end tests that would otherwise need a desktop build, and it
 //! gives someone running a vault on a server a way in that is not a GUI.
 //!
-//! The subcommand surface is the one the desktop app will call into, so it is
-//! settled now even though most of it reports which milestone implements it.
+//! The subcommand surface is the one the desktop app will call into. `vault create`
+//! and `vault unlock` do the password/Argon2id/key-wrap ceremony; `sync once`
+//! unlocks a vault, opens the local SQLite index, and runs one full push/pull pass
+//! against a live server. Watch mode (`sync watch`) is a loop over `sync once` and
+//! is the one command still open in this milestone.
 
-use std::path::PathBuf;
+mod http;
 
-use anyhow::{bail, Result};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use syncbox_crypto::content::{CHUNK_MAX, CHUNK_MIN, CHUNK_TARGET};
 use syncbox_crypto::kdf::Params;
+use syncbox_crypto::names::DirId;
+use syncbox_index::SqliteIndex;
+use syncbox_sync::{Engine, SyncReport, Vault};
+use syncbox_transport::Client;
 use syncbox_vault::{VaultConfig, CONFIG_FILE_NAME, CURRENT_VERSION};
+
+use crate::http::UreqHttp;
 
 #[derive(Parser)]
 #[command(
@@ -48,18 +60,43 @@ enum VaultCommand {
     Create {
         /// Directory to turn into a vault.
         path: PathBuf,
+        /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
     },
-    /// Unlock a vault and keep it open for a mount.
+    /// Unlock a vault, checking the password and printing its root id.
     Unlock {
         /// Vault directory.
         path: PathBuf,
+        /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 enum SyncCommand {
     /// Sync once, then exit.
-    Once,
+    Once {
+        /// Server origin, e.g. `https://sync.example`.
+        #[arg(long)]
+        server: String,
+        /// The server's id for the vault to sync into.
+        #[arg(long)]
+        vault_id: String,
+        /// Directory holding `vault.json` (the encrypted keys).
+        #[arg(long)]
+        vault: PathBuf,
+        /// The plaintext folder to keep in sync with the vault.
+        #[arg(long)]
+        folder: PathBuf,
+        /// Where the local SQLite index lives; defaults to `<vault>/index.db`.
+        #[arg(long)]
+        index: Option<PathBuf>,
+        /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
     /// Watch the vault and sync whenever it changes.
     Watch,
 }
@@ -67,18 +104,113 @@ enum SyncCommand {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Vault {
-            command: VaultCommand::Create { path },
-        } => unimplemented_yet("vault creation", "M1", &path.display().to_string()),
+            command: VaultCommand::Create { path, password },
+        } => create(&path, &resolve_password(password)?),
         Command::Vault {
-            command: VaultCommand::Unlock { path },
-        } => unimplemented_yet("vault unlock", "M1", &path.display().to_string()),
+            command: VaultCommand::Unlock { path, password },
+        } => unlock(&path, &resolve_password(password)?),
         Command::Sync {
-            command: SyncCommand::Once,
-        } => unimplemented_yet("a sync pass", "M3", "one pass"),
+            command:
+                SyncCommand::Once {
+                    server,
+                    vault_id,
+                    vault,
+                    folder,
+                    index,
+                    password,
+                },
+        } => sync_once(
+            &server,
+            &vault_id,
+            &vault,
+            &folder,
+            index,
+            &resolve_password(password)?,
+        ),
         Command::Sync {
             command: SyncCommand::Watch,
-        } => unimplemented_yet("the watcher", "M3", "watch mode"),
+        } => bail!("watch mode is not implemented yet (run `sync once` in a loop)"),
         Command::Status => status(),
+    }
+}
+
+/// Reads a password from a flag, then `$SYNCBOX_PASSWORD`, refusing to prompt so
+/// the CLI stays scriptable. A GUI prompts or uses the OS keychain (M4).
+fn resolve_password(explicit: Option<String>) -> Result<String> {
+    if let Some(password) = explicit {
+        return Ok(password);
+    }
+    std::env::var("SYNCBOX_PASSWORD")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .context("no password: pass --password or set $SYNCBOX_PASSWORD")
+}
+
+fn create(path: &Path, password: &str) -> Result<()> {
+    let keys = syncbox_vault::create(path, password, &Params::default())
+        .context("vault creation failed")?;
+    let root = DirId::root(&keys.hmac).context("could not derive the root directory id")?;
+    println!("created a vault at {}", path.display());
+    println!("root directory id  : {root}");
+    println!(
+        "header file        : {}",
+        path.join(CONFIG_FILE_NAME).display()
+    );
+    Ok(())
+}
+
+fn unlock(path: &Path, password: &str) -> Result<()> {
+    let keys = syncbox_vault::unlock(path, password)
+        .context("vault unlock failed (wrong password, or not a vault?)")?;
+    let root = DirId::root(&keys.hmac).context("could not derive the root directory id")?;
+    println!("vault unlocked; root directory id {root}");
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_once(
+    server: &str,
+    vault_id: &str,
+    vault_dir: &Path,
+    folder: &Path,
+    index: Option<PathBuf>,
+    password: &str,
+) -> Result<()> {
+    let keys =
+        syncbox_vault::unlock(vault_dir, password).context("could not unlock the vault to sync")?;
+    let index_path = index.unwrap_or_else(|| vault_dir.join("index.db"));
+    let index = SqliteIndex::open(&index_path)
+        .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
+
+    let vault = Vault::new(keys, vault_id.to_owned(), folder.to_path_buf())?;
+    let mut client = Client::new(server, UreqHttp::new(server));
+    client
+        .token(password)
+        .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
+
+    let mut engine = Engine::new(index, vault);
+    let report = engine
+        .sync_once(&mut client, &today())
+        .context("sync pass failed")?;
+    print_report(&report);
+    Ok(())
+}
+
+fn print_report(report: &SyncReport) {
+    if report.is_quiet() {
+        println!("up to date");
+        return;
+    }
+    println!(
+        "uploaded {}, downloaded {}, conflicts {}, deleted {}, skipped {}",
+        report.uploaded, report.downloaded, report.conflicts, report.deleted, report.skipped
+    );
+    println!(
+        "sent {} new chunk(s) covering {} plaintext byte(s)",
+        report.chunks_uploaded, report.bytes_uploaded
+    );
+    if report.skipped > 0 {
+        println!("note: skipped files live in directories this client has not created yet");
     }
 }
 
@@ -117,14 +249,43 @@ fn status() -> Result<()> {
             "present"
         }
     );
-    println!("vault creation   : not implemented until M1");
+    println!("capabilities     : create, unlock, sync once");
     Ok(())
 }
 
-/// Reports the milestone that supplies a feature, quoting what was asked for so a
-/// script's output stays useful.
-fn unimplemented_yet(feature: &str, milestone: &str, target: &str) -> Result<()> {
-    bail!("{feature} is not implemented until {milestone} (asked for: {target})")
+/// Today's date as `YYYY-MM-DD`, used to label conflicted copies. The clock lives
+/// here, at the edge, so everything below stays deterministic.
+fn today() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Days since the Unix epoch to a proleptic Gregorian `(year, month, day)`, after
+/// Howard Hinnant's `civil_from_days`. Avoids a date crate for one line of output.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let shifted = if z >= 0 { z } else { z - 146_096 };
+    let era = shifted / 146_097;
+    let day_of_era = z - era * 146_097; // [0, 146096]
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153; // [0, 11], March-based
+    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    } as u32;
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, day)
 }
 
 #[cfg(test)]
@@ -140,12 +301,23 @@ mod tests {
     }
 
     #[test]
-    fn an_unimplemented_command_names_its_milestone() {
-        let err =
-            unimplemented_yet("vault creation", "M1", "/tmp/v").expect_err("must fail until M1");
-        assert_eq!(
-            err.to_string(),
-            "vault creation is not implemented until M1 (asked for: /tmp/v)"
-        );
+    fn resolve_password_prefers_the_flag_then_the_environment() {
+        assert_eq!(resolve_password(Some("hi".into())).unwrap(), "hi");
+    }
+
+    #[test]
+    fn civil_from_days_maps_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(-1), (1969, 12, 31));
+        assert_eq!(civil_from_days(10_957), (2000, 1, 1));
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29), "leap day");
+        assert_eq!(civil_from_days(19_783), (2024, 3, 1));
+    }
+
+    #[test]
+    fn today_is_a_well_formed_date() {
+        let date = today();
+        assert_eq!(date.len(), 10, "{date}");
+        assert!(date.contains('-'));
     }
 }

@@ -5,10 +5,6 @@ use thiserror::Error;
 /// Everything that can go wrong in this crate.
 #[derive(Debug, Error)]
 pub enum TransportError {
-    /// The operation is part of the intended API but is not implemented yet.
-    #[error("{0} is not implemented yet")]
-    Unimplemented(&'static str),
-
     /// The server answered with a status we cannot act on.
     #[error("server returned {status}")]
     Status {
@@ -28,6 +24,12 @@ pub enum TransportError {
     /// A response body was not the shape the protocol promises.
     #[error("malformed response: {0}")]
     Malformed(String),
+
+    /// The request never became a response: a DNS failure, a refused connection,
+    /// a TLS error, or a timeout. Distinct from an HTTP status, which the server
+    /// did send.
+    #[error("transport failure: {0}")]
+    Transport(String),
 
     /// A body did not fit the size the caller was prepared for.
     #[error("response of {actual} bytes exceeds the {limit} byte limit")]

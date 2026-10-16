@@ -29,12 +29,6 @@ impl MemoryIndex {
         Self::default()
     }
 
-    /// How many times a chunk is referenced.
-    #[must_use]
-    pub fn chunk_refs(&self, id: &ChunkId) -> u32 {
-        self.chunks.get(id).map_or(0, |record| record.refs)
-    }
-
     fn retain(&mut self, id: &ChunkId, size: u64) {
         let record = self
             .chunks
@@ -95,6 +89,10 @@ impl Index for MemoryIndex {
 
     fn release_chunk(&mut self, id: &ChunkId) {
         self.release(id);
+    }
+
+    fn chunk_refs(&self, id: &ChunkId) -> u32 {
+        self.chunks.get(id).map_or(0, |record| record.refs)
     }
 
     fn unreferenced_chunks(&self) -> Vec<ChunkId> {

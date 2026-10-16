@@ -5,10 +5,6 @@ use thiserror::Error;
 /// Everything that can go wrong in this crate.
 #[derive(Debug, Error)]
 pub enum SyncError {
-    /// The operation is part of the intended API but is not implemented yet.
-    #[error("{0} is not implemented yet")]
-    Unimplemented(&'static str),
-
     /// A cryptographic operation failed.
     #[error(transparent)]
     Crypto(#[from] syncbox_crypto::CryptoError),
@@ -16,6 +12,14 @@ pub enum SyncError {
     /// The filesystem refused us.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// Talking to the server failed.
+    #[error(transparent)]
+    Transport(#[from] syncbox_transport::TransportError),
+
+    /// Decrypted content did not match what the metadata promised.
+    #[error("integrity check failed: {0}")]
+    Integrity(&'static str),
 
     /// A chunk was larger than the format allows, which means the splitter and
     /// the format disagree.

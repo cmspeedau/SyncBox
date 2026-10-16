@@ -64,27 +64,35 @@ cd server && go run ./cmd/syncboxd serve
 
 ## Status
 
-Milestone **M2 — durable server** is in place: the Go server runs on a SQLite
-metadata store and a content-addressed chunk store on disk, takes self-contained
-snapshots with GFS retention on a schedule or on demand, notifies clients of changes,
-and ships as a static multi-stage `scratch` image. An offline `syncboxd restore`
-produces a directory the server starts straight from.
+Milestones **M1–M3** are in place. M1's `crypto` crate implements the format in
+`docs/format.md` — content-defined (FastCDC) chunking, content-derived chunk keys, and
+an authenticated per-file manifest — with published vectors pinned by tests. M2's Go
+server runs on a SQLite metadata store and a content-addressed chunk store, snapshots
+with GFS retention, and ships as a static `scratch` image.
 
-Still ahead: the crypto crate and vault format (M1 — the reference format is
-specified in `docs/format.md`), the client sync engine (M3), the desktop app (M4), the
-mount (M5), and packaging (M6). The milestones below track the rest.
+M3's `sync` engine turns that into a working client: it reads the vault's revision log,
+pushes each changed file uploading **only the chunks an edit did not touch** (the delta
+the content-defined split buys), reconciles a both-sides edit into a conflicted copy so
+neither client loses work, and mirrors deletes as tombstones. The durable `index` crate
+(a SQLite-backed store) remembers each file's chunks and revision so a restart resumes
+without a rescan. The headless `syncbox` CLI drives a folder against a live server end
+to end — `syncbox vault create`, then `syncbox sync once` — and has been run against
+both an in-process fake server and the real Go server.
 
-| Milestone | Scope |
-| --- | --- |
-| M0 | Scaffolding: workspaces, compose, CI |
-| M1 | Crypto crate + vault format + test vectors |
-| M2 | Server core + snapshot engine + Docker image |
-| M3 | Client core + CLI sync harness |
-| M4 | Tauri desktop app |
-| M5 | Mount: FUSE / macFUSE / WinFsp |
-| M6 | Packaging: AppImage, .dmg, .msi, signing |
-| M7 | Hardening: conflicts, GC, verification, restore drills |
-| M8 | Alternate backup targets: S3 object-lock, restic |
+Still ahead: the desktop app (M4), the mount (M5), and packaging (M6). The milestones
+below track the rest.
+
+| Milestone | Scope | Done |
+| --- | --- | --- |
+| M0 | Scaffolding: workspaces, compose, CI | ✅ |
+| M1 | Crypto crate + vault format + test vectors | ✅ |
+| M2 | Server core + snapshot engine + Docker image | ✅ |
+| M3 | Client core + CLI sync harness | ✅ |
+| M4 | Tauri desktop app |  |
+| M5 | Mount: FUSE / macFUSE / WinFsp |  |
+| M6 | Packaging: AppImage, .dmg, .msi, signing |  |
+| M7 | Hardening: conflicts, GC, verification, restore drills |  |
+| M8 | Alternate backup targets: S3 object-lock, restic |  |
 
 ## License
 

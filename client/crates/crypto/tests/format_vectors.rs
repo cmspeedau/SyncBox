@@ -2,7 +2,8 @@
 //! independent implementation must reproduce; if a change here alters one of them,
 //! it is a breaking format change and the document must move with it.
 
-use syncbox_crypto::content::{chunk_id, decrypt_chunk, encrypt_chunk};
+use syncbox_crypto::content::{chunk_id, open_chunk, seal_chunk};
+use syncbox_crypto::file::{encode_manifest, file_key, ChunkEntry, Manifest};
 use syncbox_crypto::kdf::{derive_kek, Algorithm, Params};
 use syncbox_crypto::keys::{MasterKey, MasterKeys};
 use syncbox_crypto::names::{decrypt_filename, encrypt_filename, DirId};
@@ -84,13 +85,55 @@ fn chunk_id_vector() {
 
 #[test]
 fn chunk_encryption_vector() {
-    let file_key = by_range(0x40);
-    let stored = encrypt_chunk(&file_key, 7, b"Syncbox").unwrap();
+    // Content-derived: key and nonce come from the primary master key and the
+    // chunk's own id, so the stored blob is a pure function of the content.
+    let (id, stored) = seal_chunk(&primary_key(), &hmac_key(), b"Syncbox").unwrap();
+    assert_eq!(
+        id.as_str(),
+        "XDFTTNGJ44MV0AYW06AFJP528XYNR5S60PVTYCRYSZZYSZ6DTP30"
+    );
     assert_eq!(
         hex(&stored),
-        "12c4f97bd3ec79ae338a9229808217294b3c33d9161ca32c41973a6aeeb511192193fc"
+        "3115ec4ba4640ede4b15a0674666b9edf3e5582bd37de795c493fffa029627e7706eeb"
     );
-    assert_eq!(decrypt_chunk(&file_key, 7, &stored).unwrap(), b"Syncbox");
+    assert_eq!(
+        open_chunk(&primary_key(), &id, &stored).unwrap(),
+        b"Syncbox"
+    );
+}
+
+#[test]
+fn file_key_and_manifest_vectors() {
+    // Rebuild the manifest exactly as `examples/vectors.rs` does: two chunks and
+    // their total plaintext size, encrypted under the file key for the root
+    // directory and the encrypted filename "meeting notes.txt".
+    let root = DirId::root(&hmac_key()).unwrap();
+    let cipher_name = encrypt_filename(&primary_key(), &root, "meeting notes.txt").unwrap();
+
+    let first = seal_chunk(&primary_key(), &hmac_key(), b"Syncbox").unwrap();
+    let second = seal_chunk(&primary_key(), &hmac_key(), b"hello world").unwrap();
+    let manifest = Manifest {
+        plaintext_size: (first.1.len() - 28 + second.1.len() - 28) as u64,
+        chunks: vec![
+            ChunkEntry {
+                id: first.0,
+                stored_len: first.1.len() as u32,
+            },
+            ChunkEntry {
+                id: second.0,
+                stored_len: second.1.len() as u32,
+            },
+        ],
+    };
+
+    assert_eq!(
+        hex(&file_key(&primary_key(), &root, &cipher_name).unwrap()),
+        "01bbcfa1fb3cf263496811353b48446669f7b70a2f71022f90f6b4dbea9f36ca"
+    );
+    assert_eq!(
+        hex(&encode_manifest(&primary_key(), &root, &cipher_name, &manifest).unwrap()),
+        "2ba4f471adb5f9fa5fc8890d2a8e076aae8f1258b1a9356d8b8a1ed70d954c5bc8c3d591e74c4bdd2f918f86dac2809cd4067c7c2bd0ebbef1949bac6bd2503c362d3388d3eed42dc3663f5788d208754fd4f86de2497884d0b01e5f7ee1847497f171bb601d75efbcf0d55a82dfc8df61da04308555ff2da5aae9fde3456dab659e15a1c18398c8fbfcf31a62ea240b628a4af5f21faec858f7a8d5cf70d8dc4400cb554ee66e31893a27c09b312468848436fa40a78d022110490e9e44f9be7293a393ba16"
+    );
 }
 
 #[test]

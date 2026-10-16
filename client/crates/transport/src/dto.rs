@@ -10,6 +10,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Deserialises a JSON field that may be `null` as an empty `String`.
+///
+/// The Go server marshals a nil `[]byte` (a tombstone's absent manifest) as
+/// `null`; this reads `null`, a string, or an absent field alike into `""`.
+fn null_to_empty_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// `POST /api/v1/auth/token`
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenRequest {
@@ -38,6 +49,12 @@ pub struct Revision {
     /// The file's encrypted name, without its `.c9r` suffix.
     pub cipher_name: String,
     /// Encrypted chunk list. Opaque to the server.
+    ///
+    /// A tombstone carries no manifest, and the Go server stores that as a nil
+    /// `[]byte`, which `encoding/json` writes as `null` (not `""`). Deserialising
+    /// it as an empty string keeps one JSON shape (`null` == `""` == absent) so a
+    /// delete parses the same way whether it came from Go or a test fixture.
+    #[serde(default, deserialize_with = "null_to_empty_string")]
     pub manifest: String,
     /// Plaintext size of the file, which the client needs to allocate and cannot
     /// learn from the ciphertext.
@@ -161,5 +178,21 @@ mod tests {
         let json = serde_json::to_string(&page).expect("serializable");
         let back: RevisionPage = serde_json::from_str(&json).expect("deserializable");
         assert_eq!(back, page);
+    }
+
+    #[test]
+    fn a_null_manifest_from_the_server_is_read_as_empty() {
+        // The Go server writes a tombstone's nil []byte manifest as JSON null;
+        // this is the tripwire that the Rust client still parses it. Regression
+        // caught against the real server during the M3 end-to-end smoke test.
+        let json = r#"{"revisions":[{
+            "vault_id":"v","revision":4,"parent":3,
+            "dir_id":"AA","cipher_name":"BB","manifest":null,
+            "size":0,"modified_unix":1,"deleted":true,"stored_at":"2026-01-01T00:00:00Z"
+        }],"upto":4}"#;
+        let page: RevisionPage = serde_json::from_str(json).expect("tombstone parses");
+        assert_eq!(page.revisions[0].manifest, "", "null became empty");
+        assert!(page.revisions[0].deleted);
+        assert_eq!(page.upto, 4);
     }
 }
