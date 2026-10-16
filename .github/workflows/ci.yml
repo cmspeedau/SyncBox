@@ -92,7 +92,7 @@ jobs:
     # none of which exist on the self-hosted box. Bundles are uploaded as build
     # artifacts only — signing and publishing stay deliberate (and macOS/Windows
     # packaging needs their own runners and identities, deferred).
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     needs: rust
     defaults:
       run:
