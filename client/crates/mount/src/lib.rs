@@ -18,6 +18,9 @@
 //! tests, a [`DiskStore`] folder of ciphertext on disk, the server on demand — is the
 //! store's business, not the filesystem's.
 //!
+//! Writing mirrors it through [`FsMut`]: a change is [`Vault::seal`]ed, handed to a
+//! [`WriteStore`], and recorded as a dirty [`FileEntry`] the sync loop later pushes.
+//!
 //! [`fuser`]: https://docs.rs/fuser
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,8 +29,10 @@ use syncbox_index::{FileEntry, Index};
 use syncbox_sync::{SyncError, Vault};
 
 mod store;
+mod write;
 
-pub use store::{ContentStore, DiskStore, MemoryStore};
+pub use store::{ContentStore, DiskStore, MemoryStore, WriteStore};
+pub use write::{FsMut, Written};
 
 /// Whether a path names a directory or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,7 +87,7 @@ pub struct DirEntry {
     pub size: u64,
 }
 
-/// Anything that can go wrong reading through the filesystem.
+/// Anything that can go wrong driving the filesystem (reading or writing).
 #[derive(Debug, thiserror::Error)]
 pub enum MountError {
     /// Nothing is at that path.
@@ -91,12 +96,18 @@ pub enum MountError {
     /// A read was asked for a path that is a directory, not a file.
     #[error("not a file: {0}")]
     NotAFile(String),
+    /// A write or `mkdir` was asked for the root, which is never a file.
+    #[error("the root path cannot be used as a file")]
+    EmptyPath,
     /// The index knows the file but the store has no manifest for it yet.
     #[error("no stored manifest for this file")]
     MissingManifest,
     /// Decryption or chunk fetch failed.
     #[error(transparent)]
     Sync(#[from] SyncError),
+    /// The content store refused a write, or a read failed on I/O.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Result alias used across this crate.
@@ -304,7 +315,7 @@ impl Fs {
 
 /// Collapses a path to its canonical form: `/`-joined, no leading/trailing or
 /// repeated slashes, no `.` segments. Returns `""` for the root.
-fn normalize(path: &str) -> String {
+pub(crate) fn normalize(path: &str) -> String {
     path.split('/')
         .filter(|c| !c.is_empty() && *c != ".")
         .collect::<Vec<_>>()
@@ -461,7 +472,9 @@ mod tests {
         let dir_id = vault.root().clone();
         let cipher = "FILE1CIPHER";
         let sealed = vault.seal(&dir_id, cipher, content).expect("seal");
-        store.put_sealed(&dir_id, cipher, &sealed);
+        store
+            .put_sealed(&dir_id, cipher, &sealed)
+            .expect("stage sealed");
         FileEntry {
             size: content.len() as u64,
             revision: 1,
@@ -511,9 +524,8 @@ mod tests {
         let dir_id = vault.root().clone();
         let content = b"reading a file served from the on-disk ciphertext store".to_vec();
         let mut store = DiskStore::new(files.path().join("blobs"));
-        let sealed = store
-            .capture(&vault, &dir_id, "DISK", &content)
-            .expect("capture");
+        let sealed = vault.seal(&dir_id, "DISK", &content).expect("seal");
+        store.put_sealed(&dir_id, "DISK", &sealed).expect("put");
         let e = FileEntry {
             size: sealed.plaintext_size,
             revision: 1,
@@ -549,7 +561,9 @@ mod tests {
         let sealed = vault
             .seal(&dir_id, "CIPHER", b"chunks not stored")
             .expect("seal");
-        store.put_manifest(&dir_id, "CIPHER", sealed.manifest.clone());
+        store
+            .put_manifest(&dir_id, "CIPHER", &sealed.manifest)
+            .expect("put manifest");
         let e = FileEntry {
             size: sealed.plaintext_size,
             revision: 1,
