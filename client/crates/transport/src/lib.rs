@@ -17,5 +17,10 @@ pub mod client;
 pub mod dto;
 pub mod error;
 
+#[cfg(feature = "ureq")]
+mod ureq_http;
+
 pub use client::{Client, Http, Method, Request, Response};
 pub use error::{error_from_status, Result, TransportError};
+#[cfg(feature = "ureq")]
+pub use ureq_http::UreqHttp;

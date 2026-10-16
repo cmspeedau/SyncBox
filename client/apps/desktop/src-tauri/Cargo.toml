@@ -23,3 +23,13 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", default-features = false, features = ["wry"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The Tauri-free crates the whole client is built on, pulled by path from the
+# (excluded) client workspace. The agent crate carries all the behaviour and its
+# tests; this shell only maps it across the IPC boundary. `ureq` on transport gives
+# the app the same real HTTPS client the CLI uses.
+syncbox-agent = { path = "../../../crates/agent" }
+syncbox-crypto = { path = "../../../crates/crypto" }
+syncbox-sync = { path = "../../../crates/sync" }
+syncbox-transport = { path = "../../../crates/transport", features = ["ureq"] }
+syncbox-vault = { path = "../../../crates/vault" }

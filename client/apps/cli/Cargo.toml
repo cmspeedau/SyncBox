@@ -15,6 +15,5 @@ clap.workspace = true
 syncbox-crypto.workspace = true
 syncbox-index.workspace = true
 syncbox-sync.workspace = true
-syncbox-transport.workspace = true
+syncbox-transport = { workspace = true, features = ["ureq"] }
 syncbox-vault.workspace = true
-ureq.workspace = true

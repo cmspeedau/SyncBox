@@ -949,7 +949,6 @@ dependencies = [
  "syncbox-sync",
  "syncbox-transport",
  "syncbox-vault",
- "ureq",
 ]
 
 [[package]]
@@ -1011,6 +1010,7 @@ dependencies = [
  "serde_json",
  "syncbox-crypto",
  "thiserror",
+ "ureq",
 ]
 
 [[package]]

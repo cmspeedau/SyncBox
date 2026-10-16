@@ -5,23 +5,371 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Syncbox</title>
     <style>
-      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-      body { margin: 0; padding: 24px; }
-      .ping { font-family: ui-monospace, monospace; color: #3b82f6; }
+      :root {
+        color-scheme: light dark;
+        --bg: light-dark(#ffffff, #17181c);
+        --fg: light-dark(#1c1e21, #e8eaed);
+        --muted: light-dark(#6b7280, #9aa0a6);
+        --line: light-dark(#e5e7eb, #2a2c31);
+        --card: light-dark(#f9fafb, #1e2024);
+        --accent: #3b82f6;
+        --ok: #16a34a;
+        --warn: #d97706;
+        --err: #dc2626;
+        font-family: system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1 { font-size: 16px; margin: 0; font-weight: 600; }
+      .badge {
+        margin-left: auto;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        color: #fff;
+        background: var(--muted);
+      }
+      .badge.locked { background: var(--muted); }
+      .badge.idle { background: var(--ok); }
+      .badge.syncing { background: var(--accent); }
+      .badge.error { background: var(--err); }
+      main { padding: 16px 18px 40px; display: grid; gap: 18px; }
+      section { display: grid; gap: 8px; }
+      h2 {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 0;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 14px;
+      }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; }
+      label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); flex: 1 1 180px; }
+      input {
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+      }
+      button {
+        padding: 7px 14px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button.secondary { background: transparent; color: var(--fg); }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .muted { color: var(--muted); }
+      .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+      .kv span:nth-child(odd) { color: var(--muted); }
+      .stat { font-variant-numeric: tabular-nums; }
+      ul.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+      ul.feed li {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      ul.feed li:last-child { border-bottom: none; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+      .dot.done { background: var(--ok); }
+      .dot.failed { background: var(--err); }
+      table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+      th { color: var(--muted); font-weight: 500; font-size: 12px; }
+      td.id { font-family: ui-monospace, monospace; font-size: 12px; }
+      .msg { font-size: 13px; }
+      .msg.err { color: var(--err); }
+      .msg.ok { color: var(--ok); }
+      .hidden { display: none; }
+      a { color: var(--accent); }
     </style>
   </head>
   <body>
-    <h1>Syncbox</h1>
-    <p>The desktop shell is up. Sync controls land in the next step.</p>
-    <p class="ping" id="ping">IPC: checking…</p>
+    <header>
+      <h1>Syncbox</h1>
+      <span class="badge locked" id="state">locked</span>
+    </header>
+    <main>
+      <!-- Session -->
+      <section>
+        <h2>Vault</h2>
+        <div class="card">
+          <div id="locked-view">
+            <div class="row" id="form">
+              <label>Server<input id="server" placeholder="https://sync.example" /></label>
+              <label>Vault id<input id="vaultId" placeholder="my-vault" /></label>
+              <label>Vault folder<input id="vaultDir" placeholder="~/.syncbox/vault" /></label>
+              <label>Sync folder<input id="folder" placeholder="~/Syncbox" /></label>
+              <label>Password<input id="password" type="password" /></label>
+            </div>
+            <div class="row" style="margin-top: 10px">
+              <button id="unlock">Unlock &amp; sync</button>
+              <button id="create" class="secondary">Create vault here</button>
+            </div>
+            <p class="msg muted" id="unlock-msg" style="margin-top: 8px"></p>
+          </div>
+          <div id="unlocked-view" class="hidden">
+            <div class="kv">
+              <span>Vault</span><b id="u-vault">—</b>
+              <span>Last synced</span><b id="u-last" class="stat">—</b>
+              <span>Passes</span><b id="u-passes" class="stat">0</b>
+            </div>
+            <div class="row" style="margin-top: 12px">
+              <button id="sync">Sync now</button>
+              <button id="lock" class="secondary">Lock</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Last pass -->
+      <section>
+        <h2>Last pass</h2>
+        <div class="card" id="report"><span class="muted">No pass yet.</span></div>
+      </section>
+
+      <!-- Backups -->
+      <section>
+        <h2>Backups</h2>
+        <div class="card">
+          <div class="row" style="justify-content: space-between; align-items: center">
+            <span class="muted" id="backup-note">Server snapshots.</span>
+            <button id="backup-now" class="secondary">Back up now</button>
+          </div>
+          <div id="backups" style="margin-top: 10px"><span class="muted">Not loaded.</span></div>
+        </div>
+      </section>
+
+      <!-- Activity -->
+      <section>
+        <h2>Activity</h2>
+        <div class="card"><ul class="feed" id="feed"><li class="muted">Nothing yet.</li></ul></div>
+      </section>
+    </main>
+
     <script type="module">
-      const el = document.getElementById("ping");
-      try {
-        const { invoke } = window.__TAURI__.core;
-        el.textContent = "IPC: " + (await invoke("ping"));
-      } catch (err) {
-        el.textContent = "IPC: unavailable (" + err + ")";
+      const { invoke } = window.__TAURI__.core;
+      const $ = (id) => document.getElementById(id);
+
+      const fmtTime = (unix) =>
+        unix ? new Date(unix * 1000).toLocaleString() : "never";
+
+      function renderStatus(s) {
+        const badge = $("state");
+        badge.textContent = s.state;
+        badge.className = "badge " + s.state;
+        $("locked-view").classList.toggle("hidden", s.unlocked);
+        $("unlocked-view").classList.toggle("hidden", !s.unlocked);
+        if (s.vaultId) $("u-vault").textContent = s.vaultId;
+        $("u-last").textContent = fmtTime(s.lastSyncUnix);
+        $("u-passes").textContent = String(s.passes);
+        renderReport(s);
       }
+
+      function renderReport(s) {
+        const el = $("report");
+        if (s.lastError) {
+          el.innerHTML = `<span class="msg err">Last pass failed: ${escapeHtml(s.lastError)}</span>`;
+          return;
+        }
+        const r = s.lastReport;
+        if (!r) {
+          el.innerHTML = `<span class="muted">No pass yet.</span>`;
+          return;
+        }
+        if (r.quiet) {
+          el.innerHTML = `<span class="msg ok">Up to date.</span>`;
+          return;
+        }
+        el.innerHTML = `<div class="kv">
+          <span>Uploaded</span><b class="stat">${r.uploaded}</b>
+          <span>Downloaded</span><b class="stat">${r.downloaded}</b>
+          <span>Conflicts</span><b class="stat">${r.conflicts}</b>
+          <span>Deleted</span><b class="stat">${r.deleted}</b>
+          ${r.skipped ? `<span>Skipped</span><b class="stat">${r.skipped}</b>` : ""}
+          <span>New chunks</span><b class="stat">${r.chunksUploaded} (${r.bytesUploaded} B)</b>
+        </div>`;
+      }
+
+      function renderFeed(events) {
+        const el = $("feed");
+        if (!events.length) {
+          el.innerHTML = `<li class="muted">Nothing yet.</li>`;
+          return;
+        }
+        el.innerHTML = events
+          .slice()
+          .reverse()
+          .map((e) => {
+            const label =
+              e.kind === "done"
+                ? e.report && !e.report.quiet
+                  ? `synced (+${e.report.uploaded}/-${e.report.downloaded})`
+                  : "in sync"
+                : `failed: ${escapeHtml(e.error || "")}`;
+            return `<li><span class="dot ${e.kind}"></span>
+              <span>${label}</span>
+              <span class="muted" style="margin-left:auto">${fmtTime(e.atUnix)}</span></li>`;
+          })
+          .join("");
+      }
+
+      function renderBackups(res) {
+        const el = $("backups");
+        if (res.kind === "notConfigured") {
+          el.innerHTML = `<span class="muted">This server has no backups configured.</span>`;
+          return;
+        }
+        if (res.kind === "error") {
+          el.innerHTML = `<span class="msg err">${escapeHtml(res.data)}</span>`;
+          return;
+        }
+        const rows = res.data;
+        if (!rows.length) {
+          el.innerHTML = `<span class="muted">No snapshots yet.</span>`;
+          return;
+        }
+        el.innerHTML = `<table>
+          <tr><th>Snapshot</th><th>When</th><th>Chunks</th><th>Bytes</th></tr>
+          ${rows
+            .map(
+              (b) =>
+                `<tr><td class="id">${escapeHtml(b.id)}</td><td>${escapeHtml(
+                  b.createdAt
+                )}</td><td class="stat">${b.chunkCount}</td><td class="stat">${b.chunkBytes}</td></tr>`
+            )
+            .join("")}
+        </table>`;
+      }
+
+      async function refresh() {
+        try {
+          const s = await invoke("status");
+          renderStatus(s);
+          const feed = await invoke("activity");
+          renderFeed(feed);
+          $("sync").disabled = !s.unlocked;
+        } catch (err) {
+          $("state").textContent = "ipc unavailable";
+          $("state").className = "badge error";
+          console.error(err);
+        }
+      }
+
+      function settings() {
+        return {
+          server: $("server").value.trim(),
+          vaultId: $("vaultId").value.trim(),
+          vaultDir: $("vaultDir").value.trim(),
+          folder: $("folder").value.trim(),
+          password: $("password").value,
+        };
+      }
+
+      $("unlock").addEventListener("click", async () => {
+        const msg = $("unlock-msg");
+        msg.className = "msg muted";
+        msg.textContent = "Unlocking…";
+        try {
+          const s = await invoke("unlock", { settings: settings() });
+          msg.textContent = "";
+          renderStatus(s);
+          loadBackups();
+        } catch (err) {
+          msg.className = "msg err";
+          msg.textContent = String(err);
+        }
+      });
+
+      $("create").addEventListener("click", async () => {
+        const msg = $("unlock-msg");
+        msg.className = "msg muted";
+        msg.textContent = "Creating vault (this takes a moment)…";
+        try {
+          const root = await invoke("create_vault", {
+            dir: $("vaultDir").value.trim(),
+            password: $("password").value,
+          });
+          msg.className = "msg ok";
+          msg.textContent = `Vault created. Root id ${root}. Unlock to sync.`;
+        } catch (err) {
+          msg.className = "msg err";
+          msg.textContent = String(err);
+        }
+      });
+
+      $("lock").addEventListener("click", async () => {
+        await invoke("lock");
+        $("backups").innerHTML = `<span class="muted">Not loaded.</span>`;
+        refresh();
+      });
+
+      $("sync").addEventListener("click", async () => {
+        try {
+          renderStatus(await invoke("sync_now"));
+        } catch (err) {
+          console.error(err);
+        }
+      });
+
+      async function loadBackups() {
+        $("backups").innerHTML = `<span class="muted">Loading…</span>`;
+        try {
+          renderBackups(await invoke("backups"));
+        } catch (err) {
+          renderBackups({ kind: "error", data: String(err) });
+        }
+      }
+
+      $("backup-now").addEventListener("click", async () => {
+        const btn = $("backup-now");
+        btn.disabled = true;
+        try {
+          const res = await invoke("back_up_now");
+          if (res.kind === "taken") {
+            $("backup-note").textContent = "Snapshot taken.";
+          }
+          loadBackups();
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+        }[c]));
+      }
+
+      refresh();
+      setInterval(refresh, 2000);
     </script>
   </body>
 </html>
