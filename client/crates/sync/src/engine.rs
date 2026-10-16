@@ -260,13 +260,37 @@ impl<I: Index> Engine<I> {
             let known_revision = known.as_ref().map_or(0, |entry| entry.revision);
 
             if revision.deleted {
-                if known.is_some() {
-                    if !self.folderless {
-                        delete_local(self.vault.plaintext_root(), &path)?;
+                let Some(entry) = known.as_ref() else {
+                    continue;
+                };
+                if self.folderless {
+                    // The same rule as for any other newer revision: a dirty
+                    // record is this device's newest word, and a tombstone does
+                    // not silently erase an unsynced edit. Push will commit it
+                    // again, so a peer that deleted sees the file back — local
+                    // wins is folderless's uniform promise, deletes included.
+                    if entry.local_dirty {
+                        report.conflicts += 1;
+                        continue;
                     }
-                    self.index.remove_file(&path);
-                    report.deleted += 1;
+                } else {
+                    // In folder mode the tombstone still takes the canonical
+                    // name, but not the bytes: if the local copy had drifted
+                    // from what the index says synced, its bytes are kept as a
+                    // conflicted copy before the delete lands — an unsynced
+                    // edit must not vanish under a peer's delete.
+                    if let Some((size, mtime)) = stat_local(self.vault.plaintext_root(), &path) {
+                        if entry.size != size || entry.modified_unix != mtime {
+                            let ours = read_local(self.vault.plaintext_root(), &path)?;
+                            let copy = conflict_path(&path, now);
+                            write_local(self.vault.plaintext_root(), &copy, &ours)?;
+                            report.conflicts += 1;
+                        }
+                    }
+                    delete_local(self.vault.plaintext_root(), &path)?;
                 }
+                self.index.remove_file(&path);
+                report.deleted += 1;
                 continue;
             }
 

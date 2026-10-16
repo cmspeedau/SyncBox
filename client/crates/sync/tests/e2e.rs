@@ -672,3 +672,309 @@ fn a_folderless_local_edit_outranks_a_newer_server_revision() {
         b"v2 from the mount"
     );
 }
+
+// ---- conflict edge cases ------------------------------------------------------
+
+#[test]
+fn a_peer_rename_lands_as_a_rename_not_a_conflict() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "plan.txt", b"the only version");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // A renames, and syncs the tombstone-plus-new-name pair.
+    std::fs::rename(
+        a_root.path().join("plan.txt"),
+        a_root.path().join("plan-final.txt"),
+    )
+    .unwrap();
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(report.deleted, 1, "the old name was tombstoned");
+    assert_eq!(report.uploaded, 1, "the new name was committed");
+    assert_eq!(report.conflicts, 0);
+
+    // B sees the same move, with no conflict: an unchanged local copy under a
+    // tombstoned name simply goes away, and the new name lands beside it.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 0, "a clean copy stashes nothing");
+    assert_eq!(report.deleted, 1);
+    assert_eq!(report.downloaded, 1);
+    assert!(read_client(b_root.path(), "plan.txt").is_none());
+    assert_eq!(
+        read_client(b_root.path(), "plan-final.txt").as_deref(),
+        Some(&b"the only version"[..])
+    );
+
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "the rename is fully settled: {report:?}");
+}
+
+#[test]
+fn a_rename_and_a_peer_edit_both_survive() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "x.txt", b"base");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // A renames x away before syncing; meanwhile B edits x and syncs first.
+    std::fs::rename(a_root.path().join("x.txt"), a_root.path().join("y.txt")).unwrap();
+    write_client(b_root.path(), "x.txt", b"b's edit");
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // A's pass: the peer's edited x comes back down (its name is not A's to
+    // steal), and the rename goes up as a new file. Two names, nothing lost.
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1, "B's edited x was pulled");
+    assert_eq!(report.uploaded, 1, "the renamed y was committed");
+    assert_eq!(report.conflicts, 0);
+    assert_eq!(
+        read_client(a_root.path(), "x.txt").as_deref(),
+        Some(&b"b's edit"[..])
+    );
+    assert_eq!(
+        read_client(a_root.path(), "y.txt").as_deref(),
+        Some(&b"base"[..])
+    );
+
+    // B learns y; its x is already current. Both settle.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        read_client(b_root.path(), "y.txt").as_deref(),
+        Some(&b"base"[..])
+    );
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "both names settled: {report:?}");
+}
+
+#[test]
+fn a_peer_delete_stashes_my_unsynced_edit_as_a_conflicted_copy() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "note.txt", b"shared");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // B deletes and commits the tombstone while A's own edit never made it up.
+    std::fs::remove_file(b_root.path().join("note.txt")).unwrap();
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    write_client(a_root.path(), "note.txt", b"my unsynced edit");
+
+    // A's pass: the tombstone takes the canonical name, but A's drifted bytes
+    // are stashed as a conflicted copy first — and uploaded as a new file.
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 1, "the drifted local copy was stashed");
+    assert_eq!(report.deleted, 1, "the tombstone still landed locally");
+    assert_eq!(report.uploaded, 1, "the copy was pushed as its own file");
+    assert!(read_client(a_root.path(), "note.txt").is_none());
+    let copy = "note (conflicted copy 2026-10-16).txt";
+    assert_eq!(
+        read_client(a_root.path(), copy).as_deref(),
+        Some(&b"my unsynced edit"[..]),
+        "an unsynced edit must not vanish under a peer's delete"
+    );
+
+    // B sees the rescued copy on its next pass.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        read_client(b_root.path(), copy).as_deref(),
+        Some(&b"my unsynced edit"[..])
+    );
+}
+
+#[test]
+fn a_server_edit_outranks_a_local_delete() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "f.txt", b"base");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // A deletes locally (nothing synced about it) while B edits and commits.
+    std::fs::remove_file(a_root.path().join("f.txt")).unwrap();
+    write_client(b_root.path(), "f.txt", b"b's newer edit");
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // The server holds a NEWER revision of f.txt, not a tombstone, so A's
+    // delete-vs-edit resolves server-wins: the file comes back down and A
+    // commits nothing. (This is the counterpart of a_peer_delete_…: deletes
+    // and edits are only tombstones-versus-revisions, never both at once.)
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1, "the newer server revision came back");
+    assert_eq!(
+        report.uploaded, 0,
+        "A's empty-handed delete committed nothing"
+    );
+    assert_eq!(report.deleted, 0);
+    assert_eq!(
+        read_client(a_root.path(), "f.txt").as_deref(),
+        Some(&b"b's newer edit"[..])
+    );
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert!(
+        report.is_quiet(),
+        "resurrected and settled in one pass: {report:?}"
+    );
+}
+
+#[test]
+fn a_folderless_dirty_record_outranks_a_tombstone_and_revives_the_file() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let vault_dir = tempfile::tempdir().unwrap();
+    let tee = TeeStore::default();
+    let mut e = engine(vault_dir.path())
+        .with_store(tee.clone())
+        .folderless();
+    let mut e_client = client(&shared);
+
+    stage_dirty(&tee, &mut e.index, &e.vault, "doc.txt", b"v1");
+    e.sync_once(&mut e_client, "2026-10-16").unwrap();
+
+    // B pulls, then deletes the file for everyone.
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    std::fs::remove_file(b_root.path().join("doc.txt")).unwrap();
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // The mount writes again: a dirty record meets the peer's tombstone. Folder
+    // mode's rule (the local edit wins the canonical name) applies unchanged —
+    // a delete is just another newer revision, and loses to local-wins.
+    stage_dirty(
+        &tee,
+        &mut e.index,
+        &e.vault,
+        "doc.txt",
+        b"v2 after the delete",
+    );
+    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 1, "the tombstone met a dirty record");
+    assert_eq!(
+        report.uploaded, 1,
+        "our record committed over the tombstone"
+    );
+    assert_eq!(report.deleted, 0, "the tombstone was not echoed back down");
+
+    // B, which deleted the file, now sees it revived with the mount's bytes —
+    // the cost of local-wins, paid in resurrection rather than lost edits.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        read_client(b_root.path(), "doc.txt").as_deref(),
+        Some(&b"v2 after the delete"[..])
+    );
+}
+
+#[test]
+fn both_sides_deleting_the_same_file_converges_quietly() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "gone.txt", b"doomed");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // Both delete; A commits the tombstone first, and B's copy is already gone
+    // when the tombstone arrives — nothing to stash, nothing to echo back.
+    std::fs::remove_file(a_root.path().join("gone.txt")).unwrap();
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    std::fs::remove_file(b_root.path().join("gone.txt")).unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.deleted, 1, "B applied the server's tombstone");
+    assert_eq!(report.conflicts, 0);
+    assert_eq!(report.uploaded, 0);
+
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "one tombstone for one death: {report:?}");
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "A agrees: {report:?}");
+}
+
+#[test]
+fn unicode_and_case_distinct_names_round_trip() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+
+    // Names the whole pipeline must carry byte-exactly: case-distinct siblings
+    // in one directory, unicode directories that differ only by case, spaces
+    // and combining-ish scripts in file names.
+    let files: &[(&str, &[u8])] = &[
+        ("S.txt", b"capital"),
+        ("s.txt", b"small"),
+        ("Café/ÄÖÜ.txt", b"upper dir"),
+        ("café/äöü.txt", b"lower dir"),
+        ("sp ace/naïve ✓.md", b"spaces and ticks"),
+    ];
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    for (name, bytes) in files {
+        write_client(a_root.path(), name, bytes);
+    }
+    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(report.uploaded, files.len());
+
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    // The peer's subdirectories exist on B too — the engine names files under
+    // directories it can resolve, and a directory that exists nowhere local is
+    // unnameable from an opaque id (a documented skip, not this test's subject).
+    // B's OWN unicode dirs must map to the same ids A's words encrypt to,
+    // case-distinctly: that resolution is exactly what is under test here.
+    for dir in ["Café", "café", "sp ace"] {
+        std::fs::create_dir_all(b_root.path().join(dir)).unwrap();
+    }
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(
+        report.downloaded,
+        files.len(),
+        "every distinct name arrived"
+    );
+    assert_eq!(report.skipped, 0, "no name failed to resolve");
+    for (name, bytes) in files {
+        assert_eq!(
+            read_client(b_root.path(), name).as_deref(),
+            Some(*bytes),
+            "{name} round-tripped"
+        );
+    }
+
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "no case folding, no churn: {report:?}");
+}

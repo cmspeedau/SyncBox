@@ -240,6 +240,19 @@ wins the canonical name (the server's version stays in the log, recoverable by
 revision). With a `--folder`, everything above still works, and pending deletes are
 drained the same way alongside the folder scan.
 
+The conflict rules are uniform across revisions and tombstones, and no unsynced edit
+is ever silently lost. A newer server revision meets a clean local copy: it simply
+lands — including a rename, which arrives as tombstone-plus-new-name and reads as a
+move. It meets a *drifted* (dirty) copy: in folder mode the local bytes are stashed as
+a *conflicted copy* and the server's version (or delete) takes the canonical name; in
+folderless mode there is nowhere to stash, so local wins outright — the dirty record
+is re-committed over the newer revision **or the tombstone**, and the peer that
+deleted sees the file revived. The reverse meeting, a local delete against a newer
+server revision, is the one server-wins case: the file comes back down. A rename on
+one side and an edit on the other leave both names in place. Names themselves are
+carried byte-exactly: case-distinct files and directories ("A.txt"/"a.txt",
+"Café"/"café") are distinct keys end to end, and unicode round-trips untouched.
+
 The store, left alone, only grows: each overwrite orphans the previous generation's
 unique chunks, each `unlink` or rename orphans a manifest. `syncbox gc <vault>` reclaims
 them. Liveness is decided by the index alone — every chunk id and manifest key its file

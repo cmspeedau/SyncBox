@@ -151,11 +151,31 @@ fn deletes_queue_a_tombstone_until_committed(index: &mut dyn Index) {
     assert_eq!(rest[0].path, "other.txt");
 }
 
+fn paths_are_case_and_byte_exact(index: &mut dyn Index) {
+    // "A.txt" and "a.txt" are different files: an index that folded paths
+    // would silently overwrite one record with the other, and unicode names
+    // must round-trip untouched through whichever backend stores them.
+    index.put_file(entry("A.txt", &[1]));
+    index.put_file(entry("a.txt", &[2]));
+    index.put_file(entry("Café/ÄÖÜ.txt", &[3]));
+    assert_eq!(index.files().len(), 3, "case-distinct paths are distinct");
+    assert_eq!(index.file("A.txt").unwrap().chunk_ids, vec![chunk(1)]);
+    assert_eq!(index.file("a.txt").unwrap().chunk_ids, vec![chunk(2)]);
+    assert!(index.remove_file("A.txt"));
+    assert_eq!(index.file("A.txt"), None);
+    assert!(
+        index.file("a.txt").is_some(),
+        "deleting the uppercase twin leaves the lowercase one alone"
+    );
+    assert!(index.file("Café/ÄÖÜ.txt").is_some());
+}
+
 /// The whole contract, each invariant run against a freshly built backend so the
 /// checks are independent (and a chunk id reused by two checks stays meaningful).
 fn conformance(make: impl Fn() -> Box<dyn Index>) {
     files_are_sorted_by_path(&mut *make());
     a_file_round_trips_every_field(&mut *make());
+    paths_are_case_and_byte_exact(&mut *make());
     rewriting_drops_only_the_chunks_it_stopped_using(&mut *make());
     a_shared_chunk_survives_one_file_being_deleted(&mut *make());
     removing_an_unknown_file_reports_nothing_removed(&mut *make());
