@@ -14,22 +14,46 @@
 
 use syncbox_crypto::{names::DirId, ChunkId};
 
-/// Receives a pulled file's encrypted manifest and the stored chunk bytes fetched for
-/// it, so they can be kept locally and served without another round to the server.
+/// Receives a pulled file's encrypted manifest and chunks — chunk by chunk, as they
+/// arrive — so they can be kept locally and served without another round to the
+/// server. The manifest is cached *last*: its presence is the mark that the whole
+/// file made it, while cached chunks alone are a download half-done, worth resuming
+/// from rather than starting over.
 pub trait PullStore {
-    /// Stores `manifest` (the encoded manifest bytes) and the distinct `chunks` that
-    /// make up the file now at `dir_id` / `cipher_name`.
+    /// Keeps one downloaded chunk's stored bytes, keyed by content id, so a
+    /// later fetch (this file's, or any file sharing the chunk) skips the server.
     ///
     /// # Errors
     ///
     /// A store-specific I/O failure (an in-memory store never fails).
+    fn cache_chunk(&mut self, id: &ChunkId, bytes: &[u8]) -> std::io::Result<()>;
+
+    /// Keeps `manifest`, the encoded manifest bytes of the file now at `dir_id` /
+    /// `cipher_name`. Call after [`PullStore::cache_chunk`] for every chunk.
+    ///
+    /// # Errors
+    ///
+    /// A store-specific I/O failure.
+    fn cache_manifest(
+        &mut self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+    ) -> std::io::Result<()>;
+
+    /// Stores a whole pulled file in one call: every chunk, then the manifest.
     fn put_pulled(
         &mut self,
         dir_id: &DirId,
         cipher_name: &str,
         manifest: &[u8],
         chunks: &[(ChunkId, Vec<u8>)],
-    ) -> std::io::Result<()>;
+    ) -> std::io::Result<()> {
+        for (id, bytes) in chunks {
+            self.cache_chunk(id, bytes)?;
+        }
+        self.cache_manifest(dir_id, cipher_name, manifest)
+    }
 }
 
 /// Where a file's manifest and chunks are kept (the read side).
@@ -60,12 +84,15 @@ impl<T: PullStore + ContentStore + ?Sized> SyncStore for T {}
 pub struct NullStore;
 
 impl PullStore for NullStore {
-    fn put_pulled(
+    fn cache_chunk(&mut self, _id: &ChunkId, _bytes: &[u8]) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn cache_manifest(
         &mut self,
         _dir_id: &DirId,
         _cipher_name: &str,
         _manifest: &[u8],
-        _chunks: &[(ChunkId, Vec<u8>)],
     ) -> std::io::Result<()> {
         Ok(())
     }

@@ -20,7 +20,7 @@
 //! or settled, and the engine reads the log from position 0 each pass, so it never
 //! has to persist a sync cursor of its own.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -75,6 +75,9 @@ pub struct SyncReport {
     pub chunks_uploaded: usize,
     /// Plaintext bytes those chunks covered.
     pub bytes_uploaded: u64,
+    /// Chunks a download found already in the local store — an interrupted pull's
+    /// head start, not re-fetched from the server.
+    pub resumed_chunks: usize,
 }
 
 impl SyncReport {
@@ -328,25 +331,35 @@ impl<I: Index> Engine<I> {
             let manifest = BASE64
                 .decode(&revision.manifest)
                 .map_err(|_| SyncError::Integrity("manifest is not valid base64"))?;
-            // When a local store is configured, record each downloaded chunk as it
-            // arrives, then store the manifest too, so a read-only mount backed by the
-            // same store can serve this file later without fetching it again. With no
-            // store the download path is byte-identical to a plain folder sync.
-            let tee = self.store.0.is_some();
-            let mut downloaded: Vec<(ChunkId, Vec<u8>)> = Vec::new();
+            // With a local store, read through it first and persist each chunk the
+            // moment it arrives: an interrupted download becomes the next pass's
+            // head start — chunks are content-addressed, so a stored chunk is
+            // always the right bytes for its id — and the server is never re-asked
+            // for one already held. The manifest lands last, so its presence in the
+            // store still means the whole file made it, and a read-only mount
+            // backed by the same store serves the file without fetching it again.
+            // With no store the download path is byte-identical to a plain folder
+            // sync.
+            let mut store = self.store.0.as_mut();
+            let mut fetch = |id: &ChunkId| -> Result<Vec<u8>> {
+                if let Some(store) = store.as_mut() {
+                    if let Some(stored) = store.chunk(id) {
+                        report.resumed_chunks += 1;
+                        return Ok(stored);
+                    }
+                    let stored = client
+                        .download_chunk(vault_id, id)
+                        .map_err(SyncError::from)?;
+                    store.cache_chunk(id, &stored)?;
+                    return Ok(stored);
+                }
+                client.download_chunk(vault_id, id).map_err(SyncError::from)
+            };
             let (plaintext, chunk_ids) =
                 self.vault
-                    .open(&dir_id, &revision.cipher_name, &manifest, &mut |id| {
-                        let stored = client
-                            .download_chunk(vault_id, id)
-                            .map_err(SyncError::from)?;
-                        if tee {
-                            downloaded.push((id.clone(), stored.clone()));
-                        }
-                        Ok(stored)
-                    })?;
+                    .open(&dir_id, &revision.cipher_name, &manifest, &mut fetch)?;
             if let Some(store) = self.store.0.as_mut() {
-                store.put_pulled(&dir_id, &revision.cipher_name, &manifest, &downloaded)?;
+                store.cache_manifest(&dir_id, &revision.cipher_name, &manifest)?;
             }
             if !self.folderless {
                 write_local(self.vault.plaintext_root(), &path, &plaintext)?;
@@ -469,7 +482,12 @@ impl<I: Index> Engine<I> {
             let sealed = self.vault.seal(&dir_id, &cipher_name, &plaintext)?;
 
             let offered: Vec<ChunkId> = sealed.chunks.iter().map(|(id, _)| id.clone()).collect();
-            let missing = client.missing_chunks(vault_id, &offered)?;
+            // A HashSet because a large file offers its chunk ids one by one, and
+            // "is this one missing" must not be a scan per chunk.
+            let missing: HashSet<ChunkId> = client
+                .missing_chunks(vault_id, &offered)?
+                .into_iter()
+                .collect();
             for (id, stored) in sealed.chunks.iter().filter(|(id, _)| missing.contains(id)) {
                 client.upload_chunk(vault_id, id, stored)?;
                 report.chunks_uploaded += 1;
@@ -569,7 +587,12 @@ impl<I: Index> Engine<I> {
                 .vault
                 .seal(&entry.dir_id, &entry.cipher_name, &plaintext)?;
             let offered: Vec<ChunkId> = sealed.chunks.iter().map(|(id, _)| id.clone()).collect();
-            let missing = client.missing_chunks(vault_id, &offered)?;
+            // A HashSet because a large file offers its chunk ids one by one, and
+            // "is this one missing" must not be a scan per chunk.
+            let missing: HashSet<ChunkId> = client
+                .missing_chunks(vault_id, &offered)?
+                .into_iter()
+                .collect();
             for (id, stored) in sealed.chunks.iter().filter(|(id, _)| missing.contains(id)) {
                 client.upload_chunk(vault_id, id, stored)?;
                 report.chunks_uploaded += 1;

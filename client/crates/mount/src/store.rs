@@ -234,38 +234,37 @@ impl GcStore for DiskStore {
     }
 }
 
-// A pull hands the engine's downloaded manifest + chunks straight to the write side, so
-// a mounted vault serves server-sourced files. Duplicate chunk ids within a file
+// A pull hands the engine's downloaded bytes straight to the write side, chunk by
+// chunk as they arrive, so an interrupted download is a head start and a mounted
+// vault can serve server-sourced files. Duplicate chunk ids within a file
 // (repeated content) rewrite the same content-addressed blob — idempotent.
 impl PullStore for MemoryStore {
-    fn put_pulled(
+    fn cache_chunk(&mut self, id: &ChunkId, bytes: &[u8]) -> io::Result<()> {
+        WriteStore::put_chunk(self, id, bytes)
+    }
+
+    fn cache_manifest(
         &mut self,
         dir_id: &DirId,
         cipher_name: &str,
         manifest: &[u8],
-        chunks: &[(ChunkId, Vec<u8>)],
     ) -> io::Result<()> {
-        self.put_manifest(dir_id, cipher_name, manifest)?;
-        for (id, bytes) in chunks {
-            self.put_chunk(id, bytes)?;
-        }
-        Ok(())
+        WriteStore::put_manifest(self, dir_id, cipher_name, manifest)
     }
 }
 
 impl PullStore for DiskStore {
-    fn put_pulled(
+    fn cache_chunk(&mut self, id: &ChunkId, bytes: &[u8]) -> io::Result<()> {
+        WriteStore::put_chunk(self, id, bytes)
+    }
+
+    fn cache_manifest(
         &mut self,
         dir_id: &DirId,
         cipher_name: &str,
         manifest: &[u8],
-        chunks: &[(ChunkId, Vec<u8>)],
     ) -> io::Result<()> {
-        self.put_manifest(dir_id, cipher_name, manifest)?;
-        for (id, bytes) in chunks {
-            self.put_chunk(id, bytes)?;
-        }
-        Ok(())
+        WriteStore::put_manifest(self, dir_id, cipher_name, manifest)
     }
 }
 

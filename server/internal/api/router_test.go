@@ -528,6 +528,47 @@ func TestBackupVerifyProvesAndRestoreDelivers(t *testing.T) {
 	}
 }
 
+func TestRateLimitThrottlesAndSaysWhenToReturn(t *testing.T) {
+	stored := store.NewMemory(MaxChunkBytes)
+	issuer := auth.NewIssuer("test-secret", time.Hour)
+	srv := New(stored, nil, issuer, testPassword)
+	// Burst of three with effectively no refill, so the whole test spends the
+	// burst and lands on the refusal without sleeping.
+	srv.SetRateLimit(0.001, 3)
+
+	server := httptest.NewServer(srv.Routes())
+	t.Cleanup(server.Close)
+
+	c := &client{t: t, server: server}
+	c.token = c.login() // first token of the burst.
+
+	// Two more fit; login plus these two is the burst of three.
+	for range 2 {
+		response := c.do(http.MethodGet, "/healthz", nil)
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("in-burst request = %s, want 200", response.Status)
+		}
+	}
+
+	response := c.do(http.MethodGet, "/api/v1/vaults/vault/revisions", nil)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("post-burst request = %s, want 429", response.Status)
+	}
+	if after := response.Header.Get("Retry-After"); after == "" {
+		t.Error("a 429 must say when to come back")
+	}
+	var refused struct {
+		Code   string `json:"code"`
+		Reason string `json:"reason"`
+	}
+	c.mustDecode(response, &refused)
+	if refused.Code != "rate_limited" {
+		t.Errorf("refusal code = %q, want rate_limited — the code clients retry on", refused.Code)
+	}
+}
+
 func TestBackupsReportWhenNotConfigured(t *testing.T) {
 	c := newClient(t, false)
 	response := c.do(http.MethodPost, "/admin/backups", []byte("{}"))

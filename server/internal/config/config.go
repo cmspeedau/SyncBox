@@ -40,6 +40,12 @@ type Config struct {
 	BackupSchedule time.Duration
 	// MaxChunkBytes bounds one uploaded chunk.
 	MaxChunkBytes int64
+	// RatePerSecond sustains requests per second per caller IP; zero (the
+	// default) runs the server unthrottled.
+	RatePerSecond float64
+	// RateBurst is how many requests a caller may spend at once before the
+	// sustained rate takes over.
+	RateBurst int
 }
 
 // Defaults returns the settings a server runs with when the environment says
@@ -51,6 +57,7 @@ func Defaults() Config {
 		DataDir:        "./data",
 		MaxChunkBytes:  8 << 20,
 		BackupSchedule: 0,
+		RateBurst:      100,
 	}
 }
 
@@ -102,6 +109,27 @@ func FromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("SYNCBOX_BACKUP_SCHEDULE %s is too aggressive, use at least 1m", every)
 		}
 		cfg.BackupSchedule = every
+	}
+
+	if value := strings.TrimSpace(os.Getenv("SYNCBOX_RATE_LIMIT")); value != "" {
+		rate, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("SYNCBOX_RATE_LIMIT %q is not a number: %w", value, err)
+		}
+		if rate <= 0 {
+			return Config{}, fmt.Errorf("SYNCBOX_RATE_LIMIT must be positive to throttle, got %s", value)
+		}
+		cfg.RatePerSecond = rate
+	}
+	if value := strings.TrimSpace(os.Getenv("SYNCBOX_RATE_BURST")); value != "" {
+		burst, err := strconv.Atoi(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("SYNCBOX_RATE_BURST %q is not a count: %w", value, err)
+		}
+		if burst < 1 {
+			return Config{}, fmt.Errorf("SYNCBOX_RATE_BURST must be at least 1, got %d", burst)
+		}
+		cfg.RateBurst = burst
 	}
 
 	if generated != "" {

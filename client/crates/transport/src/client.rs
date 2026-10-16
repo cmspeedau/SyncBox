@@ -13,6 +13,7 @@
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::time::Duration;
 use syncbox_crypto::ChunkId;
 
 use crate::dto::{
@@ -135,6 +136,12 @@ pub struct Client<H: Http> {
     pub base_url: String,
     /// Bearer token from [`Client::token`].
     pub token: String,
+    /// How many times a chunk transfer retries after the server answers
+    /// `429 rate_limited` before the refusal is surfaced. Zero never retries.
+    pub rate_limit_retries: u32,
+    /// The first wait after a `429`, doubled with each retry. Tests shorten it;
+    /// production waits the server's `Retry-After` (whole seconds) out anyway.
+    pub rate_limit_backoff: Duration,
     /// Transport the calls run through.
     pub http: H,
 }
@@ -146,6 +153,8 @@ impl<H: Http> Client<H> {
         Self {
             base_url: base_url.trim_end_matches('/').to_owned(),
             token: String::new(),
+            rate_limit_retries: 4,
+            rate_limit_backoff: Duration::from_millis(500),
             http,
         }
     }
@@ -175,6 +184,39 @@ impl<H: Http> Client<H> {
             body,
             authorization,
         })
+    }
+
+    /// One call to a bulk-transfer endpoint, honouring the server's throttle.
+    ///
+    /// A `429` means "come back in a second", so we wait and come back — with a
+    /// doubling backoff that quickly reaches the whole-second granularity the
+    /// server's `Retry-After` header promises. Retrying is safe here precisely
+    /// because every endpoint behind this helper is idempotent: chunk bytes are
+    /// content-addressed, and the existence check reads. Commit is the one
+    /// non-idempotent call, so it retries on a stricter condition — see
+    /// [`Client::commit`].
+    fn call_transfer(&mut self, method: Method, path: String, body: Vec<u8>) -> Result<Response> {
+        let mut backoff = self.rate_limit_backoff;
+        for attempt in 0..=self.rate_limit_retries {
+            let response = self.call(method, path.clone(), body.clone(), true)?;
+            if response.status != 429 || attempt == self.rate_limit_retries {
+                return Ok(response);
+            }
+            std::thread::sleep(backoff);
+            backoff *= 2;
+        }
+        unreachable!("the loop returns on its last attempt")
+    }
+
+    /// True for the server's own throttle refusal: the protocol's `429` is the
+    /// one carrying a structured `rate_limited` body, and the limiter that
+    /// writes it runs before any handler — the refused request was never
+    /// processed. A bare `429` from an intermediary says nothing about what
+    /// happened downstream, so it never earns a replay here.
+    fn is_our_rate_limit(response: &Response) -> bool {
+        response.status == 429
+            && serde_json::from_slice::<ErrorResponse>(&response.body)
+                .is_ok_and(|e| e.code == "rate_limited")
     }
 
     /// Exchanges the account password for a bearer token, which the client keeps
@@ -225,11 +267,10 @@ impl<H: Http> Client<H> {
         let body = json(&ChunkCheckRequest {
             ids: ids.iter().map(|id| id.as_str().to_owned()).collect(),
         })?;
-        let response = self.call(
+        let response = self.call_transfer(
             Method::Post,
             format!("/api/v1/vaults/{vault}/chunks/exists"),
             body,
-            true,
         )?;
         ensure_ok(&response)?;
         let check: ChunkCheckResponse = parse(&response.body)?;
@@ -246,11 +287,10 @@ impl<H: Http> Client<H> {
     ///
     /// Propagates transport errors.
     pub fn upload_chunk(&mut self, vault: &str, id: &ChunkId, body: &[u8]) -> Result<()> {
-        let response = self.call(
+        let response = self.call_transfer(
             Method::Put,
             format!("/api/v1/vaults/{vault}/chunks/{}", id.as_str()),
             body.to_vec(),
-            true,
         )?;
         ensure_ok(&response)
     }
@@ -262,11 +302,10 @@ impl<H: Http> Client<H> {
     /// Propagates transport errors, and [`TransportError::Refused`] with code
     /// `not_found` for a chunk the server has collected.
     pub fn download_chunk(&mut self, vault: &str, id: &ChunkId) -> Result<Vec<u8>> {
-        let response = self.call(
+        let response = self.call_transfer(
             Method::Get,
             format!("/api/v1/vaults/{vault}/chunks/{}", id.as_str()),
             Vec::new(),
-            true,
         )?;
         ensure_ok(&response)?;
         Ok(response.body)
@@ -274,20 +313,32 @@ impl<H: Http> Client<H> {
 
     /// Commits a new revision, conditional on `parent` still being current.
     ///
+    /// A commit is not idempotent in general, so it is replayed after `429` only
+    /// on one strict condition: the refusal carries the protocol's own
+    /// `rate_limited` body, which only this server's limiter writes, and that
+    /// limiter refuses *before the handler runs* — the commit never happened, and
+    /// a replay is the same request. A `429` from anything else (a proxy, say,
+    /// that may already have delivered the request onward) surfaces unretried.
+    ///
     /// # Errors
     ///
     /// Returns [`TransportError::Refused`] with code `conflict` when another
     /// client committed first, which is the engine's cue to produce a conflicted
     /// copy rather than overwrite.
     pub fn commit(&mut self, vault: &str, request: &CommitRequest) -> Result<CommitResponse> {
-        let response = self.call(
-            Method::Post,
-            format!("/api/v1/vaults/{vault}/revisions"),
-            json(request)?,
-            true,
-        )?;
-        ensure_ok(&response)?;
-        parse(&response.body)
+        let path = format!("/api/v1/vaults/{vault}/revisions");
+        let body = json(request)?;
+        let mut backoff = self.rate_limit_backoff;
+        for attempt in 0..=self.rate_limit_retries {
+            let response = self.call(Method::Post, path.clone(), body.clone(), true)?;
+            if attempt == self.rate_limit_retries || !Self::is_our_rate_limit(&response) {
+                ensure_ok(&response)?;
+                return parse(&response.body);
+            }
+            std::thread::sleep(backoff);
+            backoff *= 2;
+        }
+        unreachable!("the loop returns on its last attempt")
     }
 
     /// Lists the server's snapshots, newest first.
@@ -682,6 +733,143 @@ mod tests {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_rate_limited_chunk_get_retries_until_the_burst_clears() {
+        let refusal = Scripted::body(
+            429,
+            &ErrorResponse {
+                code: "rate_limited".into(),
+                reason: "too many requests".into(),
+            },
+        );
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![
+                refusal.clone(),
+                refusal,
+                Response {
+                    status: 200,
+                    body: b"payload".to_vec(),
+                },
+            ]),
+        );
+        client.token = "t".into();
+        client.rate_limit_backoff = Duration::from_millis(1);
+        let body = client
+            .download_chunk("vault", &ChunkId::from_base32("AB12"))
+            .expect("third try lands");
+        assert_eq!(body, b"payload");
+        assert_eq!(client.http.calls.len(), 3, "two refusals then the payload");
+    }
+
+    #[test]
+    fn a_rate_limit_that_never_clears_surfaces_as_a_refusal() {
+        let refusal = Scripted::body(
+            429,
+            &ErrorResponse {
+                code: "rate_limited".into(),
+                reason: "still too many".into(),
+            },
+        );
+        let replies = (0..3).map(|_| refusal.clone()).collect();
+        let mut client = Client::new("https://sync.example", Scripted::new(replies));
+        client.token = "t".into();
+        client.rate_limit_backoff = Duration::from_millis(1);
+        client.rate_limit_retries = 2; // three total attempts, all refusals
+        let error = client
+            .upload_chunk("vault", &ChunkId::from_base32("AB12"), b"x")
+            .expect_err("must give up");
+        assert!(matches!(
+            error,
+            TransportError::Refused { ref code, .. } if code == "rate_limited"
+        ));
+        assert_eq!(client.http.calls.len(), 3);
+    }
+
+    #[test]
+    fn a_commit_refused_by_the_servers_limiter_is_replayed() {
+        // The protocol's own 429 body proves the refusal happened before the
+        // handler, so replaying the commit cannot double-apply.
+        let refusal = Scripted::body(
+            429,
+            &ErrorResponse {
+                code: "rate_limited".into(),
+                reason: "slow down".into(),
+            },
+        );
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![
+                refusal,
+                Response {
+                    status: 201,
+                    body: br#"{"revision":7}"#.to_vec(),
+                },
+            ]),
+        );
+        client.token = "t".into();
+        client.rate_limit_backoff = Duration::from_millis(1);
+        let response = client
+            .commit(
+                "vault",
+                &CommitRequest {
+                    parent: 0,
+                    revision: Revision {
+                        revision: 0,
+                        parent: 0,
+                        dir_id: "AA".into(),
+                        cipher_name: "BB".into(),
+                        manifest: String::new(),
+                        size: 0,
+                        modified_unix: 0,
+                        deleted: true,
+                    },
+                },
+            )
+            .expect("the replay lands");
+        assert_eq!(response.revision, 7);
+        assert_eq!(client.http.calls.len(), 2);
+    }
+
+    #[test]
+    fn a_bare_429_never_buys_a_commit_replay() {
+        // A 429 without the protocol's rate_limited body could have come from an
+        // intermediary that already forwarded the request — surface it, do not
+        // risk a second commit.
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 429,
+                body: b"<html>proxy busy</html>".to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        client.rate_limit_backoff = Duration::from_millis(1);
+        let error = client
+            .commit(
+                "vault",
+                &CommitRequest {
+                    parent: 0,
+                    revision: Revision {
+                        revision: 0,
+                        parent: 0,
+                        dir_id: "AA".into(),
+                        cipher_name: "BB".into(),
+                        manifest: String::new(),
+                        size: 0,
+                        modified_unix: 0,
+                        deleted: true,
+                    },
+                },
+            )
+            .expect_err("one call, no replay");
+        assert!(matches!(
+            error,
+            TransportError::Refused { ref code, .. } if code == "rate_limited"
+        ));
+        assert_eq!(client.http.calls.len(), 1);
     }
 
     #[test]
