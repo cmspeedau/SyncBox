@@ -69,14 +69,13 @@ display), so a window can't be opened on it; treat `cargo build` (links
 webkit/gtk/soup) plus the agent + DTO tests as the verification, and run the binary on
 a real desktop to see the UI.
 
-**Deferred to M6 packaging** (explicit, not half-done): the **tray icon**, **autostart**
-and **single-instance**. The tray needs `libappindicator`, which is absent here, so
-`tauri` is pulled with `default-features = false, features = ["wry"]` precisely so the
-missing lib (and image decoders) aren't required to compile. The CI packaging runner
-can install it, which is where the tray lands; until then the window is the whole UI.
-Mount control shipped with M5 (read-only + writable + folderless sync); bundling
-shipped as M6's first step (see Packaging). A Node/Svelte frontend behind
-`frontendDist` (instead of this static one) and code signing remain open.
+**Shipped since M4:** autostart and single-instance (M6, below). **Still deferred:** the
+**tray icon** — it needs `libappindicator`, which is absent here, so `tauri` is pulled
+with `default-features = false, features = ["wry"]` precisely so the missing lib (and
+image decoders) aren't required to compile; the window is the whole UI until a machine
+carrying the lib builds the app. Mount control shipped with M5 (read-only + writable +
+folderless sync); bundling shipped as M6's first step (see Packaging). A Node/Svelte
+frontend behind `frontendDist` (instead of this static one) and code signing remain open.
 
 ## Building the app
 
@@ -104,10 +103,10 @@ generated icon set (`cargo-tauri icon <1024px source>` regenerates every format)
 - `Syncbox_<ver>_amd64.AppImage` — self-contained; the static-pie AppImage runtime
   means no FUSE is needed even to *build* it.
 
-The `Package (Linux desktop)` CI job rebuilds both on every PR (on `ubuntu-latest`,
-where the Debian packaging tools and webkit dev libraries live) and uploads them as
-build artifacts. They are unsigned, like everything here — publishing and signing
-stay deliberate acts, each to its own runner and identity.
+The `Package (Linux desktop)` CI job rebuilds both on every PR (on the self-hosted
+runner, which carries the webkit dev libraries and lets tauri do the deb via `ar`) and
+uploads them as build artifacts. They are unsigned, like everything here — publishing
+and signing stay deliberate acts, each to its own runner and identity.
 
 | Platform | Artefacts | Status |
 | --- | --- | --- |
@@ -115,7 +114,11 @@ stay deliberate acts, each to its own runner and identity.
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
 
-The tray icon, autostart and single-instance come next for M6: the CI runner can
-`apt-get install libayatana-appindicator3-dev`, which this box lacks — until then
-`tauri` stays on `default-features = false, features = ["wry"]` and the window is
-the whole UI.
+**Autostart and single-instance shipped on top of the bundles:** a second launch just
+focuses the running window (`tauri-plugin-single-instance`, registered first), and a
+"Start at login" checkbox in the Vault card writes or removes the XDG autostart entry
+(`tauri-plugin-autostart`, wrapped as the `get_autostart`/`set_autostart` commands and
+round-trip-tested headlessly through tauri's mock runtime in a sandboxed `$HOME`).
+The tray icon is what remains: `libappindicator` is absent on both the dev box and the
+CI runner, so until one carries it `tauri` stays on
+`default-features = false, features = ["wry"]` and the window is the whole UI.

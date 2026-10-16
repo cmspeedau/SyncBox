@@ -146,6 +146,12 @@
               <button id="lock" class="secondary">Lock</button>
             </div>
           </div>
+          <div class="row" style="margin-top: 12px; align-items: center; justify-content: space-between">
+            <label class="muted" style="display: flex; align-items: center; gap: 6px">
+              <input id="autostart" type="checkbox" /> Start at login
+            </label>
+            <span class="msg muted" id="autostart-msg"></span>
+          </div>
         </div>
       </section>
 
@@ -367,6 +373,24 @@
           "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
         }[c]));
       }
+
+      // Start at login — a desktop setting, independent of vault state.
+      try {
+        $("autostart").checked = await invoke("get_autostart");
+      } catch (err) {
+        $("autostart-msg").textContent = String(err);
+      }
+
+      $("autostart").addEventListener("change", async () => {
+        const want = $("autostart").checked;
+        try {
+          await invoke("set_autostart", { enabled: want });
+          $("autostart-msg").textContent = "";
+        } catch (err) {
+          $("autostart").checked = !want;
+          $("autostart-msg").textContent = String(err);
+        }
+      });
 
       refresh();
       setInterval(refresh, 2000);
