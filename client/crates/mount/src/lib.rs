@@ -1,22 +1,30 @@
-//! A vault seen as a filesystem, with no kernel and no crypto in the hot path.
+//! A vault seen as a filesystem, with no kernel in the hot path.
 //!
 //! The FUSE mount is really two things. The hard, interesting thing — deciding what
-//! the tree *is* — lives here; the [`fuser`] adapter that hands those answers to the
-//! kernel is a thin mapping kept in a separate crate so this one needs no libfuse.
+//! the tree *is*, and turning a path back into plaintext — lives here; the [`fuser`]
+//! adapter that hands those answers to the kernel is a thin mapping kept in a
+//! separate crate so this one needs no libfuse.
 //!
 //! The namespace is the local [`Index`], not the ciphertext. Directory names cannot
 //! be recovered from the server's opaque ids alone (a subdirectory's encrypted name is
 //! never stored under its parent), so the client's own index — which records
 //! [`FileEntry`] plaintext paths — is the only place the tree's shape is knowable. A
 //! path is a file when the index has an entry for it, and a directory when it is the
-//! parent prefix of some entry. Content itself is not read here; that needs the
-//! per-file manifest and chunks and is the [`ContentStore`] step.
+//! parent prefix of some entry.
+//!
+//! Content is read through a [`ContentStore`]: the per-file manifest and the chunk
+//! blobs a file is made of. [`Fs::read_all`] fetches those and decrypts via
+//! [`Vault::open`]. Where the store gets its bytes (an in-memory map in tests, a local
+//! ciphertext folder later, the server on demand) is the store's business, not the
+//! filesystem's.
 //!
 //! [`fuser`]: https://docs.rs/fuser
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use syncbox_crypto::{names::DirId, ChunkId};
 use syncbox_index::{FileEntry, Index};
+use syncbox_sync::{Sealed, SyncError, Vault};
 
 /// Whether a path names a directory or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,6 +79,88 @@ pub struct DirEntry {
     pub size: u64,
 }
 
+/// Where a file's encrypted material comes from: its manifest and its chunks.
+///
+/// The filesystem asks; the store answers. This indirection is what lets the read
+/// path be tested against an in-memory store and run against a local ciphertext
+/// folder (or, later, the server) without the tree logic knowing the difference.
+pub trait ContentStore {
+    /// The stored (encrypted) manifest bytes for a file, by its directory id and
+    /// encrypted name.
+    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>>;
+
+    /// The stored bytes of one chunk, by content id.
+    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>>;
+}
+
+/// An in-memory [`ContentStore`]: the read backend for tests, and the shape a
+/// write-through cache will take.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryStore {
+    manifests: HashMap<(String, String), Vec<u8>>,
+    chunks: HashMap<ChunkId, Vec<u8>>,
+}
+
+impl MemoryStore {
+    /// An empty store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Stores a file's manifest bytes.
+    pub fn put_manifest(&mut self, dir_id: &DirId, cipher_name: &str, bytes: Vec<u8>) {
+        self.manifests
+            .insert((dir_id.as_str().to_owned(), cipher_name.to_owned()), bytes);
+    }
+
+    /// Stores one chunk's bytes.
+    pub fn put_chunk(&mut self, id: &ChunkId, bytes: Vec<u8>) {
+        self.chunks.insert(id.clone(), bytes);
+    }
+
+    /// Stores everything a [`Sealed`] file produced — manifest and its distinct
+    /// chunks — so the store can serve a later read.
+    pub fn put_sealed(&mut self, dir_id: &DirId, cipher_name: &str, sealed: &Sealed) {
+        self.put_manifest(dir_id, cipher_name, sealed.manifest.clone());
+        for (id, bytes) in &sealed.chunks {
+            self.put_chunk(id, bytes.clone());
+        }
+    }
+}
+
+impl ContentStore for MemoryStore {
+    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>> {
+        self.manifests
+            .get(&(dir_id.as_str().to_owned(), cipher_name.to_owned()))
+            .cloned()
+    }
+
+    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>> {
+        self.chunks.get(id).cloned()
+    }
+}
+
+/// Anything that can go wrong reading through the filesystem.
+#[derive(Debug, thiserror::Error)]
+pub enum MountError {
+    /// Nothing is at that path.
+    #[error("no such file or directory: {0}")]
+    NoSuchFile(String),
+    /// A read was asked for a path that is a directory, not a file.
+    #[error("not a file: {0}")]
+    NotAFile(String),
+    /// The index knows the file but the store has no manifest for it yet.
+    #[error("no stored manifest for this file")]
+    MissingManifest,
+    /// Decryption or chunk fetch failed.
+    #[error(transparent)]
+    Sync(#[from] SyncError),
+}
+
+/// Result alias used across this crate.
+pub type Result<T> = std::result::Result<T, MountError>;
+
 /// A read-only snapshot of the vault tree built from an [`Index`].
 ///
 /// It is a value, not a live handle: the mount takes a snapshot per operation (or
@@ -78,7 +168,7 @@ pub struct DirEntry {
 /// in flight. Rebuilding it from the index is cheap.
 #[derive(Debug, Default, Clone)]
 pub struct Fs {
-    files: BTreeMap<String, Node>,
+    files: BTreeMap<String, FileEntry>,
     /// Every directory path; the root `""` is always present.
     dirs: BTreeSet<String>,
 }
@@ -106,14 +196,14 @@ impl Fs {
     pub fn from_entries<'a>(entries: impl Iterator<Item = &'a FileEntry>) -> Self {
         let mut fs = Self::empty();
         for entry in entries {
-            fs.add_file(&entry.path, entry.size, entry.revision);
+            fs.add_file(entry);
         }
         fs
     }
 
     /// Records a file and turns every ancestor prefix into a directory.
-    fn add_file(&mut self, raw_path: &str, size: u64, revision: u64) {
-        let path = normalize(raw_path);
+    fn add_file(&mut self, entry: &FileEntry) {
+        let path = normalize(&entry.path);
         if path.is_empty() {
             return;
         }
@@ -132,15 +222,7 @@ impl Fs {
             }
         }
         self.dirs.remove(&path);
-        self.files.insert(
-            path.clone(),
-            Node {
-                path,
-                kind: NodeKind::File,
-                size,
-                revision,
-            },
-        );
+        self.files.insert(path, entry.clone());
     }
 
     /// The node at `path`, or `None` if nothing is there. `""` and `"/"` are the root.
@@ -150,8 +232,13 @@ impl Fs {
         if path.is_empty() {
             return Some(Node::root());
         }
-        if let Some(node) = self.files.get(&path) {
-            return Some(node.clone());
+        if let Some(entry) = self.files.get(&path) {
+            return Some(Node {
+                path,
+                kind: NodeKind::File,
+                size: entry.size,
+                revision: entry.revision,
+            });
         }
         if self.dirs.contains(&path) {
             return Some(Node {
@@ -173,12 +260,12 @@ impl Fs {
             return None;
         }
         let mut children = Vec::new();
-        for (child_path, node) in &self.files {
+        for (child_path, entry) in &self.files {
             if parent_of(child_path) == dir {
                 children.push(DirEntry {
                     name: basename(child_path).to_owned(),
                     kind: NodeKind::File,
-                    size: node.size,
+                    size: entry.size,
                 });
             }
         }
@@ -193,6 +280,12 @@ impl Fs {
         }
         children.sort_by(|a, b| a.name.cmp(&b.name));
         Some(children)
+    }
+
+    /// The index record for a file path, if one exists.
+    #[must_use]
+    pub fn file(&self, path: &str) -> Option<&FileEntry> {
+        self.files.get(&normalize(path))
     }
 
     /// True when `path` names a directory (the root included).
@@ -212,6 +305,59 @@ impl Fs {
     #[must_use]
     pub fn file_paths(&self) -> Vec<String> {
         self.files.keys().cloned().collect()
+    }
+
+    /// Decrypts the whole file at `path` using the vault's keys and the store's
+    /// manifest and chunks.
+    ///
+    /// # Errors
+    ///
+    /// [`MountError::NoSuchFile`] / [`MountError::NotAFile`] if the path is not a
+    /// known file; [`MountError::MissingManifest`] if the store has no manifest;
+    /// otherwise the decrypt/`fetch` failure via [`MountError::Sync`].
+    pub fn read_all(&self, vault: &Vault, store: &dyn ContentStore, path: &str) -> Result<Vec<u8>> {
+        let entry = self.lookup_file(path)?;
+        let manifest = store
+            .manifest(&entry.dir_id, &entry.cipher_name)
+            .ok_or(MountError::MissingManifest)?;
+        let (bytes, _ids) =
+            vault.open(&entry.dir_id, &entry.cipher_name, &manifest, &mut |id| {
+                store.chunk(id).ok_or(SyncError::Integrity(
+                    "mount: chunk absent from content store",
+                ))
+            })?;
+        Ok(bytes)
+    }
+
+    /// Reads up to `len` bytes from `offset`. Reconstructs the file then slices;
+    /// chunk-range reads are a later optimisation, not a correctness concern.
+    ///
+    /// # Errors
+    ///
+    /// As [`Fs::read_all`]. Reads past the end yield an empty buffer, like POSIX.
+    pub fn read_range(
+        &self,
+        vault: &Vault,
+        store: &dyn ContentStore,
+        path: &str,
+        offset: u64,
+        len: usize,
+    ) -> Result<Vec<u8>> {
+        let bytes = self.read_all(vault, store, path)?;
+        let start = (offset as usize).min(bytes.len());
+        let end = start.saturating_add(len).min(bytes.len());
+        Ok(bytes[start..end].to_vec())
+    }
+
+    /// The file record for `path`, or a distinguishing error if it is absent or a
+    /// directory.
+    fn lookup_file(&self, path: &str) -> Result<&FileEntry> {
+        let normalized = normalize(path);
+        match self.files.get(&normalized) {
+            Some(entry) => Ok(entry),
+            None if self.dirs.contains(&normalized) => Err(MountError::NotAFile(path.to_owned())),
+            None => Err(MountError::NoSuchFile(path.to_owned())),
+        }
     }
 }
 
@@ -243,6 +389,7 @@ fn basename(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use syncbox_crypto::names::DirId;
+    use syncbox_crypto::{MasterKey, MasterKeys};
     use syncbox_index::MemoryIndex;
 
     use super::*;
@@ -286,8 +433,6 @@ mod tests {
     #[test]
     fn directories_come_from_path_prefixes_not_entries() {
         let fs = sample();
-        // "docs" and "docs/sub" were never entered as files; they exist because a
-        // path runs through them.
         assert_eq!(fs.lookup("docs").map(|n| n.kind), Some(NodeKind::Directory));
         assert_eq!(
             fs.lookup("docs/sub").map(|n| n.kind),
@@ -301,11 +446,7 @@ mod tests {
     fn root_listing_sorts_files_and_dirs_by_name() {
         let fs = sample();
         let entries = fs.readdir("").unwrap();
-        assert_eq!(
-            names(&entries),
-            vec!["a.txt", "docs"],
-            "top level is a file and one directory"
-        );
+        assert_eq!(names(&entries), vec!["a.txt", "docs"]);
         assert_eq!(entries[0].kind, NodeKind::File);
         assert_eq!(entries[1].kind, NodeKind::Directory);
     }
@@ -362,6 +503,101 @@ mod tests {
         let fs = Fs::from_index(&index);
         assert_eq!(names(&fs.readdir("").unwrap()), vec!["img", "notes.txt"]);
         assert_eq!(fs.lookup("img/logo.png").map(|n| n.size), Some(42));
+    }
+
+    // --- content reads -------------------------------------------------------
+
+    fn keys() -> MasterKeys {
+        MasterKeys {
+            primary: MasterKey::from_bytes(&[0x20; 32]).unwrap(),
+            hmac: MasterKey::from_bytes(&[0x00; 32]).unwrap(),
+        }
+    }
+
+    /// Seals `content` into the store and returns an index entry naming it `path`,
+    /// so an `Fs` built from that entry can be read back through `vault`.
+    fn stage(vault: &Vault, store: &mut MemoryStore, path: &str, content: &[u8]) -> FileEntry {
+        let dir_id = vault.root().clone();
+        let cipher = "FILE1CIPHER";
+        let sealed = vault.seal(&dir_id, cipher, content).expect("seal");
+        store.put_sealed(&dir_id, cipher, &sealed);
+        FileEntry {
+            size: content.len() as u64,
+            revision: 1,
+            chunk_ids: sealed.chunk_ids.clone(),
+            local_dirty: false,
+            ..FileEntry::fresh(path, dir_id, cipher)
+        }
+    }
+
+    #[test]
+    fn read_reconstructs_a_sealed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let content = b"the quick brown fox jumps over the lazy dog".to_vec();
+        let e = stage(&vault, &mut store, "hello.txt", &content);
+        let fs = Fs::from_entries([e].iter());
+
+        let got = fs.read_all(&vault, &store, "hello.txt").expect("read");
+        assert_eq!(got, content);
+    }
+
+    #[test]
+    fn ranged_read_slices_and_past_the_end_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let content = b"hello syncbox world".to_vec();
+        let e = stage(&vault, &mut store, "greet.txt", &content);
+        let fs = Fs::from_entries([e].iter());
+
+        assert_eq!(
+            fs.read_range(&vault, &store, "greet.txt", 6, 7)
+                .expect("slice"),
+            b"syncbox"
+        );
+        assert!(fs
+            .read_range(&vault, &store, "greet.txt", content.len() as u64, 10)
+            .expect("past end")
+            .is_empty());
+    }
+
+    #[test]
+    fn read_without_a_stored_manifest_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let store = MemoryStore::new(); // nothing staged
+        let fs = Fs::from_entries([entry("ghost.txt", 5, 1)].iter());
+        let err = fs
+            .read_all(&vault, &store, "ghost.txt")
+            .expect_err("no manifest");
+        assert!(matches!(err, MountError::MissingManifest));
+    }
+
+    #[test]
+    fn read_with_a_manifest_but_missing_chunks_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let mut store = MemoryStore::new();
+        let content = b"chunks not stored".to_vec();
+        let e = stage(&vault, &mut store, "f.txt", &content);
+        // Wipe the chunk bytes, keep the manifest.
+        for id in &e.chunk_ids {
+            store.chunks.remove(id);
+        }
+        let fs = Fs::from_entries([e].iter());
+        assert!(fs.read_all(&vault, &store, "f.txt").is_err());
+    }
+
+    #[test]
+    fn reading_a_directory_is_not_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
+        let store = MemoryStore::new();
+        let fs = sample();
+        let err = fs.read_all(&vault, &store, "docs").expect_err("a dir");
+        assert!(matches!(err, MountError::NotAFile(_)));
     }
 
     fn names(entries: &[DirEntry]) -> Vec<String> {
