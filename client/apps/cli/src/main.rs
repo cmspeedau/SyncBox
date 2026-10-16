@@ -111,6 +111,11 @@ enum SyncCommand {
         /// Where the local SQLite index lives; defaults to `<vault>/index.db`.
         #[arg(long)]
         index: Option<PathBuf>,
+        /// Also keep a local ciphertext store in this directory, so `syncbox mount`
+        /// can serve the files pulled from the server read-only. Omit for a plain
+        /// folder sync that stores no ciphertext copy.
+        #[arg(long)]
+        store: Option<PathBuf>,
         /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
         #[arg(long)]
         password: Option<String>,
@@ -135,6 +140,7 @@ fn main() -> Result<()> {
                     vault,
                     folder,
                     index,
+                    store,
                     password,
                 },
         } => sync_once(
@@ -143,6 +149,7 @@ fn main() -> Result<()> {
             &vault,
             &folder,
             index,
+            store,
             &resolve_password(password)?,
         ),
         Command::Sync {
@@ -207,6 +214,7 @@ fn sync_once(
     vault_dir: &Path,
     folder: &Path,
     index: Option<PathBuf>,
+    store: Option<PathBuf>,
     password: &str,
 ) -> Result<()> {
     let keys =
@@ -222,6 +230,12 @@ fn sync_once(
         .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
 
     let mut engine = Engine::new(index, vault);
+    // With a store configured, a pull also leaves its ciphertext here, so the same
+    // directory can be mounted read-only (`syncbox mount`) and serve server-sourced
+    // files. Without one, the pass is the plain plaintext-folder sync as before.
+    if let Some(store) = store {
+        engine = engine.with_store(syncbox_mount::DiskStore::new(store));
+    }
     let report = engine
         .sync_once(&mut client, &today())
         .context("sync pass failed")?;
@@ -309,7 +323,9 @@ fn mount_cmd(
             };
             // The mountpoint becomes the plaintext sync folder; keep it in sync.
             loop {
-                sync_once(server, vault_id, vault_dir, mountpoint, None, password)?;
+                sync_once(
+                    server, vault_id, vault_dir, mountpoint, None, None, password,
+                )?;
                 std::thread::sleep(std::time::Duration::from_secs(30));
             }
         }

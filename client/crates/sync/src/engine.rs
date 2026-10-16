@@ -35,7 +35,25 @@ use syncbox_transport::{Client, Http, TransportError};
 
 use crate::conflict::conflicted_copy_name;
 use crate::error::{Result, SyncError};
+use crate::store::PullStore;
 use crate::vault::Vault;
+
+/// The optional local store a pull tees the ciphertext it downloads into, so a
+/// read-only mount can later serve a server-sourced file without fetching it again.
+/// `None` for a plain plaintext-folder sync, which keeps no ciphertext copy. A newtype
+/// so the derived [`Debug`] on [`Engine`] does not have to print a `dyn` trait object.
+/// `Send + Sync` because the [`syncbox_agent`](https://docs.rs/syncbox-agent) worker
+/// drives an engine from a background thread.
+struct Store(Option<Box<dyn PullStore + Send + Sync>>);
+
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            Some(_) => "Store(installed)",
+            None => "Store(none)",
+        })
+    }
+}
 
 /// What one sync pass did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -78,13 +96,33 @@ pub struct Engine<I: Index> {
     pub index: I,
     /// The unlocked vault whose keys and plaintext tree this engine syncs.
     pub vault: Vault,
+    /// Where a pull deposits downloaded ciphertext, if a local store is configured.
+    store: Store,
 }
 
 impl<I: Index> Engine<I> {
-    /// Wraps an index and a vault.
+    /// Wraps an index and a vault, with no local content store (a plain folder sync).
     #[must_use]
     pub fn new(index: I, vault: Vault) -> Self {
-        Self { index, vault }
+        Self {
+            index,
+            vault,
+            store: Store(None),
+        }
+    }
+
+    /// Adds a local content store: on a pull, each file's manifest and downloaded
+    /// chunks are teed into it, so a read-only mount backed by the same store can serve
+    /// server-sourced files without re-fetching them. Chaining constructor.
+    #[must_use]
+    pub fn with_store(mut self, store: impl PullStore + Send + Sync + 'static) -> Self {
+        self.set_store(store);
+        self
+    }
+
+    /// Installs (or replaces) the local content store a pull writes into.
+    pub fn set_store(&mut self, store: impl PullStore + Send + Sync + 'static) {
+        self.store = Store(Some(Box::new(store)));
     }
 
     /// Paths with local content the server does not have yet, in index order.
@@ -224,11 +262,26 @@ impl<I: Index> Engine<I> {
             let manifest = BASE64
                 .decode(&revision.manifest)
                 .map_err(|_| SyncError::Integrity("manifest is not valid base64"))?;
+            // When a local store is configured, record each downloaded chunk as it
+            // arrives, then store the manifest too, so a read-only mount backed by the
+            // same store can serve this file later without fetching it again. With no
+            // store the download path is byte-identical to a plain folder sync.
+            let tee = self.store.0.is_some();
+            let mut downloaded: Vec<(ChunkId, Vec<u8>)> = Vec::new();
             let (plaintext, chunk_ids) =
                 self.vault
                     .open(&dir_id, &revision.cipher_name, &manifest, &mut |id| {
-                        client.download_chunk(vault_id, id).map_err(SyncError::from)
+                        let stored = client
+                            .download_chunk(vault_id, id)
+                            .map_err(SyncError::from)?;
+                        if tee {
+                            downloaded.push((id.clone(), stored.clone()));
+                        }
+                        Ok(stored)
                     })?;
+            if let Some(store) = self.store.0.as_mut() {
+                store.put_pulled(&dir_id, &revision.cipher_name, &manifest, &downloaded)?;
+            }
             write_local(self.vault.plaintext_root(), &path, &plaintext)?;
             // Record the mtime the filesystem actually landed, so the next scan
             // sees this file as unchanged rather than freshly touched.

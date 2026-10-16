@@ -12,12 +12,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use syncbox_crypto::{MasterKey, MasterKeys};
+use syncbox_crypto::names::DirId;
+use syncbox_crypto::{ChunkId, MasterKey, MasterKeys};
 use syncbox_index::MemoryIndex;
-use syncbox_sync::{Engine, Vault};
+use syncbox_sync::{Engine, PullStore, SyncError, Vault};
 use syncbox_transport::{Client, Http, Request, Response, Result as TResult, TransportError};
 
 // ---- the fake server ---------------------------------------------------------
@@ -430,4 +432,83 @@ fn pseudorandom(len: usize) -> Vec<u8> {
         out.push((state.wrapping_mul(0x2545_F491_4F6C_DD1D) >> 56) as u8);
     }
     out
+}
+
+// ---- the pull→store tee ------------------------------------------------------
+
+/// A [`PullStore`] that records what a pull downloaded, behind a shared handle so the
+/// test can inspect it after the engine (which owns the store) has synced. This stands
+/// in for the local ciphertext store a mounted vault reads from. `Arc<Mutex<..>>` so it
+/// satisfies the engine's `Send + Sync` store bound, as a real threaded client's would.
+#[derive(Clone, Default)]
+struct TeeStore(Arc<Mutex<Tee>>);
+
+#[derive(Default)]
+struct Tee {
+    manifests: HashMap<(String, String), Vec<u8>>,
+    chunks: HashMap<String, Vec<u8>>,
+}
+
+impl PullStore for TeeStore {
+    fn put_pulled(
+        &mut self,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+        chunks: &[(ChunkId, Vec<u8>)],
+    ) -> std::io::Result<()> {
+        let mut tee = self.0.lock().unwrap();
+        tee.manifests.insert(
+            (dir_id.as_str().to_owned(), cipher_name.to_owned()),
+            manifest.to_vec(),
+        );
+        for (id, bytes) in chunks {
+            tee.chunks.insert(id.as_str().to_owned(), bytes.to_vec());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_pull_populates_a_store_a_mount_can_read_from() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(b_root.path().join("docs")).unwrap();
+
+    // A uploads a file into a subdirectory.
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "docs/report.md", b"# server-only content");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    // B pulls, with a local content store installed on the engine.
+    let tee = TeeStore::default();
+    let store = tee.clone(); // a second handle to the same recording
+    let mut b = engine(b_root.path()).with_store(store);
+    let mut b_client = client(&shared);
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1, "B downloaded A's file");
+
+    // The store now holds the manifest and chunks for that file, under its vault
+    // coordinates — independently enough to decrypt it WITHOUT the server or B's copy
+    // on disk, which is exactly what a read-only mount does via `Vault::open`.
+    let (dir_id, cipher_name, _name) = b.vault.locate("docs/report.md").unwrap();
+    let recorded = tee.0.lock().unwrap();
+    let manifest = recorded
+        .manifests
+        .get(&(dir_id.as_str().to_owned(), cipher_name.clone()))
+        .expect("the pull stored the manifest under the file's coordinates");
+    let (plaintext, ids) = b
+        .vault
+        .open(&dir_id, &cipher_name, manifest, &mut |id| {
+            recorded
+                .chunks
+                .get(id.as_str())
+                .cloned()
+                .ok_or(SyncError::Integrity("chunk missing from tee store"))
+        })
+        .expect("reconstructs from the store alone");
+    assert_eq!(plaintext, b"# server-only content");
+    assert!(!ids.is_empty(), "the chunk ids were recorded");
 }

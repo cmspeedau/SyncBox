@@ -24,10 +24,12 @@ pub mod chunker;
 pub mod conflict;
 pub mod engine;
 pub mod error;
+pub mod store;
 pub mod vault;
 
 pub use chunker::{Chunk, Chunker, FastCdc, FixedSize};
 pub use conflict::conflicted_copy_name;
 pub use engine::{Engine, SyncReport};
 pub use error::{Result, SyncError};
+pub use store::{NullStore, PullStore};
 pub use vault::{Sealed, Vault};
