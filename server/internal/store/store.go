@@ -315,19 +315,47 @@ func (m *Memory) DumpMetadata(ctx context.Context) ([]byte, error) {
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ID < chunks[j].ID })
 	sort.Strings(vaults)
 
-	// A stable field order and sorted keys keep two snapshots of the same state
-	// byte-identical, which makes a restore verifiable against a recorded hash.
-	doc := struct {
-		Chunks    []Chunk               `json:"chunks"`
-		Vaults    []string              `json:"vaults"`
-		Revisions map[string][]Revision `json:"revisions"`
-	}{Chunks: chunks, Vaults: vaults, Revisions: revisions}
+	return encodeMetadata(Metadata{Chunks: chunks, Vaults: vaults, Revisions: revisions})
+}
 
+// Metadata is the bookkeeping a snapshot captures: which chunks exist and which
+// revisions each vault holds. It never contains chunk content. The durable store
+// and the in-memory store both serialise to this one shape so the backup engine,
+// the restore path, and the checksums in a manifest all speak a single format.
+type Metadata struct {
+	Chunks    []Chunk               `json:"chunks"`
+	Vaults    []string              `json:"vaults"`
+	Revisions map[string][]Revision `json:"revisions"`
+}
+
+// encodeMetadata renders the document with a stable field order and sorted keys,
+// so two snapshots of the same state are byte-identical and a restore can be
+// verified against a recorded hash. Callers sort before handing it over.
+func encodeMetadata(doc Metadata) ([]byte, error) {
+	if doc.Chunks == nil {
+		doc.Chunks = []Chunk{}
+	}
+	if doc.Vaults == nil {
+		doc.Vaults = []string{}
+	}
+	if doc.Revisions == nil {
+		doc.Revisions = map[string][]Revision{}
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encoding metadata: %w", err)
 	}
 	return data, nil
+}
+
+// DecodeMetadata parses a document produced by DumpMetadata. The restore path
+// hands it to a durable store to rebuild its tables from a snapshot.
+func DecodeMetadata(data []byte) (Metadata, error) {
+	var doc Metadata
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return Metadata{}, fmt.Errorf("decoding metadata: %w", err)
+	}
+	return doc, nil
 }
 
 // CheckChunkID rejects ids that could escape the blob directory or that the
