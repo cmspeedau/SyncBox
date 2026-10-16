@@ -20,6 +20,12 @@
 //!
 //! Locking the vault is dropping the [`Agent`]: the master keys live inside the
 //! [`Vault`] it owns, so nothing survives the drop.
+//!
+//! For a running desktop, [`Agent::spawn_loop`] moves the session onto a worker
+//! thread that syncs on an interval (and whenever [`SyncWorker::request_sync`] is
+//! pressed) and publishes an [`AgentStatus`] the tray reads without ever blocking
+//! on the network. The worker [`SyncWorker`] is the handle the window holds;
+//! dropping it stops the loop.
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,9 +34,12 @@ use syncbox_index::{Index, SqliteIndex};
 use syncbox_sync::{Engine, SyncReport, Vault};
 use syncbox_transport::{Client, Http, TransportError};
 
+mod worker;
+
 // Re-exported so a window can read the Backups panel's rows without naming the
 // transport crate directly.
 pub use syncbox_transport::dto::{BackupManifest, Snapshot};
+pub use worker::SyncWorker;
 
 /// How far the session is from showing a settled vault.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -60,6 +69,9 @@ pub struct AgentStatus {
     pub last_error: Option<String>,
     /// What the most recent pass did, for the "last synced: 2 up, 1 down" line.
     pub last_report: Option<SyncReport>,
+    /// How many passes have finished, success or failure. A window watches this
+    /// tick over to know the loop is alive without reading wall-clock time.
+    pub passes: u32,
 }
 
 impl AgentStatus {
@@ -263,6 +275,7 @@ impl<I: Index> Agent<I> {
                 self.status.last_error = None;
                 self.status.last_sync_unix = Some(at);
                 self.status.state = SyncState::Idle;
+                self.status.passes += 1;
                 self.push_event(SyncEvent::Done {
                     report,
                     at_unix: at,
@@ -273,6 +286,7 @@ impl<I: Index> Agent<I> {
                 let reason = error.to_string();
                 self.status.last_error = Some(reason.clone());
                 self.status.state = SyncState::Error;
+                self.status.passes += 1;
                 self.push_event(SyncEvent::Failed {
                     error: reason,
                     at_unix: at,
