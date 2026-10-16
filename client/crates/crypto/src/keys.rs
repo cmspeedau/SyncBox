@@ -39,9 +39,14 @@ impl MasterKey {
     ///
     /// # Errors
     ///
-    /// Returns [`CryptoError::Unimplemented`] until M1 adds the CSPRNG backend.
+    /// Returns [`CryptoError::Backend`] if the OS entropy source is unavailable,
+    /// which on the supported platforms means a broken environment rather than
+    /// anything the caller can fix.
     pub fn generate() -> Result<Self> {
-        Err(CryptoError::Unimplemented("CSPRNG master key generation"))
+        let mut bytes = [0u8; MASTER_KEY_LEN];
+        getrandom::getrandom(&mut bytes)
+            .map_err(|_| CryptoError::Backend("operating-system entropy source"))?;
+        Ok(Self { bytes })
     }
 
     /// The key bytes. Never log them and never store them unwrapped.
@@ -61,6 +66,14 @@ pub struct MasterKeys {
     pub primary: MasterKey,
     /// Derives directory ids and chunk ids.
     pub hmac: MasterKey,
+}
+
+/// Redacted, like [`MasterKey`]: a pair of master keys that prints is a pair that
+/// leaked.
+impl std::fmt::Debug for MasterKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MasterKeys(<redacted>)")
+    }
 }
 
 impl MasterKeys {
@@ -93,5 +106,21 @@ mod tests {
     fn wrong_length_errors_are_explainable() {
         let err = MasterKey::from_bytes(b"short").expect_err("too short");
         assert_eq!(err.to_string(), "invalid input: master key is not 32 bytes");
+    }
+
+    #[test]
+    fn generated_keys_are_full_length_and_distinct() {
+        let a = MasterKey::generate().expect("CSPRNG");
+        let b = MasterKey::generate().expect("CSPRNG");
+        assert_eq!(a.as_bytes().len(), MASTER_KEY_LEN);
+        // Two CSPRNG draws colliding is the failure mode worth a test for; the
+        // chance of a false failure here is 1 in 2^256.
+        assert_ne!(a.as_bytes(), b.as_bytes());
+    }
+
+    #[test]
+    fn generated_pair_is_two_independent_keys() {
+        let keys = MasterKeys::generate().expect("CSPRNG");
+        assert_ne!(keys.primary.as_bytes(), keys.hmac.as_bytes());
     }
 }

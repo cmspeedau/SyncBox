@@ -11,7 +11,10 @@
 //! [`DIR_MARKER_DIR`], so a client can rediscover directories without decrypting
 //! any content.
 
+use crate::derive::{hkdf_sha256, hmac_sha256};
 use crate::error::{CryptoError, Result};
+use crate::keys::MasterKey;
+use aes_siv::{siv::Aes256Siv, KeyInit};
 
 /// Suffix on every encrypted file.
 pub const FILE_SUFFIX: &str = ".c9r";
@@ -33,13 +36,15 @@ const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 pub struct DirId(String);
 
 impl DirId {
-    /// The id of the vault root, the HMAC of the empty string.
+    /// The id of the vault root: the HMAC of the empty string under the vault's
+    /// `hmacMasterKey`. Every other id is derived from this one.
     ///
     /// # Errors
     ///
-    /// Returns [`CryptoError::Unimplemented`] until M1 adds HMAC-SHA256.
-    pub fn root() -> Result<Self> {
-        Err(CryptoError::Unimplemented("root directory id"))
+    /// Returns [`CryptoError::Backend`] if HMAC rejects the key length, which the
+    /// 32-byte master key never triggers.
+    pub fn root(hmac_key: &MasterKey) -> Result<Self> {
+        Ok(Self(base32_encode(&hmac_sha256(hmac_key.as_bytes(), b"")?)))
     }
 
     /// Wraps an id that is already encoded.
@@ -146,34 +151,76 @@ fn symbol_value(ch: char) -> Result<u8> {
         ))
 }
 
-/// Derives a child directory id from its parent and encrypted name.
+/// Derives a child directory id from its parent's id and the child's encrypted
+/// name, per `docs/format.md`:
+///
+/// ```text
+/// BASE32( HMAC-SHA256( hmacMasterKey, parent || "\n" || encryptedName ) )
+/// ```
+///
+/// Folding the parent in is what makes a rename or move anywhere in the tree
+/// re-key everything beneath it, so the server cannot tell a folder was moved.
 ///
 /// # Errors
 ///
-/// Returns [`CryptoError::Unimplemented`] until M1 adds HMAC-SHA256.
-pub fn child_dir_id(parent: &DirId, encrypted_name: &str) -> Result<DirId> {
-    let _ = (parent, encrypted_name);
-    Err(CryptoError::Unimplemented("directory id derivation"))
+/// Propagates [`CryptoError::Backend`] from HMAC.
+pub fn child_dir_id(hmac_key: &MasterKey, parent: &DirId, encrypted_name: &str) -> Result<DirId> {
+    let mut message = Vec::with_capacity(parent.as_str().len() + 1 + encrypted_name.len());
+    message.extend_from_slice(parent.as_str().as_bytes());
+    message.push(b'\n');
+    message.extend_from_slice(encrypted_name.as_bytes());
+    Ok(DirId(base32_encode(&hmac_sha256(
+        hmac_key.as_bytes(),
+        &message,
+    )?)))
 }
 
-/// Encrypts one filename for the directory it lives in.
-///
-/// # Errors
-///
-/// Returns [`CryptoError::Unimplemented`] until M1 adds AES-SIV.
-pub fn encrypt_filename(dir: &DirId, name: &str) -> Result<String> {
-    let _ = (dir, name);
-    Err(CryptoError::Unimplemented("AES-SIV filename encryption"))
+/// The AES-SIV key a filename in `dir` is encrypted under:
+/// `HKDF(primaryMasterKey, "siv" || dirId)`, 64 bytes (two AES-256 halves).
+fn filename_key(primary_key: &MasterKey, dir: &DirId) -> Result<Vec<u8>> {
+    let mut info = b"siv".to_vec();
+    info.extend_from_slice(dir.as_str().as_bytes());
+    hkdf_sha256(primary_key.as_bytes(), &info, 64)
 }
 
-/// Decrypts one filename from the directory it lives in.
+/// Encrypts one filename for the directory it lives in, returning the base32
+/// ciphertext (without the `.c9r` suffix the layout adds).
+///
+/// The directory id is both the key-derivation input and the associated data, so
+/// the same name in two directories gives unrelated ciphertexts, and a ciphertext
+/// name cannot be moved between directories without failing to decrypt.
 ///
 /// # Errors
 ///
-/// Returns [`CryptoError::Unimplemented`] until M1 adds AES-SIV.
-pub fn decrypt_filename(dir: &DirId, cipher_name: &str) -> Result<String> {
-    let _ = (dir, cipher_name);
-    Err(CryptoError::Unimplemented("AES-SIV filename decryption"))
+/// Returns [`CryptoError::Backend`] if AES-SIV rejects the derived key length.
+pub fn encrypt_filename(primary_key: &MasterKey, dir: &DirId, name: &str) -> Result<String> {
+    let key = filename_key(primary_key, dir)?;
+    let mut siv =
+        Aes256Siv::new_from_slice(&key).map_err(|_| CryptoError::Backend("AES-SIV key length"))?;
+    let associated_data = dir.as_str().as_bytes();
+    let ciphertext = siv
+        .encrypt([associated_data], name.as_bytes())
+        .map_err(|_| CryptoError::Backend("AES-SIV encryption failed"))?;
+    Ok(base32_encode(&ciphertext))
+}
+
+/// Decrypts one filename from the directory it claims to live in.
+///
+/// # Errors
+///
+/// Returns [`CryptoError::KeyAuth`] when the name did not authenticate — it was
+/// made for a different directory, or tampered with — and
+/// [`CryptoError::InvalidInput`] if it is not valid base32.
+pub fn decrypt_filename(primary_key: &MasterKey, dir: &DirId, cipher_name: &str) -> Result<String> {
+    let key = filename_key(primary_key, dir)?;
+    let mut siv =
+        Aes256Siv::new_from_slice(&key).map_err(|_| CryptoError::Backend("AES-SIV key length"))?;
+    let associated_data = dir.as_str().as_bytes();
+    let ciphertext = base32_decode(cipher_name)?;
+    let plaintext = siv
+        .decrypt([associated_data], &ciphertext)
+        .map_err(|_| CryptoError::KeyAuth)?;
+    String::from_utf8(plaintext).map_err(|_| CryptoError::KeyAuth)
 }
 
 #[cfg(test)]
@@ -222,16 +269,67 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_name_operations_say_so() {
-        let dir = DirId::from_base32("AA");
-        assert!(dir_id_is_unimplemented());
+    fn root_dir_id_is_deterministic_and_key_dependent() {
+        let key = MasterKey::from_bytes(&[7u8; 32]).unwrap();
+        let other = MasterKey::from_bytes(&[8u8; 32]).unwrap();
+        let root = DirId::root(&key).unwrap();
+        assert_eq!(root.as_str(), DirId::root(&key).unwrap().as_str());
+        assert_eq!(root.to_string(), root.as_str());
+        assert_ne!(root, DirId::root(&other).unwrap());
+    }
+
+    #[test]
+    fn filename_round_trips_within_its_directory() {
+        let primary = MasterKey::from_bytes(&[1u8; 32]).unwrap();
+        let dir = DirId::from_base32("ABCDEFGHIJKM");
+        for name in ["notes.txt", "a", "résumé – naïve.txt", "tabs\tand spaces"] {
+            let cipher = encrypt_filename(&primary, &dir, name).unwrap();
+            assert!(
+                cipher == cipher.to_ascii_uppercase(),
+                "encoded name must be uppercase base32"
+            );
+            assert_eq!(decrypt_filename(&primary, &dir, &cipher).unwrap(), name);
+        }
+    }
+
+    #[test]
+    fn the_same_name_in_two_directories_gives_unrelated_ciphertext() {
+        let primary = MasterKey::from_bytes(&[1u8; 32]).unwrap();
+        let dir_a = DirId::from_base32("AAAAAAAAAAAA");
+        let dir_b = DirId::from_base32("BBBBBBBBBBBB");
+        let in_a = encrypt_filename(&primary, &dir_a, "secret.txt").unwrap();
+        let in_b = encrypt_filename(&primary, &dir_b, "secret.txt").unwrap();
+        assert_ne!(in_a, in_b);
+        // A name made for one directory must not decrypt in another: the directory
+        // id is associated data, so the tag fails.
         assert!(matches!(
-            encrypt_filename(&dir, "notes.txt"),
-            Err(CryptoError::Unimplemented(_))
+            decrypt_filename(&primary, &dir_b, &in_a),
+            Err(CryptoError::KeyAuth)
         ));
     }
 
-    fn dir_id_is_unimplemented() -> bool {
-        matches!(DirId::root(), Err(CryptoError::Unimplemented(_)))
+    #[test]
+    fn child_dir_id_depends_on_both_parent_and_name() {
+        let hmac = MasterKey::from_bytes(&[9u8; 32]).unwrap();
+        let parent = DirId::root(&hmac).unwrap();
+        let child = child_dir_id(&hmac, &parent, "SOMEENCNAME").unwrap();
+        assert_eq!(child, child_dir_id(&hmac, &parent, "SOMEENCNAME").unwrap());
+        // Changing the parent or the name changes the id entirely.
+        assert_ne!(child, child_dir_id(&hmac, &parent, "OTHERENAME").unwrap());
+        let other_parent = DirId::from_base32("ZZZZZZZZZZZZ");
+        assert_ne!(
+            child,
+            child_dir_id(&hmac, &other_parent, "SOMEENCNAME").unwrap()
+        );
+    }
+
+    #[test]
+    fn decrypting_a_non_base32_name_is_input_invalid() {
+        let primary = MasterKey::from_bytes(&[1u8; 32]).unwrap();
+        let dir = DirId::from_base32("ABCDEFGHIJKM");
+        assert!(matches!(
+            decrypt_filename(&primary, &dir, "not base32!!"),
+            Err(CryptoError::InvalidInput(_))
+        ));
     }
 }

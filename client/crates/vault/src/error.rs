@@ -5,10 +5,6 @@ use thiserror::Error;
 /// Everything that can go wrong in this crate.
 #[derive(Debug, Error)]
 pub enum VaultError {
-    /// The operation is part of the intended API but is not implemented yet.
-    #[error("{0} is not implemented yet")]
-    Unimplemented(&'static str),
-
     /// A cryptographic operation failed.
     #[error(transparent)]
     Crypto(#[from] syncbox_crypto::CryptoError),

@@ -16,20 +16,22 @@
 //!
 //! ## Status
 //!
-//! M1 implements the primitives. Until then the encoders, layout constants, and
-//! parameter types here are real and tested, while key derivation, AES-SIV, and
-//! AES-GCM entry points return [`CryptoError::Unimplemented`].
-//!
-//! [`CryptoError::Unimplemented`]: error::CryptoError::Unimplemented
+//! M1 is complete: Argon2id, AES-SIV filenames, AES-GCM content, the HKDF key
+//! tree, CSPRNG key generation, and the master-key wrap/unwrap that `vault.json`
+//! relies on are all implemented and covered by round-trip tests and the vectors
+//! in `docs/format.md`.
 
 pub mod content;
+mod derive;
 pub mod error;
 pub mod kdf;
 pub mod keys;
 pub mod names;
+pub mod wrap;
 
 pub use content::ChunkId;
 pub use error::{CryptoError, Result};
 pub use kdf::{derive_kek, Kek, Params as KdfParams};
 pub use keys::{MasterKey, MasterKeys};
-pub use names::DirId;
+pub use names::{child_dir_id, decrypt_filename, encrypt_filename, DirId};
+pub use wrap::{header_mac, unwrap_master_keys, wrap_master_keys};
