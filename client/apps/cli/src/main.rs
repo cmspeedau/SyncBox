@@ -10,6 +10,9 @@
 //! against a live server. Watch mode (`sync watch`) is a loop over `sync once` and
 //! is the one command still open in this milestone.
 
+#[cfg(feature = "mount")]
+mod fusefs;
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -45,6 +48,25 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    /// Mount a vault read-only via FUSE (needs the `mount` feature).
+    Mount {
+        /// Directory holding `vault.json`, its `index.db`, and local ciphertext blobs.
+        vault: PathBuf,
+        /// Existing directory to mount the vault on.
+        mountpoint: PathBuf,
+        /// Where local ciphertext blobs live; defaults to `<vault>/blobs`.
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// Server origin to fall back to folder-syncing when FUSE is unavailable.
+        #[arg(long)]
+        server: Option<String>,
+        /// Vault id, with `--server`, for the folder-sync fallback.
+        #[arg(long)]
+        vault_id: Option<String>,
+        /// Vault password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
     },
     /// Report the format this build reads and writes.
     Status,
@@ -126,6 +148,21 @@ fn main() -> Result<()> {
         Command::Sync {
             command: SyncCommand::Watch,
         } => bail!("watch mode is not implemented yet (run `sync once` in a loop)"),
+        Command::Mount {
+            vault,
+            mountpoint,
+            store,
+            server,
+            vault_id,
+            password,
+        } => mount_cmd(
+            &vault,
+            &mountpoint,
+            store,
+            server.as_deref(),
+            vault_id.as_deref(),
+            &resolve_password(password)?,
+        ),
         Command::Status => status(),
     }
 }
@@ -247,6 +284,89 @@ fn status() -> Result<()> {
     );
     println!("capabilities     : create, unlock, sync once");
     Ok(())
+}
+
+/// Mounts the vault read-only, or — when no FUSE driver is available — falls back to
+/// syncing `mountpoint` as a plaintext folder against `server`.
+#[cfg(feature = "mount")]
+fn mount_cmd(
+    vault_dir: &Path,
+    mountpoint: &Path,
+    store: Option<PathBuf>,
+    server: Option<&str>,
+    vault_id: Option<&str>,
+    password: &str,
+) -> Result<()> {
+    match try_mount(vault_dir, mountpoint, store, password) {
+        Ok(()) => {
+            println!("unmounted.");
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("FUSE mount unavailable ({error}); falling back to folder sync.");
+            let (Some(server), Some(vault_id)) = (server, vault_id) else {
+                bail!("no FUSE driver, and no --server/--vault-id to fall back to folder sync");
+            };
+            // The mountpoint becomes the plaintext sync folder; keep it in sync.
+            loop {
+                sync_once(server, vault_id, vault_dir, mountpoint, None, password)?;
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+/// Builds the read-only FUSE view from the vault header, its index, and its local
+/// ciphertext blobs, and mounts it (blocking until unmounted).
+#[cfg(feature = "mount")]
+fn try_mount(
+    vault_dir: &Path,
+    mountpoint: &Path,
+    store: Option<PathBuf>,
+    password: &str,
+) -> Result<()> {
+    let keys = syncbox_vault::unlock(vault_dir, password)
+        .context("could not unlock the vault to mount")?;
+    let index_path = vault_dir.join("index.db");
+    let index = SqliteIndex::open(&index_path)
+        .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
+    let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
+    // The read path derives everything from the index and the local store; a server
+    // vault id and a plaintext root are not consulted, so they are placeholders here.
+    let vault = Vault::new(keys, String::new(), vault_dir)?;
+    let store = syncbox_mount::DiskStore::new(store_dir);
+    let fs = syncbox_mount::Fs::from_index(&index);
+
+    println!(
+        "mounting {} read-only at {} (Ctrl-C, or `fusermount3 -u {}`, to unmount)",
+        vault_dir.display(),
+        mountpoint.display(),
+        mountpoint.display()
+    );
+    let options = [
+        fuser::MountOption::RO,
+        fuser::MountOption::FSName("syncbox".to_owned()),
+        fuser::MountOption::DefaultPermissions,
+    ];
+    fuser::mount2(
+        crate::fusefs::ReadonlyFS::new(fs, vault, store),
+        mountpoint,
+        &options,
+    )
+    .map_err(|e| anyhow::anyhow!("mount failed: {e}"))
+}
+
+/// Without the `mount` feature, `syncbox mount` explains how to build it in.
+#[cfg(not(feature = "mount"))]
+fn mount_cmd(
+    _vault_dir: &Path,
+    _mountpoint: &Path,
+    _store: Option<PathBuf>,
+    _server: Option<&str>,
+    _vault_id: Option<&str>,
+    _password: &str,
+) -> Result<()> {
+    bail!("`syncbox mount` needs the `mount` feature: rebuild with `--features mount`")
 }
 
 /// Today's date as `YYYY-MM-DD`, used to label conflicted copies. The clock lives

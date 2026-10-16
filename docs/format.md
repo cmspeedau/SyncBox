@@ -196,6 +196,30 @@ nothing across vaults and nothing about what a chunk says. File sizes and modifi
 times are also plaintext, because the client cannot be told how much to fetch without
 them.
 
+## Mounting a vault (read-only)
+
+A vault can be exposed as a filesystem without ever writing plaintext to disk. The
+mount's **namespace** is the local index (which stores plaintext paths — never sent to
+the server), not the ciphertext: a path is a file when the index has a record for it,
+and a directory when it is the prefix of some path. Empty directories are therefore not
+stored records; a directory exists once a file is written beneath it. A path is turned
+into content by `Vault::locate` (the directory id and encrypted name), and its bytes are
+decrypted from a **content store** holding the file's manifest and chunks.
+
+The content store keeps blobs on disk under opaque, sharded names — the same "a folder
+of ciphertext" property as the vault itself:
+
+```text
+<store>/chunks/<id[0..2]>/<id[2..4]>/<id>                       a sealed chunk
+<store>/manifests/<dirId[0..2]>/<dirId[2..4]>/<dirId>/<name>   a file's manifest
+```
+
+The store is populated by local writes (each seals through the vault and marks the index
+record dirty for the next sync) and by a sync pull. `syncbox mount <vault> <dir>` shows
+the tree read-only over FUSE; the `fuser` adapter is the CLI's optional `mount` feature,
+so the workspace build needs no libfuse. When no FUSE driver is present the command
+falls back to syncing `dir` as an ordinary plaintext folder.
+
 ## Test vectors
 
 Every value below follows from only the fixed inputs shown, so an independent
