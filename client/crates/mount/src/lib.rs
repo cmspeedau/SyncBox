@@ -14,17 +14,20 @@
 //!
 //! Content is read through a [`ContentStore`]: the per-file manifest and the chunk
 //! blobs a file is made of. [`Fs::read_all`] fetches those and decrypts via
-//! [`Vault::open`]. Where the store gets its bytes (an in-memory map in tests, a local
-//! ciphertext folder later, the server on demand) is the store's business, not the
-//! filesystem's.
+//! [`Vault::open`]. Where the store gets its bytes — an in-memory [`MemoryStore`] in
+//! tests, a [`DiskStore`] folder of ciphertext on disk, the server on demand — is the
+//! store's business, not the filesystem's.
 //!
 //! [`fuser`]: https://docs.rs/fuser
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
-use syncbox_crypto::{names::DirId, ChunkId};
 use syncbox_index::{FileEntry, Index};
-use syncbox_sync::{Sealed, SyncError, Vault};
+use syncbox_sync::{SyncError, Vault};
+
+mod store;
+
+pub use store::{ContentStore, DiskStore, MemoryStore};
 
 /// Whether a path names a directory or a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,68 +80,6 @@ pub struct DirEntry {
     pub kind: NodeKind,
     /// Byte size (0 for a directory).
     pub size: u64,
-}
-
-/// Where a file's encrypted material comes from: its manifest and its chunks.
-///
-/// The filesystem asks; the store answers. This indirection is what lets the read
-/// path be tested against an in-memory store and run against a local ciphertext
-/// folder (or, later, the server) without the tree logic knowing the difference.
-pub trait ContentStore {
-    /// The stored (encrypted) manifest bytes for a file, by its directory id and
-    /// encrypted name.
-    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>>;
-
-    /// The stored bytes of one chunk, by content id.
-    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>>;
-}
-
-/// An in-memory [`ContentStore`]: the read backend for tests, and the shape a
-/// write-through cache will take.
-#[derive(Clone, Debug, Default)]
-pub struct MemoryStore {
-    manifests: HashMap<(String, String), Vec<u8>>,
-    chunks: HashMap<ChunkId, Vec<u8>>,
-}
-
-impl MemoryStore {
-    /// An empty store.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Stores a file's manifest bytes.
-    pub fn put_manifest(&mut self, dir_id: &DirId, cipher_name: &str, bytes: Vec<u8>) {
-        self.manifests
-            .insert((dir_id.as_str().to_owned(), cipher_name.to_owned()), bytes);
-    }
-
-    /// Stores one chunk's bytes.
-    pub fn put_chunk(&mut self, id: &ChunkId, bytes: Vec<u8>) {
-        self.chunks.insert(id.clone(), bytes);
-    }
-
-    /// Stores everything a [`Sealed`] file produced — manifest and its distinct
-    /// chunks — so the store can serve a later read.
-    pub fn put_sealed(&mut self, dir_id: &DirId, cipher_name: &str, sealed: &Sealed) {
-        self.put_manifest(dir_id, cipher_name, sealed.manifest.clone());
-        for (id, bytes) in &sealed.chunks {
-            self.put_chunk(id, bytes.clone());
-        }
-    }
-}
-
-impl ContentStore for MemoryStore {
-    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>> {
-        self.manifests
-            .get(&(dir_id.as_str().to_owned(), cipher_name.to_owned()))
-            .cloned()
-    }
-
-    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>> {
-        self.chunks.get(id).cloned()
-    }
 }
 
 /// Anything that can go wrong reading through the filesystem.
@@ -564,6 +505,28 @@ mod tests {
     }
 
     #[test]
+    fn read_works_over_the_disk_store() {
+        let files = tempfile::tempdir().unwrap();
+        let vault = Vault::new(keys(), "vault", files.path()).expect("vault");
+        let dir_id = vault.root().clone();
+        let content = b"reading a file served from the on-disk ciphertext store".to_vec();
+        let mut store = DiskStore::new(files.path().join("blobs"));
+        let sealed = store
+            .capture(&vault, &dir_id, "DISK", &content)
+            .expect("capture");
+        let e = FileEntry {
+            size: sealed.plaintext_size,
+            revision: 1,
+            chunk_ids: sealed.chunk_ids.clone(),
+            local_dirty: false,
+            ..FileEntry::fresh("on-disk.txt", dir_id, "DISK")
+        };
+        let fs = Fs::from_entries([e].iter());
+        let got = fs.read_all(&vault, &store, "on-disk.txt").expect("read");
+        assert_eq!(got, content);
+    }
+
+    #[test]
     fn read_without_a_stored_manifest_errors() {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
@@ -580,12 +543,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let vault = Vault::new(keys(), "vault", dir.path()).expect("vault");
         let mut store = MemoryStore::new();
-        let content = b"chunks not stored".to_vec();
-        let e = stage(&vault, &mut store, "f.txt", &content);
-        // Wipe the chunk bytes, keep the manifest.
-        for id in &e.chunk_ids {
-            store.chunks.remove(id);
-        }
+        // Store the manifest but none of the chunks it points at, so decrypting the
+        // manifest succeeds and reconstructing the content cannot.
+        let dir_id = vault.root().clone();
+        let sealed = vault
+            .seal(&dir_id, "CIPHER", b"chunks not stored")
+            .expect("seal");
+        store.put_manifest(&dir_id, "CIPHER", sealed.manifest.clone());
+        let e = FileEntry {
+            size: sealed.plaintext_size,
+            revision: 1,
+            chunk_ids: sealed.chunk_ids.clone(),
+            local_dirty: false,
+            ..FileEntry::fresh("f.txt", dir_id, "CIPHER")
+        };
         let fs = Fs::from_entries([e].iter());
         assert!(fs.read_all(&vault, &store, "f.txt").is_err());
     }
