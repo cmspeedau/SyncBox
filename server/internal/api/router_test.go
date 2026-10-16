@@ -465,9 +465,71 @@ func TestBackupsRunThroughTheAdminEndpoint(t *testing.T) {
 	}
 }
 
+func TestBackupVerifyProvesAndRestoreDelivers(t *testing.T) {
+	c := newClient(t, true)
+
+	// One chunk of real content, so verify has something to re-hash.
+	upload := c.do(http.MethodPut, "/api/v1/vaults/vault/chunks/ABCDEFGHIJKLMNOP", []byte("payload for the backup test"))
+	defer upload.Body.Close()
+	if upload.StatusCode != http.StatusCreated && upload.StatusCode != http.StatusOK {
+		t.Fatalf("chunk upload = %s", upload.Status)
+	}
+
+	response := c.do(http.MethodPost, "/admin/backups", []byte("{}"))
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("create backup = %s", response.Status)
+	}
+	var snapshot struct {
+		ID string `json:"ID"`
+	}
+	c.mustDecode(response, &snapshot)
+
+	// Verify answers with the numbers it just re-checked against the target.
+	response = c.do(http.MethodPost, "/admin/backups/"+snapshot.ID+"/verify", nil)
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("verify = %s: %s", response.Status, body)
+	}
+	var verified struct {
+		ID     string `json:"id"`
+		Chunks int    `json:"chunks"`
+	}
+	c.mustDecode(response, &verified)
+	if verified.ID != snapshot.ID || verified.Chunks < 1 {
+		t.Errorf("verify body = %+v, want the snapshot's id and chunks", verified)
+	}
+
+	// Restore writes a usable data directory into an empty destination.
+	dest := t.TempDir()
+	dest = filepath.Join(dest, "restored") // may not exist yet: restore creates it
+	body, _ := json.Marshal(map[string]string{"dest_dir": dest})
+	response = c.do(http.MethodPost, "/admin/backups/"+snapshot.ID+"/restore", body)
+	if response.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(response.Body)
+		t.Fatalf("restore = %s: %s", response.Status, raw)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "metadata.json")); err != nil {
+		t.Errorf("restored directory has no metadata.json: %v", err)
+	}
+
+	// A second restore over the now-occupied target is a conflict, not a wipe.
+	response = c.do(http.MethodPost, "/admin/backups/"+snapshot.ID+"/restore", body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Errorf("restore over an occupied target = %s, want 409", response.Status)
+	}
+
+	// A snapshot that was never taken is a clean 404, on both endpoints.
+	response = c.do(http.MethodPost, "/admin/backups/NEVER/verify", nil)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Errorf("verify unknown = %s, want 404", response.Status)
+	}
+}
+
 func TestBackupsReportWhenNotConfigured(t *testing.T) {
 	c := newClient(t, false)
-
 	response := c.do(http.MethodPost, "/admin/backups", []byte("{}"))
 	defer response.Body.Close()
 

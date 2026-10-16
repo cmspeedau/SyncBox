@@ -73,6 +73,9 @@ syncboxd backup -url http://127.0.0.1:8080 -token "$SYNCBOX_TOKEN"
 
 # or through the API
 curl -X POST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/admin/backups
+
+# or from any machine holding the client
+syncbox backup now --server https://sync.example
 ```
 
 `syncboxd backup` is a client of the running server rather than a direct call, because
@@ -103,6 +106,26 @@ of weekly, and a year of monthly.
 `Prune` is a pure function over the snapshot list, so a schedule can be reasoned about
 and tested without touching a filesystem.
 
+## Verifying a snapshot
+
+An unverified backup is a hope, not a backup. Verification re-reads every object on
+the target and re-hashes it against the checksums the manifest recorded when it was
+written, so a silently damaged chunk is found now rather than during the restore that
+needed it.
+
+```sh
+syncbox backup list   --server https://sync.example
+syncbox backup verify 2026-10-16T030000Z-a1b2c3d4 --server https://sync.example
+```
+
+It is an admin API call (`POST /admin/backups/{id}/verify`), so it runs wherever the
+server runs and the target is opened by the server, not by a laptop holding the
+target's credentials. The answer is either the numbers it just re-checked — chunks,
+bytes, the metadata hash — or a refusal: `corrupt_snapshot` says something on the
+target changed after the seal, `incomplete_snapshot` says the bundle was never
+finished. Snapshots taken on the schedule are never re-read by anything, so
+verification is deliberately a thing an operator (or a cron job) does.
+
 ## Restoring
 
 Offline, whole server:
@@ -124,6 +147,22 @@ directory layout. Point `SYNCBOX_DATA_DIR` at the restored directory and the ser
 adopts it on start: a fresh database beside a `metadata.json` is imported into SQLite
 and the file renamed aside. So an offline restore is directly runnable — there is no
 separate "load" step to write.
+
+The same operation exists over the admin API, for when the server is reachable but a
+shell on the machine holding the target is not:
+
+```sh
+syncbox backup restore 2026-10-16T030000Z-a1b2c3d4 \
+                       --server https://sync.example \
+                       --dest /srv/syncbox/restored
+```
+
+The server verifies before it copies, writes a directly-runnable data directory into
+`--dest`, and refuses a `--dest` that already holds a restore (`restore_target_occupied`).
+The drill then completes where only a drill can: start a second server pointed at the
+restored directory (`SYNCBOX_DATA_DIR=/srv/syncbox/restored`), let a client sync
+against it, and open a few files — proving the backup can serve, not just that bytes
+hash right.
 
 Restoring *into a running server as a separate vault* — so a user can pull yesterday's
 version down without anyone going offline — is still deferred. That needs an online

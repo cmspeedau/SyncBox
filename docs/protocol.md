@@ -197,9 +197,24 @@ blocks.
 ```
 GET  /admin/backups     → [ { "ID": "...", "Manifest": { ... } } ]
 POST /admin/backups     → 201 { "ID": "...", "Manifest": { ... } }
+
+POST /admin/backups/{id}/verify  → 200 { "id", "chunks", "chunk_bytes", "metadata_sha256" }
+POST /admin/backups/{id}/restore → { "dest_dir" }
+                               → 200 { "id", "dest_dir", "chunks", "chunk_bytes" }
 ```
 
-Both answer `501 not_configured` when no `SYNCBOX_BACKUP_TARGET` is set. See
+All four answer `501 not_configured` when no `SYNCBOX_BACKUP_TARGET` is set.
+`verify` re-hashes every chunk and the metadata file against the manifest the snapshot
+was sealed with, and answers `404 not_found` for a snapshot that never landed,
+`404 incomplete_snapshot` for a half-written bundle, or `500 corrupt_snapshot` when a
+stored object no longer matches its recorded hash. `restore` verifies before it copies
+and refuses a destination that already holds a `metadata.json` with
+`409 restore_target_occupied` — replacing live data is the one thing restore must not
+do silently.
+
+Refusals carry a stable `code` in the error body, and that code — not the HTTP status —
+is what a client should branch on: `500 corrupt_snapshot` and a generic `500 internal`
+are different problems an operator acts on differently. See
 [backup.md](backup.md) for what a snapshot contains and how it is restored.
 
 ## Versioning the protocol

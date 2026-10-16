@@ -23,7 +23,7 @@ use syncbox_crypto::kdf::Params;
 use syncbox_crypto::names::DirId;
 use syncbox_index::SqliteIndex;
 use syncbox_sync::{Engine, SyncReport, Vault};
-use syncbox_transport::{Client, UreqHttp};
+use syncbox_transport::{Client, TransportError, UreqHttp};
 use syncbox_vault::{VaultConfig, CONFIG_FILE_NAME, CURRENT_VERSION};
 
 #[derive(Parser)]
@@ -87,8 +87,69 @@ enum Command {
         #[arg(long)]
         store: Option<PathBuf>,
     },
+    /// Server snapshots: list, take, verify, and restore them.
+    ///
+    /// Backups are a server-side facility; these commands talk to the server
+    /// directly (no vault directory involved). A server started without a
+    /// backup target answers `not_configured`, which these commands report as
+    /// plainly as any other refusal.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
     /// Report the format this build reads and writes.
     Status,
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// List the server's snapshots, newest first.
+    List {
+        /// Server origin, e.g. https://sync.example
+        #[arg(long)]
+        server: String,
+        /// Server password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Ask the server to take a snapshot now.
+    Now {
+        /// Server origin.
+        #[arg(long)]
+        server: String,
+        /// Server password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Prove a snapshot on the backup target: the server re-hashes every chunk
+    /// and the metadata file against the manifest the snapshot was sealed with.
+    Verify {
+        /// Snapshot id, as shown by `backup list`.
+        id: String,
+        /// Server origin.
+        #[arg(long)]
+        server: String,
+        /// Server password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
+    /// Copy a snapshot into a fresh directory on the server machine — the
+    /// restore drill. The server verifies first and refuses a destination that
+    /// already holds a restore. Point a server at the result and let clients
+    /// sync against the resurrection.
+    Restore {
+        /// Snapshot id, as shown by `backup list`.
+        id: String,
+        /// Server-side destination directory for the restored data directory.
+        #[arg(long)]
+        dest: String,
+        /// Server origin.
+        #[arg(long)]
+        server: String,
+        /// Server password; falls back to `$SYNCBOX_PASSWORD`.
+        #[arg(long)]
+        password: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -194,6 +255,7 @@ fn main() -> Result<()> {
             &resolve_password(password)?,
         ),
         Command::Gc { vault, store } => gc_cmd(&vault, store),
+        Command::Backup { command } => backup_cmd(command),
         Command::Status => status(),
     }
 }
@@ -355,6 +417,97 @@ fn gc_cmd(vault_dir: &Path, store: Option<PathBuf>) -> Result<()> {
         report.live_chunks, report.removed_chunks, report.removed_manifests
     );
     Ok(())
+}
+
+/// Drives the server's backup endpoints: every subcommand shares one
+/// authenticated client and one refusal explanation.
+fn backup_cmd(command: BackupCommand) -> Result<()> {
+    match command {
+        BackupCommand::List { server, password } => {
+            let mut client = backup_client(&server, &resolve_password(password)?)?;
+            let snapshots = client.backups().map_err(explain_backup_failure)?;
+            if snapshots.is_empty() {
+                println!("no snapshots on {server} yet.");
+            }
+            for snapshot in snapshots {
+                println!(
+                    "{}  {}  {} chunks, {} bytes",
+                    snapshot.id,
+                    snapshot.created_at,
+                    snapshot.manifest.chunk_count(),
+                    snapshot.manifest.chunk_bytes
+                );
+            }
+        }
+        BackupCommand::Now { server, password } => {
+            let mut client = backup_client(&server, &resolve_password(password)?)?;
+            let snapshot = client.create_backup().map_err(explain_backup_failure)?;
+            println!(
+                "snapshot {} taken at {} ({} chunks, {} bytes).",
+                snapshot.id,
+                snapshot.created_at,
+                snapshot.manifest.chunk_count(),
+                snapshot.manifest.chunk_bytes
+            );
+        }
+        BackupCommand::Verify {
+            id,
+            server,
+            password,
+        } => {
+            let mut client = backup_client(&server, &resolve_password(password)?)?;
+            let report = client.verify_backup(&id).map_err(explain_backup_failure)?;
+            println!(
+                "snapshot {}: {} chunks ({} bytes) and its metadata verified — every object on the backup target matches the hash its manifest recorded.",
+                report.id, report.chunks, report.chunk_bytes
+            );
+        }
+        BackupCommand::Restore {
+            id,
+            dest,
+            server,
+            password,
+        } => {
+            let mut client = backup_client(&server, &resolve_password(password)?)?;
+            let report = client
+                .restore_backup(&id, &dest)
+                .map_err(explain_backup_failure)?;
+            println!(
+                "snapshot {} restored into {} on the server ({} chunks, {} bytes).",
+                report.id, report.dest_dir, report.chunks, report.chunk_bytes
+            );
+            println!(
+                "drill next: start a server pointed at {}, then let a client sync against it — the restored data must serve every file back.",
+                report.dest_dir
+            );
+        }
+    }
+    Ok(())
+}
+
+/// An authenticated admin client for the backup endpoints.
+fn backup_client(server: &str, password: &str) -> Result<Client<UreqHttp>> {
+    let mut client = Client::new(server, UreqHttp::new(server));
+    client
+        .token(password)
+        .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
+    Ok(client)
+}
+
+/// Turns the backup API's stable error codes into advice, not just refusals.
+fn explain_backup_failure(error: TransportError) -> anyhow::Error {
+    match &error {
+        TransportError::Refused { code, reason } if code == "not_configured" => {
+            anyhow::anyhow!("the server has no backup target configured ({reason})")
+        }
+        TransportError::Refused { code, reason } if code == "corrupt_snapshot" => {
+            anyhow::anyhow!("the snapshot is CORRUPT on the backup target: {reason}")
+        }
+        TransportError::Refused { code, reason } if code == "restore_target_occupied" => {
+            anyhow::anyhow!("{reason} — restore into a fresh directory instead")
+        }
+        other => anyhow::anyhow!("backup request failed: {other}"),
+    }
 }
 
 /// Mounts the vault (read-only, or writable with `writable`), or — when no FUSE

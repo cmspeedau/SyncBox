@@ -18,6 +18,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -87,6 +88,8 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("GET /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupsList)))
 	mux.Handle("POST /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupCreate)))
+	mux.Handle("POST /admin/backups/{id}/verify", s.requireToken(http.HandlerFunc(s.handleBackupVerify)))
+	mux.Handle("POST /admin/backups/{id}/restore", s.requireToken(http.HandlerFunc(s.handleBackupRestore)))
 
 	var handler http.Handler = mux
 	handler = recoverMiddleware(handler)
@@ -308,6 +311,66 @@ func (s *Server) handleBackupCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, snapshot)
 }
 
+// verifyBody is the reply to verifying a snapshot: what was just proven, in
+// enough numbers for an operator to recognise the snapshot they asked about.
+type verifyBody struct {
+	ID             string `json:"id"`
+	Chunks         int    `json:"chunks"`
+	ChunkBytes     int64  `json:"chunk_bytes"`
+	MetadataSHA256 string `json:"metadata_sha256"`
+}
+
+func (s *Server) handleBackupVerify(w http.ResponseWriter, r *http.Request) {
+	if s.backups == nil {
+		writeError(w, http.StatusNotImplemented, "not_configured", "no backup target is configured")
+		return
+	}
+	manifest, err := s.backups.Verify(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErrorFrom(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, verifyBody{
+		ID:             manifest.ID,
+		Chunks:         len(manifest.Chunks),
+		ChunkBytes:     manifest.ChunkBytes,
+		MetadataSHA256: manifest.MetadataSHA256,
+	})
+}
+
+// restoreBody asks for a snapshot's contents to be copied into an empty (or
+// absent) directory the server can write — the offline restore drill.
+type restoreBody struct {
+	DestDir string `json:"dest_dir"`
+}
+
+func (s *Server) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
+	if s.backups == nil {
+		writeError(w, http.StatusNotImplemented, "not_configured", "no backup target is configured")
+		return
+	}
+	var request restoreBody
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "restore needs a JSON body with dest_dir")
+		return
+	}
+	if strings.TrimSpace(request.DestDir) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "dest_dir must name a directory")
+		return
+	}
+	manifest, err := s.backups.Restore(r.Context(), r.PathValue("id"), request.DestDir)
+	if err != nil {
+		writeErrorFrom(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":          manifest.ID,
+		"dest_dir":    request.DestDir,
+		"chunks":      len(manifest.Chunks),
+		"chunk_bytes": manifest.ChunkBytes,
+	})
+}
+
 // requireToken rejects a request whose bearer token this server did not sign.
 func (s *Server) requireToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +420,10 @@ func writeErrorFrom(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "incomplete_snapshot", err.Error())
 	case errors.Is(err, backup.ErrCorrupt):
 		writeError(w, http.StatusInternalServerError, "corrupt_snapshot", err.Error())
+	case errors.Is(err, backup.ErrRefusesOverwrite):
+		writeError(w, http.StatusConflict, "restore_target_occupied", err.Error())
+	case errors.Is(err, os.ErrNotExist):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 	}
