@@ -32,6 +32,28 @@ pub trait PullStore {
     ) -> std::io::Result<()>;
 }
 
+/// Where a file's manifest and chunks are kept (the read side).
+///
+/// One contract, two users: the mount asks it to serve the tree, and a folderless
+/// engine asks it to turn a dirty index record back into plaintext. The same opaque
+/// keys [`PullStore`] writes by — the two traits together make a store a full local
+/// cache of the vault's ciphertext.
+pub trait ContentStore {
+    /// The stored (encrypted) manifest bytes for a file, by its directory id and
+    /// encrypted name.
+    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>>;
+
+    /// The stored bytes of one chunk, by content id.
+    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>>;
+}
+
+/// What an [`crate::Engine`] content store must be: a sink for pulls and a source for
+/// pushes. Blanket-implemented — any type with both halves is one, so implementors
+/// name neither this trait nor the direction they serve.
+pub trait SyncStore: PullStore + ContentStore {}
+
+impl<T: PullStore + ContentStore + ?Sized> SyncStore for T {}
+
 /// A [`PullStore`] that keeps nothing — the default for callers that only mirror a
 /// plaintext folder and never mount the vault, so a plain `sync` stores no extra copy.
 #[derive(Clone, Copy, Debug, Default)]
@@ -46,5 +68,15 @@ impl PullStore for NullStore {
         _chunks: &[(ChunkId, Vec<u8>)],
     ) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+impl ContentStore for NullStore {
+    fn manifest(&self, _dir_id: &DirId, _cipher_name: &str) -> Option<Vec<u8>> {
+        None
+    }
+
+    fn chunk(&self, _id: &ChunkId) -> Option<Vec<u8>> {
+        None
     }
 }

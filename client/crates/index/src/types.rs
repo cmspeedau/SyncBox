@@ -53,34 +53,43 @@ impl FileEntry {
     }
 }
 
-/// Something the sync engine still owes the server, or the server owes us.
+/// Something a local delete left behind that sync still owes the server.
 ///
-/// The queue exists so an interrupted run resumes: after a crash the engine reads
-/// this list instead of rescanning the vault.
+/// A deletion cannot be replayed from the file records once the record is gone, so
+/// the index keeps one of these per deleted file until its tombstone is committed:
+/// a crash between "unlinked" and "tombstoned" must not silently un-delete the file
+/// on the peers. The key is `(dir_id, cipher_name)` — the server's file key — because
+/// the tombstone commit names files that way, and a bare path no longer resolves
+/// once the record is gone.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PendingOp {
-    /// A local file has chunks the server does not have.
-    Upload {
-        /// Plaintext path of the file.
-        path: String,
-    },
-    /// The server has a revision the local copy does not.
-    Download {
-        /// Plaintext path of the file.
-        path: String,
-    },
-    /// A deletion that has not been committed yet.
-    Delete {
-        /// Plaintext path of the file.
-        path: String,
-    },
-    /// A rename, which is a new name plus a delete so a peer can follow it.
-    Rename {
-        /// Old plaintext path.
-        from: String,
-        /// New plaintext path.
-        to: String,
-    },
+pub struct DeletedFile {
+    /// The path the file had, kept for display and logging only.
+    pub path: String,
+    /// The vault directory holding the file.
+    pub dir_id: DirId,
+    /// The encrypted file name inside that directory.
+    pub cipher_name: String,
+    /// The last known modification time, echoed in the tombstone commit.
+    pub modified_unix: i64,
+}
+
+impl DeletedFile {
+    /// The queue entry for a file record about to be removed.
+    #[must_use]
+    pub fn from_entry(entry: &FileEntry) -> Self {
+        Self {
+            path: entry.path.clone(),
+            dir_id: entry.dir_id.clone(),
+            cipher_name: entry.cipher_name.clone(),
+            modified_unix: entry.modified_unix,
+        }
+    }
+
+    /// The server-side key of the file, which is what a tombstone addresses.
+    #[must_use]
+    pub fn key(&self) -> (DirId, String) {
+        (self.dir_id.clone(), self.cipher_name.clone())
+    }
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use syncbox_crypto::ChunkId;
 
-use crate::types::FileEntry;
+use crate::types::{DeletedFile, FileEntry};
 use crate::Index;
 
 /// Adds one reference to a chunk, recording `?2` as its size the first time it is
@@ -107,6 +107,13 @@ impl SqliteIndex {
                  chunk_id TEXT PRIMARY KEY,
                  size     INTEGER NOT NULL,
                  refs     INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS pending_deletes (
+                 dir_id        TEXT NOT NULL,
+                 cipher_name   TEXT NOT NULL,
+                 path          TEXT NOT NULL,
+                 modified_unix INTEGER NOT NULL,
+                 PRIMARY KEY (dir_id, cipher_name)
              );",
         )
     }
@@ -352,5 +359,53 @@ impl Index for SqliteIndex {
             )
             .expect("sum referenced bytes")
             .max(0) as u64
+    }
+
+    fn note_delete(&mut self, entry: &FileEntry) {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO pending_deletes
+                     (dir_id, cipher_name, path, modified_unix)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    entry.dir_id.as_str(),
+                    entry.cipher_name,
+                    entry.path,
+                    entry.modified_unix
+                ],
+            )
+            .expect("note delete");
+    }
+
+    fn pending_deletes(&self) -> Vec<DeletedFile> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT path, dir_id, cipher_name, modified_unix
+                 FROM pending_deletes ORDER BY rowid",
+            )
+            .expect("prepare pending deletes");
+        stmt.query_map([], |row| {
+            Ok(DeletedFile {
+                path: row.get(0)?,
+                dir_id: syncbox_crypto::names::DirId::from_base32(&row.get::<_, String>(1)?),
+                cipher_name: row.get(2)?,
+                modified_unix: row.get(3)?,
+            })
+        })
+        .expect("query pending deletes")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read pending delete rows")
+    }
+
+    fn clear_deletes(&mut self, keys: &[(syncbox_crypto::names::DirId, String)]) {
+        for (dir_id, cipher_name) in keys {
+            self.conn
+                .execute(
+                    "DELETE FROM pending_deletes WHERE dir_id = ?1 AND cipher_name = ?2",
+                    params![dir_id.as_str(), cipher_name],
+                )
+                .expect("clear delete");
+        }
     }
 }

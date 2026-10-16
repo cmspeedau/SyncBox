@@ -101,9 +101,16 @@ impl<'a, I: Index, W: WriteStore> FsMut<'a, I, W> {
     }
 
     /// Removes `path`, reporting whether a file was there. Chunk references drop with
-    /// it; the blobs become collectable but are left in place (blob GC is M7).
+    /// it; the blobs become collectable but are left in place (blob GC is M7). The
+    /// removal is queued as a pending delete so a later sync commits its tombstone —
+    /// once the record is gone, nothing else remembers the deletion.
     pub fn unlink(&mut self, path: &str) -> bool {
-        self.index.remove_file(&normalize(path))
+        let path = normalize(path);
+        let Some(entry) = self.index.file(&path) else {
+            return false;
+        };
+        self.index.note_delete(&entry);
+        self.index.remove_file(&path)
     }
 
     /// Accepts a directory creation. Because directories are the prefixes of file
@@ -131,7 +138,11 @@ impl<'a, I: Index, W: WriteStore> FsMut<'a, I, W> {
     pub fn rename(&mut self, from: &str, to: &str) -> Result<Written> {
         let data = self.plaintext_at(from)?;
         let written = self.seal_and_index(to, &data)?;
-        self.index.remove_file(&normalize(from));
+        let from = normalize(from);
+        if let Some(entry) = self.index.file(&from) {
+            self.index.note_delete(&entry);
+        }
+        self.index.remove_file(&from);
         Ok(written)
     }
 
@@ -293,8 +304,22 @@ mod tests {
         assert!(existed);
         assert!(index.file("gone.txt").is_none());
         assert!(Fs::from_index(&index).lookup("gone.txt").is_none());
+        assert_eq!(
+            index
+                .pending_deletes()
+                .iter()
+                .map(|d| d.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gone.txt"],
+            "the deletion waits in the queue for its tombstone"
+        );
         // Unlinking a missing file reports nothing removed.
         assert!(!FsMut::new(&mut index, &vault, &mut store).unlink("gone.txt"));
+        assert_eq!(
+            index.pending_deletes().len(),
+            1,
+            "a failed unlink queues nothing extra"
+        );
     }
 
     #[test]
@@ -318,6 +343,15 @@ mod tests {
             fs.read_all(&vault, &store, "docs/new.txt").unwrap(),
             content,
             "content survived the move"
+        );
+        assert_eq!(
+            index
+                .pending_deletes()
+                .iter()
+                .map(|d| d.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/old.txt"],
+            "the rename's old name is owed a tombstone"
         );
     }
 

@@ -224,12 +224,21 @@ falls back to syncing `dir` as an ordinary plaintext folder.
 
 With `syncbox mount --writable <vault> <dir>`, `create`/`write`/`rename`/`unlink` pass
 through the same seams as a local write: each close seals the whole file through the
-vault, stores its chunks and manifest, and marks the index record **dirty** for the next
-sync — nothing on disk is ever plaintext. Writes are buffered per open handle and sealed
-once on close; a `mkdir` is held in memory until a file lands beneath it (matching the
-"directory = a file's prefix" rule). The write is local until it syncs: pushing these
-dirty, store-backed records needs the folderless push that follows this step, so the
-writable mount is an on-device edit surface in the meantime.
+vault, stores its chunks and manifest, and marks the index record **dirty**. `mkdir` is
+held in memory until a file lands beneath it (matching the "directory = a file's prefix"
+rule). Writes are buffered per open handle and sealed once on close, so nothing on disk
+is ever plaintext.
+
+Those edits reach the server through a **folderless** pass: `syncbox sync once` with no
+`--folder` never reads or writes plaintext. Push uploads each dirty record by decrypting
+it back out of the store (default `<vault>/blobs`, where the mount writes) and re-sealing
+it; a mount `unlink` or a rename's old name is queued in the index as a pending delete,
+and the pass commits its tombstone before uploading, clearing the queue only once the
+server has it. A pull then keeps manifest, chunks, and index records and writes no
+plaintext; if the server holds a newer revision while a record is dirty, the local edit
+wins the canonical name (the server's version stays in the log, recoverable by
+revision). With a `--folder`, everything above still works, and pending deletes are
+drained the same way alongside the folder scan.
 
 ## Test vectors
 

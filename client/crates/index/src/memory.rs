@@ -3,9 +3,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
+use syncbox_crypto::names::DirId;
 use syncbox_crypto::ChunkId;
 
-use crate::types::FileEntry;
+use crate::types::{DeletedFile, FileEntry};
 use crate::Index;
 
 /// A chunk's size and how many files currently point at it.
@@ -20,6 +21,7 @@ struct ChunkRecord {
 pub struct MemoryIndex {
     files: BTreeMap<String, FileEntry>,
     chunks: HashMap<ChunkId, ChunkRecord>,
+    deletes: Vec<DeletedFile>,
 }
 
 impl MemoryIndex {
@@ -112,6 +114,20 @@ impl Index for MemoryIndex {
             .filter(|record| record.refs > 0)
             .map(|record| record.size)
             .sum()
+    }
+
+    fn note_delete(&mut self, entry: &FileEntry) {
+        let record = DeletedFile::from_entry(entry);
+        self.deletes.retain(|d| d.key() != record.key());
+        self.deletes.push(record);
+    }
+
+    fn pending_deletes(&self) -> Vec<DeletedFile> {
+        self.deletes.clone()
+    }
+
+    fn clear_deletes(&mut self, keys: &[(DirId, String)]) {
+        self.deletes.retain(|d| !keys.contains(&d.key()));
     }
 }
 

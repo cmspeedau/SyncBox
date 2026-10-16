@@ -18,19 +18,10 @@ use std::path::{Path, PathBuf};
 use syncbox_crypto::{names::DirId, ChunkId};
 use syncbox_sync::{PullStore, Sealed};
 
-/// Where a file's manifest and chunks are kept (the read side).
-///
-/// The filesystem asks; the store answers. This indirection is what lets the read
-/// path be tested against an in-memory store and run against a local ciphertext
-/// folder (or, later, the server) without the tree logic knowing the difference.
-pub trait ContentStore {
-    /// The stored (encrypted) manifest bytes for a file, by its directory id and
-    /// encrypted name.
-    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>>;
-
-    /// The stored bytes of one chunk, by content id.
-    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>>;
-}
+/// The read side of a store lives in `syncbox-sync` as one contract: the mount asks it
+/// to serve the tree, and a folderless engine asks it to rebuild a dirty record's
+/// plaintext. Re-exported so mount users name a single, familiar type.
+pub use syncbox_sync::ContentStore;
 
 /// A [`ContentStore`] you can also write sealed content into (the write side).
 ///

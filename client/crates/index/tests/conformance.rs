@@ -119,6 +119,38 @@ fn the_trait_is_usable_as_a_trait_object(index: &mut dyn Index) {
     assert_eq!(index.files().len(), 1);
 }
 
+fn deletes_queue_a_tombstone_until_committed(index: &mut dyn Index) {
+    let gone = entry("gone.txt", &[1]);
+    index.put_file(gone.clone());
+    index.remove_file("gone.txt");
+    assert!(
+        index.pending_deletes().is_empty(),
+        "a plain remove_file owes the server nothing"
+    );
+
+    index.note_delete(&gone);
+    index.remove_file("gone.txt");
+    let queued = index.pending_deletes();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].path, "gone.txt", "the path survives for display");
+    assert_eq!(queued[0].key().1, "gone.txt.c9r", "the key is the server's");
+
+    index.note_delete(&gone);
+    assert_eq!(
+        index.pending_deletes().len(),
+        1,
+        "the same key collapses to one entry"
+    );
+
+    index.note_delete(&entry("other.txt", &[2]));
+    assert_eq!(index.pending_deletes().len(), 2);
+
+    index.clear_deletes(&[(gone.dir_id.clone(), gone.cipher_name.clone())]);
+    let rest = index.pending_deletes();
+    assert_eq!(rest.len(), 1, "only the committed tombstone is dropped");
+    assert_eq!(rest[0].path, "other.txt");
+}
+
 /// The whole contract, each invariant run against a freshly built backend so the
 /// checks are independent (and a chunk id reused by two checks stays meaningful).
 fn conformance(make: impl Fn() -> Box<dyn Index>) {
@@ -129,6 +161,7 @@ fn conformance(make: impl Fn() -> Box<dyn Index>) {
     removing_an_unknown_file_reports_nothing_removed(&mut *make());
     sizes_are_recorded_once_and_bytes_sum_over_referenced_chunks(&mut *make());
     releasing_more_than_retaining_does_not_panic(&mut *make());
+    deletes_queue_a_tombstone_until_committed(&mut *make());
 }
 
 #[test]
@@ -153,10 +186,20 @@ fn sqlite_index_survives_being_closed_and_reopened() {
         let mut index = SqliteIndex::open(&db).expect("create index");
         index.put_file(entry("keep.txt", &[1, 2, 3]));
         index.retain_chunk(&shared, 8192);
+        index.note_delete(&entry("gone.txt", &[4]));
     }
 
     let index = SqliteIndex::open(&db).expect("reopen index");
     assert_eq!(index.file("keep.txt").unwrap().chunk_ids.len(), 3);
+    assert_eq!(
+        index
+            .pending_deletes()
+            .iter()
+            .map(|d| &d.path)
+            .collect::<Vec<_>>(),
+        vec!["gone.txt"],
+        "an uncommitted tombstone survives the crash"
+    );
     assert_eq!(index.chunk_refs(&shared), 1);
     assert_eq!(index.referenced_bytes(), 8192);
 }
