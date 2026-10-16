@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 # default-features = false drops `tray-icon` (needs libappindicator) and the
 # image decoders; `wry` is the real runtime and must be enabled back explicitly.
 tauri = { version = "2", default-features = false, features = ["wry"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -33,3 +35,9 @@ syncbox-crypto = { path = "../../../crates/crypto" }
 syncbox-sync = { path = "../../../crates/sync" }
 syncbox-transport = { path = "../../../crates/transport", features = ["ureq"] }
 syncbox-vault = { path = "../../../crates/vault" }
+
+[dev-dependencies]
+# `tauri::test` (MockRuntime): lets the autostart plugin be exercised headlessly
+# in a unit test. Feature-unified into test builds only — the release binary
+# keeps exactly the dependencies above.
+tauri = { version = "2", default-features = false, features = ["test"] }

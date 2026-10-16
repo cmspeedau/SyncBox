@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use tauri::{command, State};
+use tauri::{command, AppHandle, State};
+
+use tauri_plugin_autostart::ManagerExt as _;
 
 use syncbox_transport::{Client, TransportError, UreqHttp};
 
@@ -151,4 +153,97 @@ fn dial(server: &str, password: &str) -> Client<UreqHttp> {
 /// Whether a transport error is the server's "no backup target configured" answer.
 fn is_not_configured(error: &TransportError) -> bool {
     matches!(error, TransportError::Refused { code, .. } if code == "not_configured")
+}
+
+/// Whether the app registers itself when the desktop session starts.
+#[command]
+pub fn get_autostart(app: AppHandle) -> Result<bool, String> {
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+/// Switch start-at-login: writes or removes the session's autostart entry for
+/// this exact binary (the plugin points it at `current_exe`).
+#[command]
+pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let autolaunch = app.autolaunch();
+    if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The same autostart wiring `main` installs, driven headlessly through the
+    /// mock runtime: enabling must write an autostart entry somewhere under
+    /// HOME/.config/autostart, disabling must remove it, and `is_enabled` must
+    /// track both. The real home dir is kept out of it by pointing HOME at a
+    /// throwaway sandbox for the duration of the test — the underlying
+    /// `auto-launch` crate hardcodes `$HOME/.config/autostart`, so HOME is the
+    /// only honest way to sandbox it.
+    #[test]
+    fn autostart_round_trip_through_the_plugin() {
+        fn files_under(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+            let mut out = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        out.extend(files_under(&path));
+                    } else {
+                        out.push(path);
+                    }
+                }
+            }
+            out
+        }
+
+        let sandbox =
+            std::env::temp_dir().join(format!("syncbox-autostart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sandbox);
+        let previous = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &sandbox);
+
+        let outcome = (|| -> Result<(), String> {
+            let app = tauri::test::mock_builder()
+                .plugin(tauri_plugin_autostart::init(
+                    tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                    None,
+                ))
+                .build(tauri::test::mock_context(tauri::test::noop_assets()))
+                .map_err(|e| e.to_string())?;
+
+            if app.autolaunch().is_enabled().map_err(|e| e.to_string())? {
+                return Err("fresh sandbox already enabled".into());
+            }
+
+            app.autolaunch().enable().map_err(|e| e.to_string())?;
+            if !app.autolaunch().is_enabled().map_err(|e| e.to_string())? {
+                return Err("enable() did not stick".into());
+            }
+            if files_under(&sandbox).is_empty() {
+                return Err("enable() wrote nothing under the sandbox".into());
+            }
+
+            app.autolaunch().disable().map_err(|e| e.to_string())?;
+            if app.autolaunch().is_enabled().map_err(|e| e.to_string())? {
+                return Err("disable() did not stick".into());
+            }
+            if !files_under(&sandbox).is_empty() {
+                return Err("disable() left files behind".into());
+            }
+            Ok(())
+        })();
+
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&sandbox);
+        outcome.expect("autostart round trip");
+    }
 }

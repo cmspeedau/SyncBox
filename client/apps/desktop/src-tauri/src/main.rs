@@ -5,9 +5,11 @@
 //! the network) to a thread; every behaviour and its tests live in the agent
 //! crate. The webview talks to these commands through the DTOs in [`dto`].
 //!
-//! The tray, autostart, and single-instance plumbing are deliberately left to M6
-//! packaging: the tray needs `libappindicator`, which is absent on the dev box, so
-//! `tauri` is built without it and the window is the whole UI for now.
+//! The tray is deliberately left out: it needs `libappindicator`, which is absent
+//! on the dev box and on the CI runner (and `tauri`'s `tray-icon` feature links it
+//! at compile time), so `tauri` is built without it and the window is the whole
+//! UI until a machine that carries the lib builds the app. Autostart and
+//! single-instance shipped here — both are pure-Rust plugins, testable headless.
 
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -19,12 +21,29 @@ mod state;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use tauri::Manager;
+
 use state::AppState;
 
 fn main() {
     let shared = Arc::new(Mutex::new(AppState::default()));
 
     tauri::Builder::default()
+        // Must be the first plugin: a second launch does nothing but wake the
+        // running instance — focus its window rather than start a second agent.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
+        // Registers (or not) the app in the desktop session's autostart, driven
+        // by the "Start at login" checkbox through set_autostart.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             commands::status,
@@ -35,6 +54,8 @@ fn main() {
             commands::create_vault,
             commands::backups,
             commands::back_up_now,
+            commands::get_autostart,
+            commands::set_autostart,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Syncbox");
