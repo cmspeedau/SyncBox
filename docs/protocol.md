@@ -50,9 +50,10 @@ Every non-2xx response has the same body:
 | --- | --- | --- |
 | 400 | `bad_request`, `bad_chunk_id` | Bug or bad input; do not retry |
 | 401 | `unauthorized` | Re-authenticate, then retry once |
-| 404 | `not_found` | Chunk collected or vault unknown |
-| 409 | `conflict` | Someone else committed. Re-fetch, keep both copies |
+| 404 | `not_found`, `incomplete_snapshot` | Chunk collected, vault unknown, or a half-written snapshot |
+| 409 | `conflict`, `restore_target_occupied` | Someone else committed. Re-fetch, keep both copies |
 | 413 | `too_large` | Chunk exceeds the server's limit |
+| 429 | `rate_limited` | Wait `Retry-After` seconds. Chunk transfers retry this themselves |
 | 501 | `not_configured` | Feature off on this server (backups with no target) |
 | 500 | `internal`, `corrupt_snapshot` | Back off and report |
 
@@ -163,7 +164,11 @@ uploaded.
 1. `GET .../revisions?since=0` and take the newest revision for each file key.
 2. For a content revision newer than the local index, decrypt its manifest, `GET` its
    chunks, and reassemble — the same chunks the uploader sent, because keys are derived
-   from content, not from which file referenced them.
+   from content, not from which file referenced them. With a local store the client
+   fetches *through* it: a chunk already stored is never re-downloaded, every chunk
+   downloaded is staged the moment it arrives, and the manifest is cached only after
+   the last chunk — so an interrupted file resumes where the drop happened instead
+   of starting over.
 3. For a tombstone, remove the file.
 
 The client reads the log from `0` and reconciles it against a per-file revision number
@@ -216,6 +221,31 @@ Refusals carry a stable `code` in the error body, and that code — not the HTTP
 is what a client should branch on: `500 corrupt_snapshot` and a generic `500 internal`
 are different problems an operator acts on differently. See
 [backup.md](backup.md) for what a snapshot contains and how it is restored.
+
+## Rate limits
+
+By default the server answers every caller as fast as it can. A server on a home
+connection — or any server that would rather stay responsive than maximally busy —
+can opt into a per-address token bucket:
+
+| Variable | Meaning |
+| --- | --- |
+| `SYNCBOX_RATE_LIMIT` | sustained requests per second per caller IP; unset means unlimited |
+| `SYNCBOX_RATE_BURST` | how many requests a caller may spend at once before the sustained rate bites (default 100) |
+
+A refusal is a `429` carrying the stable `rate_limited` code and a `Retry-After`
+header in whole seconds. It guards every route, login included, and it refuses
+*before* the request buys any auth or storage work — the point is to protect the
+machine, not to meter honest use, which a full sync's burst will almost never
+notice.
+
+Chunk transfers retry a `rate_limited` themselves: the client waits a doubling
+backoff (up to four retries), which converges on the granularity the server
+advertised. Commit — the one call that is not idempotent — replays on a stricter
+proof: only a `429` carrying this protocol's own `rate_limited` body, which only
+the server's limiter writes and which it writes *before any handler runs*, so the
+refused commit demonstrably never happened. A bare `429` from a proxy or any other
+intermediary, which cannot say what happened downstream, surfaces unretried.
 
 ## Versioning the protocol
 

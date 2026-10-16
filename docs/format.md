@@ -215,9 +215,13 @@ of ciphertext" property as the vault itself:
 ```
 
 The store is populated by local writes (each seals through the vault and marks the index
-record dirty for the next sync) and by a pull: a `syncbox sync once --store <dir>` tees
-each file's manifest and downloaded chunks into the store as it fetches them, so a file
-that only the server has is readable there too. `syncbox mount <vault> <dir>` shows
+record dirty for the next sync) and by a pull: a `syncbox sync once --store <dir>`
+stages each chunk into the store the moment it arrives and writes the file's manifest
+*last* — the manifest's presence is the mark that the whole file is local, and an
+interrupted download is a head start: the next pull reads through the store first, so
+a chunk already in hand never goes back over the wire (chunks are content-addressed,
+so a stored chunk is always the right bytes for its id). A file that only the server
+has is readable there too. `syncbox mount <vault> <dir>` shows
 the tree read-only over FUSE; the `fuser` adapter is the CLI's optional `mount` feature,
 so the workspace build needs no libfuse. When no FUSE driver is present the command
 falls back to syncing `dir` as an ordinary plaintext folder.

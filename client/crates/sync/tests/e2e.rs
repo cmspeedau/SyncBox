@@ -75,6 +75,17 @@ struct RevisionOut {
 struct FakeServer {
     chunks: HashMap<String, Vec<u8>>,
     log: Vec<Stored>, // a single vault's global revision log
+    /// When set, the Nth chunk PUT attempt (1-based) fails as a dropped
+    /// connection — the shape of a sync interrupted mid-transfer.
+    fail_put_number: Option<usize>,
+    /// The same for chunk GETs.
+    fail_get_number: Option<usize>,
+    /// Attempts and successes, so a resume test can prove the client never
+    /// re-sent or re-fetched what the server already had.
+    put_attempts: usize,
+    put_ok: usize,
+    get_attempts: usize,
+    get_ok: usize,
 }
 
 impl FakeServer {
@@ -126,19 +137,35 @@ impl FakeServer {
             ("POST", "revisions") => self.commit(&request.body),
             ("POST", "chunks/exists") => self.chunks_exist(&request.body),
             ("PUT", other) if other.starts_with("chunks/") => {
+                self.put_attempts += 1;
+                if self.fail_put_number == Some(self.put_attempts) {
+                    return Err(TransportError::Transport(
+                        "the test dropped the upload".into(),
+                    ));
+                }
                 let id = &other["chunks/".len()..];
                 self.chunks
                     .entry(id.to_owned())
                     .or_insert_with(|| request.body.clone());
+                self.put_ok += 1;
                 Ok(Self::json(201, &json!({ "stored": request.body.len() })))
             }
             ("GET", other) if other.starts_with("chunks/") => {
+                self.get_attempts += 1;
+                if self.fail_get_number == Some(self.get_attempts) {
+                    return Err(TransportError::Transport(
+                        "the test dropped the download".into(),
+                    ));
+                }
                 let id = &other["chunks/".len()..];
                 match self.chunks.get(id) {
-                    Some(bytes) => Ok(Response {
-                        status: 200,
-                        body: bytes.clone(),
-                    }),
+                    Some(bytes) => {
+                        self.get_ok += 1;
+                        Ok(Response {
+                            status: 200,
+                            body: bytes.clone(),
+                        })
+                    }
                     None => Ok(self.error(404, "not_found", "no such chunk")),
                 }
             }
@@ -450,21 +477,25 @@ struct Tee {
 }
 
 impl PullStore for TeeStore {
-    fn put_pulled(
+    fn cache_chunk(&mut self, id: &ChunkId, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .chunks
+            .insert(id.as_str().to_owned(), bytes.to_vec());
+        Ok(())
+    }
+
+    fn cache_manifest(
         &mut self,
         dir_id: &DirId,
         cipher_name: &str,
         manifest: &[u8],
-        chunks: &[(ChunkId, Vec<u8>)],
     ) -> std::io::Result<()> {
-        let mut tee = self.0.lock().unwrap();
-        tee.manifests.insert(
+        self.0.lock().unwrap().manifests.insert(
             (dir_id.as_str().to_owned(), cipher_name.to_owned()),
             manifest.to_vec(),
         );
-        for (id, bytes) in chunks {
-            tee.chunks.insert(id.as_str().to_owned(), bytes.to_vec());
-        }
         Ok(())
     }
 }
@@ -977,4 +1008,138 @@ fn unicode_and_case_distinct_names_round_trip() {
     a.sync_once(&mut a_client, "2026-10-16").unwrap();
     let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
     assert!(report.is_quiet(), "no case folding, no churn: {report:?}");
+}
+
+// ---- interruption and resume --------------------------------------------------
+
+/// Pseudo-random bytes from a fixed LCG: no early repetition (so every chunk is
+/// distinct and a resume cannot dedup past what it must prove) and no pattern
+/// the content-defined chunker could ride past its target — a fixed length cuts
+/// into several chunks.
+fn filler(len: usize) -> Vec<u8> {
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    (0..len)
+        .map(|_| {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as u8
+        })
+        .collect()
+}
+
+#[test]
+fn a_push_dropped_midway_resumes_from_the_chunks_already_uploaded() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let bytes = filler(200_000);
+    write_client(a_root.path(), "video.part", &bytes);
+
+    // The third chunk's transfer dies: the pass ends in error with the first two
+    // landed and no commit made — the record is still dirty by construction.
+    shared.0.borrow_mut().fail_put_number = Some(3);
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    assert!(
+        a.sync_once(&mut a_client, "2026-10-16").is_err(),
+        "a dropped transfer must fail the pass, not pretend"
+    );
+    assert_eq!(
+        shared.0.borrow().chunks.len(),
+        2,
+        "the first two chunks landed"
+    );
+
+    // The next pass re-offers every chunk and uploads only the server's shortfall:
+    // resume is what content addressing already promises, and this pins it.
+    let mut a2 = engine(a_root.path());
+    let mut a_client2 = client(&shared);
+    let report = a2.sync_once(&mut a_client2, "2026-10-16").unwrap();
+    let total = shared.0.borrow().chunks.len();
+    assert!(
+        total >= 3,
+        "the fixture must span several chunks; got {total}"
+    );
+    assert_eq!(report.uploaded, 1);
+    assert_eq!(
+        report.chunks_uploaded,
+        total - 2,
+        "only the missing chunks went up the second time"
+    );
+    assert_eq!(
+        shared.0.borrow().put_attempts,
+        total + 1,
+        "exactly one dropped attempt and no wasted bytes"
+    );
+
+    // The server's copy still rebuilds the file byte for byte.
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(
+        std::fs::read(b_root.path().join("video.part")).unwrap(),
+        bytes,
+        "the resumed push stored the same content as an uninterrupted one would"
+    );
+}
+
+#[test]
+fn an_interrupted_pull_resumes_from_the_chunks_already_stored() {
+    // A server that already holds a multi-chunk file.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let bytes = filler(200_000);
+    write_client(a_root.path(), "movie.part", &bytes);
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    let total = shared.0.borrow().chunks.len();
+    assert!(
+        total >= 3,
+        "the fixture must span several chunks; got {total}"
+    );
+
+    // B pulls through a store, and the second chunk's download drops.
+    let tee = TeeStore::default();
+    let b_root = tempfile::tempdir().unwrap();
+    shared.0.borrow_mut().fail_get_number = Some(2);
+    let mut b = engine(b_root.path()).with_store(tee.clone());
+    let mut b_client = client(&shared);
+    assert!(b.sync_once(&mut b_client, "2026-10-16").is_err());
+
+    // The interruption leaves a head start, and not a half-written promise:
+    // chunk one is durably cached, and no manifest or plaintext landed — the
+    // file does not exist anywhere until it is whole.
+    {
+        let t = tee.0.lock().unwrap();
+        assert_eq!(t.chunks.len(), 1, "the first downloaded chunk was staged");
+        assert!(
+            t.manifests.is_empty(),
+            "the manifest lands last, only when the whole file is local"
+        );
+    }
+    assert!(!b_root.path().join("movie.part").exists());
+
+    // The next pull reads through the store first: chunk one never goes back to
+    // the wire, and the pass finishes from where the drop stopped it.
+    shared.0.borrow_mut().fail_get_number = None;
+    let mut b2 = engine(b_root.path()).with_store(tee.clone());
+    let mut b2_client = client(&shared);
+    let report = b2.sync_once(&mut b2_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        report.resumed_chunks, 1,
+        "chunk one came from the store, not the server"
+    );
+    assert_eq!(
+        shared.0.borrow().get_attempts,
+        total + 1,
+        "one dropped attempt, and not one chunk ever re-fetched"
+    );
+    assert_eq!(
+        std::fs::read(b_root.path().join("movie.part")).unwrap(),
+        bytes,
+        "resumed bytes are byte-identical to a clean pull"
+    );
 }

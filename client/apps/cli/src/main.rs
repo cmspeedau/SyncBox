@@ -352,6 +352,12 @@ fn print_report(report: &SyncReport) {
         "sent {} new chunk(s) covering {} plaintext byte(s)",
         report.chunks_uploaded, report.bytes_uploaded
     );
+    if report.resumed_chunks > 0 {
+        println!(
+            "resumed {} chunk(s) from the local store instead of re-downloading them",
+            report.resumed_chunks
+        );
+    }
     if report.skipped > 0 {
         println!("note: skipped files live in directories this client has not created yet");
     }

@@ -62,6 +62,32 @@ func TestFromEnvReadsTheDocumentedNames(t *testing.T) {
 	}
 }
 
+func TestRateLimitParsesAndRejects(t *testing.T) {
+	t.Setenv("SYNCBOX_RATE_LIMIT", "12.5")
+	t.Setenv("SYNCBOX_RATE_BURST", "40")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.RatePerSecond != 12.5 || cfg.RateBurst != 40 {
+		t.Errorf("rate = %v/%v, want 12.5/40", cfg.RatePerSecond, cfg.RateBurst)
+	}
+
+	for _, bad := range []struct{ name, value string }{
+		{"SYNCBOX_RATE_LIMIT", "0"},
+		{"SYNCBOX_RATE_LIMIT", "fast"},
+		{"SYNCBOX_RATE_BURST", "0"},
+		{"SYNCBOX_RATE_BURST", "many"},
+	} {
+		t.Setenv(bad.name, bad.value)
+		if _, err := FromEnv(); err == nil {
+			t.Errorf("%s=%q was accepted", bad.name, bad.value)
+		}
+		t.Setenv(bad.name, "")
+	}
+}
+
 func TestMissingPasswordIsGeneratedNotAbsent(t *testing.T) {
 	t.Setenv("SYNCBOX_PASSWORD", "")
 

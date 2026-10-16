@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -25,6 +27,7 @@ import (
 
 	"github.com/syncbox/server/internal/auth"
 	"github.com/syncbox/server/internal/backup"
+	"github.com/syncbox/server/internal/ratelimit"
 	"github.com/syncbox/server/internal/store"
 )
 
@@ -50,6 +53,7 @@ type Server struct {
 	issuer   *auth.Issuer
 	password string
 	hub      *hub
+	limiter  *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
 	now      func() time.Time
 }
 
@@ -64,6 +68,14 @@ func New(st store.Store, backups *backup.Manager, issuer *auth.Issuer, password 
 		hub:      newHub(),
 		now:      time.Now,
 	}
+}
+
+// SetRateLimit caps each caller's IP at rate requests per second with the given
+// burst. It exists as a setter because the limiter is a deployment posture, not
+// part of what a server is built over — a zero rate disables it, which is also
+// the default, so a single-user server on loopback runs unthrottled.
+func (s *Server) SetRateLimit(rate float64, burst int) {
+	s.limiter = ratelimit.New(rate, burst)
 }
 
 // Routes builds the handler tree.
@@ -92,9 +104,39 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /admin/backups/{id}/restore", s.requireToken(http.HandlerFunc(s.handleBackupRestore)))
 
 	var handler http.Handler = mux
+	handler = s.limit(handler)
 	handler = recoverMiddleware(handler)
 	handler = logMiddleware(handler)
 	return handler
+}
+
+// limit guards every route — probes, login included — by caller IP, before a
+// request buys any HMAC work, any Argon2, or any chunk I/O. Refusals answer the
+// protocol's stable `rate_limited` code with a Retry-After, which the client's
+// chunk transfers retry against with doubling backoff.
+func (s *Server) limit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ok, wait := s.limiter.Allow(ipKey(r.RemoteAddr)); !ok {
+			seconds := int64(math.Ceil(wait.Seconds()))
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+			writeError(w, http.StatusTooManyRequests, "rate_limited",
+				"too many requests for this address; retry after "+strconv.FormatInt(seconds, 10)+"s")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ipKey strips the port off RemoteAddr, so one address holds one bucket no
+// matter how many connections it opens.
+func ipKey(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
 }
 
 // healthBody is what /healthz answers.

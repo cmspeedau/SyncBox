@@ -233,6 +233,7 @@ mod tests {
             skipped: 0,
             chunks_uploaded: 3,
             bytes_uploaded: 4096,
+            resumed_chunks: 0,
         }
     }
 
