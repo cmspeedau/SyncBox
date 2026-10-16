@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/crypto",
+  "crates/vault",
+  "crates/index",
+  "crates/sync",
+  "crates/transport",
+  "apps/cli",
+]
+
+# The desktop app joins the workspace in M4, once the Tauri system dependencies
+# (webkit2gtk on Linux, the Windows and macOS SDKs) are wired into CI. Keeping it
+# excluded now means `cargo check` still works on a machine without them.
+exclude = ["apps/desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Internal crates
+syncbox-crypto = { path = "crates/crypto" }
+syncbox-index = { path = "crates/index" }
+syncbox-sync = { path = "crates/sync" }
+syncbox-transport = { path = "crates/transport" }
+syncbox-vault = { path = "crates/vault" }
+
+# External
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"

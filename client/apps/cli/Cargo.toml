@@ -1,0 +1,18 @@
+[package]
+name = "syncbox-cli"
+description = "Headless Syncbox client, used to drive end-to-end tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "syncbox"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+syncbox-crypto.workspace = true
+syncbox-index.workspace = true
+syncbox-sync.workspace = true
+syncbox-vault.workspace = true

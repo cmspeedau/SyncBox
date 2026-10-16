@@ -1,0 +1,16 @@
+# TLS for a Syncbox server. Enable with the tls compose profile:
+#
+#   docker compose -f deploy/docker-compose.yml --profile tls up
+#
+# SYNCBOX_DOMAIN comes from the environment, so the same file works for any host
+# and no certificate name is committed to the repository.
+
+{$SYNCBOX_DOMAIN} {
+	encode zstd gzip
+
+	# The chunk endpoints stream encrypted bytes; leaving them unbuffered keeps a
+	# large download from being written to disk by the proxy on its way through.
+	reverse_proxy syncboxd:8080 {
+		header_up X-Forwarded-Host {host}
+	}
+}

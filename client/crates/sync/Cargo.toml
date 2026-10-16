@@ -1,0 +1,11 @@
+[package]
+name = "syncbox-sync"
+description = "Chunking, delta transfer, and conflict handling for Syncbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+syncbox-crypto.workspace = true
+syncbox-index.workspace = true
+thiserror.workspace = true

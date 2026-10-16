@@ -1,0 +1,12 @@
+[package]
+name = "syncbox-vault"
+description = "On-disk layout of a Syncbox encrypted vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+serde.workspace = true
+syncbox-crypto.workspace = true
+thiserror.workspace = true

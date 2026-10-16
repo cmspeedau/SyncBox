@@ -1,0 +1,32 @@
+# Rust
+target/
+
+# Go
+server/bin/
+server/*.test
+*.exe
+
+# Node / Tauri frontends
+node_modules/
+dist/
+client/apps/desktop/src-tauri/target/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Runtime data and backups produced by `make up`
+.deploy/
+data/
+snapshots/
+
+# Coverage and profiles
+*.out
+coverage/

@@ -1,0 +1,9 @@
+[package]
+name = "syncbox-index"
+description = "The client's local index of files, chunks, and pending operations"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+syncbox-crypto.workspace = true

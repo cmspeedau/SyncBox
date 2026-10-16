@@ -1,0 +1,10 @@
+[package]
+name = "syncbox-crypto"
+description = "Key derivation, encrypted filenames, and chunked content encryption for Syncbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zeroize.workspace = true

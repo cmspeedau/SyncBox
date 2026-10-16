@@ -1,0 +1,56 @@
+# A Syncbox server on one host.
+#
+#   cp deploy/.env.example .env   # then fill in the two secrets
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+# The API is published on loopback only. Put the tls profile in front of it, or
+# your own reverse proxy, before it faces a network.
+
+services:
+  syncboxd:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: syncbox/server:dev
+    restart: unless-stopped
+    environment:
+      SYNCBOX_LISTEN_ADDR: 0.0.0.0:8080
+      SYNCBOX_DATA_DIR: /data
+      SYNCBOX_BACKUP_TARGET: /backups
+      SYNCBOX_BACKUP_SCHEDULE: ${SYNCBOX_BACKUP_SCHEDULE:-1h}
+      # No defaults here on purpose. Compose refuses to start rather than bringing
+      # up a server with a generated credential that vanishes on the next restart.
+      SYNCBOX_PASSWORD: ${SYNCBOX_PASSWORD:?set SYNCBOX_PASSWORD in .env}
+      SYNCBOX_TOKEN_SECRET: ${SYNCBOX_TOKEN_SECRET:?set SYNCBOX_TOKEN_SECRET in .env}
+    volumes:
+      - syncbox-data:/data
+      - syncbox-backups:/backups
+    ports:
+      - "127.0.0.1:8080:8080"
+    labels:
+      - "syncbox.backup.target=/backups"
+
+  # Enable with: docker compose -f deploy/docker-compose.yml --profile tls up
+  # Caddy asks Let's Encrypt for a certificate for SYNCBOX_DOMAIN and terminates
+  # TLS, which is what the vault's "in transit as well as at rest" claim needs.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    restart: unless-stopped
+    depends_on:
+      - syncboxd
+    environment:
+      SYNCBOX_DOMAIN: ${SYNCBOX_DOMAIN:?set SYNCBOX_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  syncbox-data:
+  syncbox-backups:
+  caddy-data:
+  caddy-config:
