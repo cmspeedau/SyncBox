@@ -6,7 +6,8 @@
 //! test in the crate asserts these same numbers, so the document cannot silently
 //! drift from the code.
 
-use syncbox_crypto::content::{chunk_id, encrypt_chunk};
+use syncbox_crypto::content::{chunk_id, seal_chunk};
+use syncbox_crypto::file::{encode_manifest, file_key, ChunkEntry, Manifest};
 use syncbox_crypto::kdf::{derive_kek, Algorithm, Params};
 use syncbox_crypto::keys::{MasterKey, MasterKeys};
 use syncbox_crypto::names::{base32_encode, encrypt_filename, DirId};
@@ -60,13 +61,39 @@ fn main() {
     let id = chunk_id(&hmac_key(), b"hello world").unwrap();
     println!("chunk_id       = {}", id.as_str());
 
-    // 5. Chunk encryption: file key 0x40..=0x5f, index 7 (nonce is derived, so the
-    //    whole stored blob is deterministic).
-    let file_key = by_range(0x40);
-    let stored = encrypt_chunk(&file_key, 7, b"Syncbox").unwrap();
+    // 5. Content-derived chunk sealing. The key and nonce come from the primary
+    //    master key and the chunk's own id, so the whole stored blob is a function
+    //    of the content: the same plaintext chunk is the same bytes everywhere.
+    let (sync_id, stored) = seal_chunk(&primary_key(), &hmac_key(), b"Syncbox").unwrap();
+    println!("chunk2_id      = {}", sync_id.as_str());
     println!("stored_chunk   = {}", hex(&stored));
 
-    // 6/7. Key wrapping and the header MAC, under a fixed KEK and nonce.
+    // 6. A per-file manifest, encrypted under a per-file key derived from the file's
+    //    identity (the root directory and the encrypted filename from vector 3).
+    let second = seal_chunk(&primary_key(), &hmac_key(), b"hello world").unwrap();
+    let manifest = Manifest {
+        plaintext_size: (stored.len() - 28 + second.1.len() - 28) as u64,
+        chunks: vec![
+            ChunkEntry {
+                id: sync_id,
+                stored_len: stored.len() as u32,
+            },
+            ChunkEntry {
+                id: second.0,
+                stored_len: second.1.len() as u32,
+            },
+        ],
+    };
+    println!(
+        "file_key       = {}",
+        hex(&file_key(&primary_key(), &root, &cipher_name).unwrap())
+    );
+    println!(
+        "manifest       = {}",
+        hex(&encode_manifest(&primary_key(), &root, &cipher_name, &manifest).unwrap())
+    );
+
+    // 7/8. Key wrapping and the header MAC, under a fixed KEK and nonce.
     let wrap_kek = syncbox_crypto::Kek::from_bytes(by_range(0x11).to_vec());
     let keys = MasterKeys {
         primary: primary_key(),

@@ -6,4 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rusqlite.workspace = true
 syncbox-crypto.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

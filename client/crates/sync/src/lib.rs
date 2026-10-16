@@ -13,15 +13,21 @@
 //!    their work: the loser is written beside the winner under the name
 //!    [`conflicted_copy_name`] produces. Silent overwrite is not an option.
 //!
-//! Transfer itself arrives with M3, once the transport crate can talk to a
-//! server; the chunking, planning, and naming rules here are real and tested now.
+//! [`Engine::sync_once`] runs one pass end to end: it scans the plaintext tree,
+//! pushes what is new or changed (uploading only the chunks the server lacks),
+//! pulls what the server has that we do not, and turns a both-sides edit into a
+//! conflicted copy. It talks to the server through [`syncbox_transport::Client`]
+//! and holds a [`Vault`] for the keys and naming, so the whole loop is testable
+//! against an in-process fake server.
 
 pub mod chunker;
 pub mod conflict;
 pub mod engine;
 pub mod error;
+pub mod vault;
 
 pub use chunker::{Chunk, Chunker, FastCdc, FixedSize};
 pub use conflict::conflicted_copy_name;
 pub use engine::{Engine, SyncReport};
 pub use error::{Result, SyncError};
+pub use vault::{Sealed, Vault};

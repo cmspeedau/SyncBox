@@ -24,13 +24,15 @@
 pub mod content;
 mod derive;
 pub mod error;
+pub mod file;
 pub mod kdf;
 pub mod keys;
 pub mod names;
 pub mod wrap;
 
-pub use content::ChunkId;
+pub use content::{chunk_id, decrypt_chunk, encrypt_chunk, open_chunk, seal_chunk, ChunkId};
 pub use error::{CryptoError, Result};
+pub use file::{decode_manifest, encode_manifest, file_key, ChunkEntry, Manifest};
 pub use kdf::{derive_kek, Kek, Params as KdfParams};
 pub use keys::{MasterKey, MasterKeys};
 pub use names::{child_dir_id, decrypt_filename, encrypt_filename, DirId};

@@ -3,9 +3,11 @@
 Version 1, over HTTPS. This is the contract between `client/crates/transport` and
 `server/internal/api`; both sides are written from this file.
 
-Status: implemented on the server against the durable SQLite + filesystem store.
-The Rust client has the same types and method signatures and returns `Unimplemented`
-until M3 supplies the HTTP transport.
+Status: implemented on the server against the durable SQLite + filesystem store, and
+on the Rust client (`client/crates/transport` over an `Http` seam, driven by
+`client/crates/sync`). The two have been run against each other end to end: a folder
+is pushed from one client and pulled, byte for byte, by a second, including edits,
+deletions, and nested directories.
 
 ## What the server is
 
@@ -124,15 +126,49 @@ notes.txt  →  notes (conflicted copy 2026-10-16).txt
 Both edits survive. There is no merge that is safe to perform silently on arbitrary
 bytes, so Syncbox does not pretend otherwise.
 
+### Tombstones
+
+A deletion is not the absence of a revision; it is a revision with `"deleted": true`
+committed against the current head. Because the log is ordered, the highest-numbered
+revision for a `(dir_id, cipher_name)` is that file's current state, whether it is
+content or a tombstone. A client applying the log therefore either writes the file
+(content) or removes it (tombstone), and a file it has never seen can be skipped
+rather than resurrected.
+
+A tombstone carries no manifest. The client sends `""`, the Go server stores a nil
+`[]byte`, and `encoding/json` writes a nil byte slice as `null` — so a tombstone comes
+back over the wire as `"manifest": null`. Both sides treat `null`, `""`, and an absent
+field as the same empty manifest; the Rust client pins this with a test so a future
+Go or Rust change that makes them differ is caught.
+
 ## A full upload, in order
 
-1. Watch the local tree; hash the changed file's content into chunks with FastCDC.
-2. Ask `chunks/exists` for the ids it just derived.
-3. `PUT` only the missing ones.
-4. `POST` the revision with `parent` set to the last revision this client saw.
-5. On 409, refetch and produce a conflicted copy.
+1. Read the vault's revision log and apply anything newer than the index reflects.
+2. For each changed local file, split its content into chunks with FastCDC and seal
+   each chunk under a content-derived key.
+3. Ask `chunks/exists` for those ids, and `PUT` only the missing ones.
+4. `POST` the revision with `parent` set to the vault's **current head** — the highest
+   revision in the log, not the file's previous revision. The head advances on every
+   commit by anyone, so a commit is always against the head the client last read.
+5. On 409, the head moved under the client: keep its bytes as a conflicted copy and
+   reconcile the canonical file on the next pass.
 
-Steps 2 and 3 are why an edit to a large file costs the edit rather than the file.
+Steps 3 and 4 are why an edit to a large file costs the edit rather than the file:
+content-defined chunking leaves every chunk after an insertion unchanged in both
+content and id, so `chunks/exists` reports them present and only the touched bytes are
+uploaded.
+
+## A full download, in order
+
+1. `GET .../revisions?since=0` and take the newest revision for each file key.
+2. For a content revision newer than the local index, decrypt its manifest, `GET` its
+   chunks, and reassemble — the same chunks the uploader sent, because keys are derived
+   from content, not from which file referenced them.
+3. For a tombstone, remove the file.
+
+The client reads the log from `0` and reconciles it against a per-file revision number
+it keeps in its own index, so it needs no sync cursor of its own and a crash mid-pass
+costs a re-read, not a lost revision.
 
 ## Change notification
 

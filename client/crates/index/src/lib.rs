@@ -11,9 +11,11 @@
 //! arrives with M3 behind the same methods.
 
 pub mod memory;
+pub mod sqlite;
 pub mod types;
 
 pub use memory::MemoryIndex;
+pub use sqlite::SqliteIndex;
 pub use types::{FileEntry, PendingOp};
 
 use syncbox_crypto::ChunkId;
@@ -40,6 +42,9 @@ pub trait Index {
 
     /// Drops one reference to a chunk.
     fn release_chunk(&mut self, id: &ChunkId);
+
+    /// How many times a chunk is currently referenced.
+    fn chunk_refs(&self, id: &ChunkId) -> u32;
 
     /// Chunks that no file references, ready to leave the local cache.
     fn unreferenced_chunks(&self) -> Vec<ChunkId>;
