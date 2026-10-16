@@ -20,12 +20,21 @@ It joins the workspace in M4, when the UI is built on the crates that already ex
 Nothing in those five crates depends on Tauri, which is the point: the CLI in
 `../cli` drives the same engine headlessly, and the mount layer in M5 will too.
 
-## Planned shape
+## Shape (M4 in progress)
+
+The window's behaviour lives in `../../crates/agent`, not in the Tauri shell, so it
+is unit-tested headlessly (`cargo test -p syncbox-agent`) against the same in-process
+fake server the sync engine uses. `apps/desktop` stays excluded from the Cargo
+workspace, so `cargo check`/`test --workspace` never need the GUI libraries.
 
 ```
-src-tauri/         Rust: tray, autostart, notifications, engine handle
-src/               Svelte or React: status, activity, settings, backups
+src-tauri/         Rust: tray, autostart, notifications; Tauri commands over the Agent
+src/               static HTML/CSS/JS: status, activity, settings, backups
 ```
+
+The frontend is plain HTML/CSS/JS for now (no Node in the build environment); a
+Svelte or React frontend can drop in behind `frontendDist` in M6 when Node and
+`tauri-cli` are available for bundling.
 
 ## Packaging (M6)
 

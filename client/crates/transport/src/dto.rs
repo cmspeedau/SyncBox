@@ -114,6 +114,61 @@ pub struct ErrorResponse {
     pub reason: String,
 }
 
+/// `GET /admin/backups` (an array) and `POST /admin/backups` (one).
+///
+/// Mirrors the Go `backup.Snapshot`, whose fields carry no `json` tags and so
+/// arrive in Go's default casing (`ID`, `CreatedAt`, `Manifest`) — unlike the rest
+/// of the protocol. The nested manifest *is* tagged snake_case. Only the fields the
+/// Backups panel shows are modelled; unknown manifest fields are ignored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snapshot {
+    /// Snapshot id (a sortable timestamp plus a random suffix).
+    #[serde(rename = "ID")]
+    pub id: String,
+    /// Creation time, RFC 3339 as Go writes it.
+    #[serde(rename = "CreatedAt")]
+    pub created_at: String,
+    /// The manifest the snapshot was sealed with.
+    #[serde(rename = "Manifest")]
+    pub manifest: BackupManifest,
+}
+
+/// The part of a snapshot manifest the panel needs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupManifest {
+    /// Manifest format version.
+    #[serde(default)]
+    pub version: u32,
+    /// Server version that wrote the snapshot.
+    #[serde(default)]
+    pub server_version: String,
+    /// Total bytes across every chunk the snapshot captured.
+    #[serde(default)]
+    pub chunk_bytes: i64,
+    /// Every chunk captured, with the checksum taken when it was written.
+    #[serde(default)]
+    pub chunks: Vec<BackupChunk>,
+}
+
+/// One chunk inside a [`BackupManifest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupChunk {
+    /// Chunk id.
+    pub id: String,
+    /// Stored size in bytes.
+    pub size: i64,
+    /// Hex SHA-256 recorded when the chunk was copied.
+    pub sha256: String,
+}
+
+impl BackupManifest {
+    /// How many chunks the snapshot holds.
+    #[must_use]
+    pub fn chunk_count(&self) -> usize {
+        self.chunks.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

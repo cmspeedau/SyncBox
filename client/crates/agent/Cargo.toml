@@ -1,0 +1,23 @@
+[package]
+name = "syncbox-agent"
+description = "Tauri-free desktop sync controller: unlock, sync state machine, activity, backups"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+# The desktop window (apps/desktop, excluded from the workspace) shells around
+# this crate. Keeping the behaviour here — with no Tauri or webkit dependency —
+# is what lets `cargo test --workspace` exercise the whole sync lifecycle on a
+# headless box with no system GUI libraries.
+
+[dependencies]
+rusqlite.workspace = true
+syncbox-index.workspace = true
+syncbox-sync.workspace = true
+syncbox-transport.workspace = true
+syncbox-vault.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+syncbox-crypto.workspace = true
+tempfile.workspace = true
