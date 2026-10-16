@@ -64,24 +64,27 @@ cd server && go run ./cmd/syncboxd serve
 
 ## Status
 
-Milestone **M1 — crypto & vault format**. `syncbox-crypto` implements Argon2id
-key derivation, AES-SIV filenames, AES-GCM content chunks, and the HKDF key tree;
-`syncbox-vault` creates and unlocks a vault on disk. The byte-level format is
-specified with test vectors in [`docs/format.md`](docs/format.md), pinned by an
-assertion in the crate. Per-file chunked read/write lands with M3's content-defined
-chunker.
+Milestone **M2 — durable server** is in place: the Go server runs on a SQLite
+metadata store and a content-addressed chunk store on disk, takes self-contained
+snapshots with GFS retention on a schedule or on demand, notifies clients of changes,
+and ships as a static multi-stage `scratch` image. An offline `syncboxd restore`
+produces a directory the server starts straight from.
 
-| Milestone | Scope | Status |
-| --- | --- | --- |
-| M0 | Scaffolding: workspaces, compose, CI | done |
-| M1 | Crypto crate + vault format + test vectors | done |
-| M2 | Server core + snapshot engine + Docker image | in review |
-| M3 | Client core + CLI sync harness | next |
-| M4 | Tauri desktop app | not started |
-| M5 | Mount: FUSE / macFUSE / WinFsp | not started |
-| M6 | Packaging: AppImage, .dmg, .msi, signing | not started |
-| M7 | Hardening: conflicts, GC, verification, restore drills | not started |
-| M8 | Alternate backup targets: S3 object-lock, restic | not started |
+Still ahead: the crypto crate and vault format (M1 — the reference format is
+specified in `docs/format.md`), the client sync engine (M3), the desktop app (M4), the
+mount (M5), and packaging (M6). The milestones below track the rest.
+
+| Milestone | Scope |
+| --- | --- |
+| M0 | Scaffolding: workspaces, compose, CI |
+| M1 | Crypto crate + vault format + test vectors |
+| M2 | Server core + snapshot engine + Docker image |
+| M3 | Client core + CLI sync harness |
+| M4 | Tauri desktop app |
+| M5 | Mount: FUSE / macFUSE / WinFsp |
+| M6 | Packaging: AppImage, .dmg, .msi, signing |
+| M7 | Hardening: conflicts, GC, verification, restore drills |
+| M8 | Alternate backup targets: S3 object-lock, restic |
 
 ## License
 

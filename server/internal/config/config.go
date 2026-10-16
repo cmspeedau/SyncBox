@@ -28,9 +28,9 @@ type Config struct {
 	TokenSecret string
 	// TokenTTL is how long an issued token stays valid.
 	TokenTTL time.Duration
-	// DataDir is where the durable store keeps chunks and metadata. Unused until
-	// the SQLite store replaces the in-memory one in M2, but read now so the
-	// container's volume mount is already correct.
+	// DataDir is where the durable store keeps chunks (in a chunks/ subdir) and its
+	// SQLite metadata. It defaults to ./data so the container's volume mount is
+	// correct out of the box.
 	DataDir string
 	// BackupTarget is a directory to write snapshots into. Empty disables the
 	// administrative backup endpoints.

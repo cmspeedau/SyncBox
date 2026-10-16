@@ -5,10 +5,11 @@
 // are stored under the id the client derived from their plaintext, so the server's
 // whole view of a file is "an object of this size exists at this address".
 //
-// Memory is the implementation for tests and for bringing a server up in a few
-// seconds. It satisfies the same interface the SQLite plus filesystem store will
-// in M2, which is the point: the API and the backup engine are written against the
-// interface and do not change when durability arrives.
+// Memory is the implementation tests use, and the one the durable store is checked
+// against (see conformance_test.go). Durable keeps the same bookkeeping across a
+// restart. Both satisfy one Store interface, which is the point: the API and the
+// backup engine are written against the interface and never learned that durability
+// arrived.
 package store
 
 import (
@@ -315,19 +316,47 @@ func (m *Memory) DumpMetadata(ctx context.Context) ([]byte, error) {
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ID < chunks[j].ID })
 	sort.Strings(vaults)
 
-	// A stable field order and sorted keys keep two snapshots of the same state
-	// byte-identical, which makes a restore verifiable against a recorded hash.
-	doc := struct {
-		Chunks    []Chunk               `json:"chunks"`
-		Vaults    []string              `json:"vaults"`
-		Revisions map[string][]Revision `json:"revisions"`
-	}{Chunks: chunks, Vaults: vaults, Revisions: revisions}
+	return encodeMetadata(Metadata{Chunks: chunks, Vaults: vaults, Revisions: revisions})
+}
 
+// Metadata is the bookkeeping a snapshot captures: which chunks exist and which
+// revisions each vault holds. It never contains chunk content. The durable store
+// and the in-memory store both serialise to this one shape so the backup engine,
+// the restore path, and the checksums in a manifest all speak a single format.
+type Metadata struct {
+	Chunks    []Chunk               `json:"chunks"`
+	Vaults    []string              `json:"vaults"`
+	Revisions map[string][]Revision `json:"revisions"`
+}
+
+// encodeMetadata renders the document with a stable field order and sorted keys,
+// so two snapshots of the same state are byte-identical and a restore can be
+// verified against a recorded hash. Callers sort before handing it over.
+func encodeMetadata(doc Metadata) ([]byte, error) {
+	if doc.Chunks == nil {
+		doc.Chunks = []Chunk{}
+	}
+	if doc.Vaults == nil {
+		doc.Vaults = []string{}
+	}
+	if doc.Revisions == nil {
+		doc.Revisions = map[string][]Revision{}
+	}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encoding metadata: %w", err)
 	}
 	return data, nil
+}
+
+// DecodeMetadata parses a document produced by DumpMetadata. The restore path
+// hands it to a durable store to rebuild its tables from a snapshot.
+func DecodeMetadata(data []byte) (Metadata, error) {
+	var doc Metadata
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return Metadata{}, fmt.Errorf("decoding metadata: %w", err)
+	}
+	return doc, nil
 }
 
 // CheckChunkID rejects ids that could escape the blob directory or that the

@@ -100,7 +100,12 @@ func serve(args []string, stdout io.Writer) error {
 		log.Printf("warning: %s", warning)
 	}
 
-	st := store.NewMemory(cfg.MaxChunkBytes)
+	st, err := store.Open(cfg.DataDir, cfg.MaxChunkBytes)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	log.Printf("data directory %s", cfg.DataDir)
 
 	var backups *backup.Manager
 	if cfg.BackupTarget != "" {
@@ -267,9 +272,10 @@ func restoreCommand(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	// A restore reads from the target only, so the snapshot source is nil. Reading
-	// chunks back into a live store is M2's job and is deliberately not pretended
-	// to here.
+	// Restore reads from the snapshot target only, so the source side of the
+	// manager is nil. It writes the server's own data-dir layout (metadata.json +
+	// chunks/) into -to; the next `serve` with SYNCBOX_DATA_DIR pointed there
+	// imports it into SQLite on open. There is no separate load step to pretend at.
 	manager := backup.NewManager(tgt, nil, version)
 
 	manifest, err := manager.Restore(context.Background(), *snapshotID, *dest)
