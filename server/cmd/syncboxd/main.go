@@ -100,7 +100,12 @@ func serve(args []string, stdout io.Writer) error {
 		log.Printf("warning: %s", warning)
 	}
 
-	st := store.NewMemory(cfg.MaxChunkBytes)
+	st, err := store.Open(cfg.DataDir, cfg.MaxChunkBytes)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	log.Printf("data directory %s", cfg.DataDir)
 
 	var backups *backup.Manager
 	if cfg.BackupTarget != "" {

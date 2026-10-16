@@ -35,6 +35,11 @@ const (
 	MaxBodyBytes = 1 << 20
 	// DefaultRevisionPage is the page size when the client does not ask.
 	DefaultRevisionPage = 500
+	// DefaultEventWait is how long a client waits for a change before the events
+	// long-poll returns empty, and MaxEventWait caps it below a typical proxy's
+	// idle timeout so a held connection is ended by us, not dropped by the proxy.
+	DefaultEventWait = 30 * time.Second
+	MaxEventWait     = 60 * time.Second
 )
 
 // Server bundles what the handlers need.
@@ -43,6 +48,7 @@ type Server struct {
 	backups  *backup.Manager
 	issuer   *auth.Issuer
 	password string
+	hub      *hub
 	now      func() time.Time
 }
 
@@ -54,6 +60,7 @@ func New(st store.Store, backups *backup.Manager, issuer *auth.Issuer, password 
 		backups:  backups,
 		issuer:   issuer,
 		password: password,
+		hub:      newHub(),
 		now:      time.Now,
 	}
 }
@@ -147,6 +154,7 @@ type revisionPage struct {
 	Upto      uint64           `json:"upto"`
 }
 
+// handleListRevisions answers a plain revisions GET.
 func (s *Server) handleListRevisions(w http.ResponseWriter, r *http.Request) {
 	vaultID := r.PathValue("vaultID")
 	since, err := parseUint(r.URL.Query().Get("since"), 0)
@@ -160,12 +168,12 @@ func (s *Server) handleListRevisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	revisions, head, err := s.store.RevisionsSince(r.Context(), vaultID, since, int(limit))
+	page, err := s.readRevisions(r.Context(), vaultID, since, int(limit))
 	if err != nil {
 		writeErrorFrom(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, revisionPage{Revisions: revisions, Upto: head})
+	writeJSON(w, http.StatusOK, page)
 }
 
 // commitRequest is the body of POST .../revisions.
@@ -195,14 +203,9 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		writeErrorFrom(w, err)
 		return
 	}
+	// The revision is durable; wake anyone long-polling this vault so they re-read.
+	s.hub.publish(vaultID)
 	writeJSON(w, http.StatusCreated, map[string]uint64{"revision": next})
-}
-
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	// Long-poll or WebSocket notification lands in M2 with the durable store;
-	// until then a client polls the revision list, which is correct if chattier.
-	writeError(w, http.StatusNotImplemented, "not_configured",
-		"change notifications arrive in M2; poll the revision list instead")
 }
 
 // chunkCheckRequest is the body of POST .../chunks/exists.

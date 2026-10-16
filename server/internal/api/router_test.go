@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -477,19 +476,5 @@ func TestBackupsReportWhenNotConfigured(t *testing.T) {
 	}
 	if code, _ := c.errorBodyOf(response); code != "not_configured" {
 		t.Errorf("code = %q, want not_configured", code)
-	}
-}
-
-func TestEventsEndpointIsExplicitlyUnbuilt(t *testing.T) {
-	c := newClient(t, false)
-
-	response := c.do(http.MethodGet, "/api/v1/vaults/vault/events", nil)
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusNotImplemented {
-		t.Errorf("events = %s, want 501", response.Status)
-	}
-	if _, reason := c.errorBodyOf(response); !strings.Contains(reason, "M2") {
-		t.Errorf("reason %q does not say when this arrives", reason)
 	}
 }
