@@ -17,7 +17,7 @@ use syncbox_crypto::ChunkId;
 
 use crate::dto::{
     ChunkCheckRequest, ChunkCheckResponse, CommitRequest, CommitResponse, ErrorResponse,
-    RevisionPage, TokenRequest, TokenResponse,
+    RevisionPage, Snapshot, TokenRequest, TokenResponse,
 };
 use crate::error::{error_from_status, Result, TransportError};
 
@@ -279,6 +279,33 @@ impl<H: Http> Client<H> {
         ensure_ok(&response)?;
         parse(&response.body)
     }
+
+    /// Lists the server's snapshots, newest first.
+    ///
+    /// A server run with no backup target answers `501 not_configured`, surfaced as
+    /// [`TransportError::Refused`] with that code so the UI can explain the empty
+    /// list rather than showing a failure.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decoding errors.
+    pub fn backups(&mut self) -> Result<Vec<Snapshot>> {
+        let response = self.call(Method::Get, "/admin/backups".to_owned(), Vec::new(), true)?;
+        ensure_ok(&response)?;
+        parse(&response.body)
+    }
+
+    /// Asks the server to take a snapshot now and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decoding errors; `501 not_configured` when the
+    /// server has no backup target.
+    pub fn create_backup(&mut self) -> Result<Snapshot> {
+        let response = self.call(Method::Post, "/admin/backups".to_owned(), Vec::new(), true)?;
+        ensure_ok(&response)?;
+        parse(&response.body)
+    }
 }
 
 #[cfg(test)]
@@ -486,6 +513,73 @@ mod tests {
         assert!(matches!(
             err,
             TransportError::Refused { ref code, .. } if code == "not_found"
+        ));
+    }
+
+    #[test]
+    fn backups_lists_snapshots_from_the_admin_route() {
+        // The admin endpoint answers in Go's default field casing (ID/CreatedAt/
+        // Manifest); parsing it is the whole point of this test.
+        let body = r#"[{"ID":"2026-10-16T120000Z-abcd","CreatedAt":"2026-10-16T12:00:00Z",
+            "Manifest":{"version":1,"id":"x","server_version":"0.1.0","chunk_bytes":42,
+            "chunks":[{"id":"A","size":42,"sha256":"deadbeef"}]}}]"#;
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 200,
+                body: body.as_bytes().to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        let list = client.backups().expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, "2026-10-16T120000Z-abcd");
+        assert_eq!(list[0].manifest.chunk_bytes, 42);
+        assert_eq!(list[0].manifest.chunk_count(), 1);
+
+        let sent = &client.http.calls[0];
+        assert_eq!(sent.method, Method::Get);
+        assert_eq!(sent.path, "/admin/backups");
+        assert_eq!(sent.authorization.as_deref(), Some("Bearer t"));
+    }
+
+    #[test]
+    fn create_backup_posts_to_the_admin_route() {
+        let body = r#"{"ID":"snap1","CreatedAt":"2026-10-16T13:00:00Z","Manifest":{"version":1,"chunks":[]}}"#;
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Response {
+                status: 201,
+                body: body.as_bytes().to_vec(),
+            }]),
+        );
+        client.token = "t".into();
+        let snapshot = client.create_backup().expect("created");
+        assert_eq!(snapshot.id, "snap1");
+        assert_eq!(snapshot.manifest.chunk_count(), 0);
+
+        let sent = &client.http.calls[0];
+        assert_eq!(sent.method, Method::Post);
+        assert_eq!(sent.path, "/admin/backups");
+    }
+
+    #[test]
+    fn backups_reports_not_configured() {
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Scripted::body(
+                501,
+                &ErrorResponse {
+                    code: "not_configured".into(),
+                    reason: "no backup target is configured".into(),
+                },
+            )]),
+        );
+        client.token = "t".into();
+        let err = client.backups().expect_err("501");
+        assert!(matches!(
+            err,
+            TransportError::Refused { ref code, .. } if code == "not_configured"
         ));
     }
 }

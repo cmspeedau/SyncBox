@@ -67,6 +67,13 @@ pub fn error_from_status(status: u16, reason: &str) -> TransportError {
             code: "rate_limited".to_owned(),
             reason: reason.to_owned(),
         },
+        // Backups endpoints answer this when the server runs with no
+        // SYNCBOX_BACKUP_TARGET, so the UI can say "not configured" rather than a
+        // bare 501.
+        501 => TransportError::Refused {
+            code: "not_configured".to_owned(),
+            reason: reason.to_owned(),
+        },
         other => TransportError::Status { status: other },
     }
 }
@@ -95,6 +102,15 @@ mod tests {
         assert!(matches!(
             error_from_status(409, "revision moved"),
             TransportError::Refused { ref code, .. } if code == "conflict"
+        ));
+    }
+
+    #[test]
+    fn a_backup_without_a_target_is_not_configured() {
+        // The Backups panel branches on this code to explain why it is empty.
+        assert!(matches!(
+            error_from_status(501, "no backup target"),
+            TransportError::Refused { ref code, .. } if code == "not_configured"
         ));
     }
 

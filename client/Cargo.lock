@@ -925,6 +925,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncbox-agent"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "syncbox-crypto",
+ "syncbox-index",
+ "syncbox-sync",
+ "syncbox-transport",
+ "syncbox-vault",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "syncbox-cli"
 version = "0.1.0"
 dependencies = [
