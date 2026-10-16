@@ -87,11 +87,14 @@ jobs:
 
   package:
     name: Package (Linux desktop)
-    # GitHub-hosted, like the image job: the Tauri bundler needs Debian packaging
-    # tools (dpkg-deb, patchelf) and the webkit2gtk/gtk development libraries,
-    # none of which exist on the self-hosted box. Bundles are uploaded as build
-    # artifacts only — signing and publishing stay deliberate (and macOS/Windows
-    # packaging needs their own runners and identities, deferred).
+    # Self-hosted: this box already carries the webkit2gtk/gtk development
+    # libraries (the desktop app builds here) and the tauri CLI in ~/.cargo/bin,
+    # and the bundler needs no Debian packaging tools to do its job — it emits
+    # the .deb through ar/tar and linuxdeploy bootstraps patchelf itself. The
+    # apt step below stays for a hosted runner, should this ever move back.
+    # Bundles are uploaded as build artifacts only — signing and publishing
+    # stay deliberate (and macOS/Windows packaging needs their own runners and
+    # identities, deferred).
     runs-on: self-hosted
     needs: rust
     defaults:
@@ -106,17 +109,26 @@ jobs:
         with:
           workspaces: client/apps/desktop/src-tauri
 
-      - name: Install system libraries
+      - name: Install system libraries (hosted runners only)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
-            libjavascriptcoregtk-4.1-dev patchelf
+          if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y \
+              libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+              libjavascriptcoregtk-4.1-dev patchelf
+          else
+            echo "no apt (self-hosted): webkit dev libs are already installed and" \
+                 "the bundler supplies ar/tar + its own patchelf — skipping"
+          fi
 
       - name: Install tauri CLI
         run: |
-          curl -sSL "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz" \
-            | tar -xz -C "$HOME/.cargo/bin"
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            mkdir -p "$HOME/.cargo/bin"
+            curl -sSL "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz" \
+              | tar -xz -C "$HOME/.cargo/bin"
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
           cargo-tauri --version
 
       - name: Build bundles
