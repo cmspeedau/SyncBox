@@ -10,8 +10,6 @@
 //! against a live server. Watch mode (`sync watch`) is a loop over `sync once` and
 //! is the one command still open in this milestone.
 
-mod http;
-
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,10 +20,8 @@ use syncbox_crypto::kdf::Params;
 use syncbox_crypto::names::DirId;
 use syncbox_index::SqliteIndex;
 use syncbox_sync::{Engine, SyncReport, Vault};
-use syncbox_transport::Client;
+use syncbox_transport::{Client, UreqHttp};
 use syncbox_vault::{VaultConfig, CONFIG_FILE_NAME, CURRENT_VERSION};
-
-use crate::http::UreqHttp;
 
 #[derive(Parser)]
 #[command(

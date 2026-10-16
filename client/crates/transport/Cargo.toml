@@ -10,3 +10,11 @@ serde.workspace = true
 serde_json.workspace = true
 syncbox-crypto.workspace = true
 thiserror.workspace = true
+ureq = { workspace = true, optional = true }
+
+[features]
+# Off by default: the workspace gate and the tests drive a scripted fake `Http` and
+# must not pull a TLS stack. The CLI and desktop enable `ureq` to get the real,
+# shared [`UreqHttp`](ureq_http::UreqHttp) socket.
+default = []
+ureq = ["dep:ureq"]

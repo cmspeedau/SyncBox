@@ -1,19 +1,20 @@
-//! The CLI's concrete [`Http`] implementation, over `ureq`.
+//! The concrete [`Http`] implementation over `ureq`, behind the `ureq` feature.
 //!
-//! The `syncbox-transport` crate stays free of a TLS stack behind a trait; this is
-//! where that trait gets a real socket. It uses `ureq` because the sync engine runs
-//! a blocking request/response flow and `ureq` needs no async runtime — the same
-//! call the desktop app would make, just without a shared agent pool (which M4 can
-//! introduce without touching anything above this file).
+//! `syncbox-transport` stays free of a TLS stack behind the [`Http`] trait so the
+//! workspace gate and the tests (which use a scripted fake) never compile one. This
+//! is where the trait gets a real socket for the programs that actually talk to a
+//! server — the CLI and the desktop app — so neither re-implements the wiring. It
+//! uses `ureq` because the sync engine runs a blocking request/response flow and
+//! `ureq` needs no async runtime.
 //!
 //! A non-2xx reply is *not* an error here: it is turned back into a [`Response`]
-//! with its status and body so `syncbox_transport` can classify it (a `409` is a
+//! with its status and body so [`crate::Client`] can classify it (a `409` is a
 //! conflict, a `401` an expired token). Only a request that never reached the
 //! server — DNS, TLS, connection refused — becomes a [`TransportError::Transport`].
 
 use std::io::Read;
 
-use syncbox_transport::{Http, Method, Request, Response, Result, TransportError};
+use crate::{Http, Method, Request, Response, Result, TransportError};
 
 /// Sends requests to a fixed server origin over HTTPS/HTTP.
 pub struct UreqHttp {
@@ -71,6 +72,7 @@ impl Http for UreqHttp {
     }
 }
 
+/// Reads a ureq response body to the end.
 fn read_body(response: ureq::Response) -> Result<Vec<u8>> {
     let mut body = Vec::new();
     response
