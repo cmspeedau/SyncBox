@@ -3,9 +3,9 @@
 Version 1, over HTTPS. This is the contract between `client/crates/transport` and
 `server/internal/api`; both sides are written from this file.
 
-Status: implemented on the server against the in-memory store. The Rust client has
-the same types and method signatures and returns `Unimplemented` until M3 supplies
-the HTTP transport.
+Status: implemented on the server against the durable SQLite + filesystem store.
+The Rust client has the same types and method signatures and returns `Unimplemented`
+until M3 supplies the HTTP transport.
 
 ## What the server is
 
@@ -51,7 +51,7 @@ Every non-2xx response has the same body:
 | 404 | `not_found` | Chunk collected or vault unknown |
 | 409 | `conflict` | Someone else committed. Re-fetch, keep both copies |
 | 413 | `too_large` | Chunk exceeds the server's limit |
-| 501 | `not_configured` | Feature not built yet (events, backups with no target) |
+| 501 | `not_configured` | Feature off on this server (backups with no target) |
 | 500 | `internal`, `corrupt_snapshot` | Back off and report |
 
 Codes are the interface. Statuses are for humans reading a log.
@@ -137,11 +137,24 @@ Steps 2 and 3 are why an edit to a large file costs the edit rather than the fil
 ## Change notification
 
 ```
-GET /api/v1/vaults/{vaultID}/events     → 501 not_configured
+GET /api/v1/vaults/{vaultID}/events?since=4&wait=30s
+ → 200 { "revisions": [ ... ], "upto": 7 }
 ```
 
-Planned for M2 as a WebSocket or a long poll. Until then clients poll
-`GET .../revisions?since=`, which is correct and merely chattier.
+A long poll, chosen over a WebSocket so the server needs no dependency and the
+proxy story stays simple. The client passes the highest revision it already has as
+`since`; the server holds the connection open until a commit advances the vault past
+that point (returning the new revisions and the new head as `upto`), until `wait`
+elapses (returning an empty `revisions` with the current `upto`), or until the client
+disconnects. `wait` defaults to 30s and is clamped to 60s.
+
+Crucially, the response is **the same revision page** `GET .../revisions` returns, so
+the notification is a hint to read, not the change itself. A client that was offline
+while commits landed loses nothing: it reconnects with its last-seen `since` and the
+endpoint hands back the whole backlog. Catch-up and notification are the same path,
+so a dropped or late signal can only cost one `wait` interval — never a missed
+revision. `wait=0` turns the endpoint into a single-shot catch-up read that never
+blocks.
 
 ## Backups
 

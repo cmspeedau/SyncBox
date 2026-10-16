@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -161,41 +160,6 @@ func TestDurableSeedsFromRestoredMetadata(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, metadataFileName+".imported")); err != nil {
 		t.Error("retired metadata.json.imported missing")
-	}
-}
-
-func TestDurableChunkPathAndHardlinkTarget(t *testing.T) {
-	dir := t.TempDir()
-	ctx := context.Background()
-	st := openDurable(t, dir, 1<<20)
-
-	if _, err := st.PutChunk(ctx, "ABCDEFGH1234", strings.NewReader("payload")); err != nil {
-		t.Fatalf("PutChunk: %v", err)
-	}
-	path, err := st.ChunkPath(ctx, "ABCDEFGH1234")
-	if err != nil {
-		t.Fatalf("ChunkPath: %v", err)
-	}
-	// The hard link shares one inode with the stored chunk, which is the whole
-	// point of snapshotting a local target cheaply.
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	link := filepath.Join(t.TempDir(), "linked")
-	if err := os.Link(path, link); err != nil {
-		t.Fatalf("Link: %v", err)
-	}
-	linkedInfo, err := os.Stat(link)
-	if err != nil {
-		t.Fatalf("stat link: %v", err)
-	}
-	if !os.SameFile(info, linkedInfo) {
-		t.Error("ChunkPath did not point at the stored chunk's inode")
-	}
-	body, err := os.ReadFile(link)
-	if err != nil || !bytes.Equal(body, []byte("payload")) {
-		t.Errorf("hardlinked body = %q err %v", body, err)
 	}
 }
 

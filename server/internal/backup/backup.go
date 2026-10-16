@@ -14,10 +14,15 @@
 //   - A finished snapshot is sealed through target.ReadOnly, which is what makes a
 //     backup survivable from a server that is later compromised.
 //
-// Snapshots are full rather than incremental, which is the simplest thing that is
-// safe while the chunk store is small. Once the durable store lands, chunks become
-// hard links on filesystems that support them, so weeks of snapshots cost the
-// changes rather than the whole vault; the layout is already separated that way.
+// Snapshots are full rather than incremental, and this is a deliberate choice, not
+// a placeholder: a snapshot must be self-contained and independent of the live
+// store, because the whole point is that it survives the server that made it being
+// deleted, corrupted, or compromised. Hard links share an inode with the running
+// server's data, so they would tie every snapshot's integrity to that of the live
+// store and undo the guarantee the manifest's checksums exist to prove. Space is
+// cheap relative to that guarantee; a size-vs-safety tradeoff (copy-on-write on a
+// WORM-capable target, or a separate incremental pass) belongs with the space
+// hardening in M7, not here.
 package backup
 
 import (

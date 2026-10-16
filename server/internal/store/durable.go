@@ -128,26 +128,6 @@ func (d *Durable) chunkPath(id string) (string, error) {
 	return filepath.Join(d.chunksDir, id), nil
 }
 
-// ChunkPath returns the filesystem path holding a chunk, for the backup engine to
-// hard link rather than copy. It reports ErrNotFound when the metadata row exists
-// but its file does not.
-func (d *Durable) ChunkPath(ctx context.Context, id string) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", fmt.Errorf("path for chunk %s: %w", id, err)
-	}
-	path, err := d.chunkPath(id)
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(path); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", fmt.Errorf("%w: chunk %s", ErrNotFound, id)
-		}
-		return "", fmt.Errorf("checking chunk %s on disk: %w", id, err)
-	}
-	return path, nil
-}
-
 // PutChunk stores body under id as a file, then records it in the database. The
 // write happens before the insert on purpose: a crash in between leaves a chunk
 // file no row points at, which is invisible and harmless, whereas a row pointing at

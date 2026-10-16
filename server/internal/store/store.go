@@ -5,10 +5,11 @@
 // are stored under the id the client derived from their plaintext, so the server's
 // whole view of a file is "an object of this size exists at this address".
 //
-// Memory is the implementation for tests and for bringing a server up in a few
-// seconds. It satisfies the same interface the SQLite plus filesystem store will
-// in M2, which is the point: the API and the backup engine are written against the
-// interface and do not change when durability arrives.
+// Memory is the implementation tests use, and the one the durable store is checked
+// against (see conformance_test.go). Durable keeps the same bookkeeping across a
+// restart. Both satisfy one Store interface, which is the point: the API and the
+// backup engine are written against the interface and never learned that durability
+// arrived.
 package store
 
 import (

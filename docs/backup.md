@@ -119,9 +119,16 @@ systemctl start syncboxd
 refuses a destination that already contains a `metadata.json`. Silently replacing live
 data is the one thing a restore must not do.
 
+What it writes — `metadata.json` plus `chunks/` — is exactly the server's own data
+directory layout. Point `SYNCBOX_DATA_DIR` at the restored directory and the server
+adopts it on start: a fresh database beside a `metadata.json` is imported into SQLite
+and the file renamed aside. So an offline restore is directly runnable — there is no
+separate "load" step to write.
+
 Restoring *into a running server as a separate vault* — so a user can pull yesterday's
-version down without anyone going offline — is M2 work. Today's CLI writes files; the
-step of loading them into a live store is deliberately not pretended to.
+version down without anyone going offline — is still deferred. That needs an online
+import into a live store, which is a different operation from the offline whole-server
+restore above.
 
 ## Retiring a snapshot
 
@@ -131,11 +138,15 @@ is what a ransomware encryptor would want it to do.
 
 ## Limits of the current implementation
 
-- **Snapshots are full, not incremental.** While the chunk store is small this is the
-  simplest thing that is safe. The layout already separates `chunks/` so that a
-  filesystem-backed store can hard link unchanged chunks instead of copying them, at
-  which point a snapshot costs its changes rather than the whole vault.
-- **`syncboxd restore` writes files**; it does not yet load them into a running server.
+- **Snapshots are full, not incremental — on purpose.** A snapshot has to be
+  self-contained and independent of the live store, because the guarantee that matters
+  is that it survives the server that made it being deleted, corrupted, or compromised.
+  Hard links would share an inode with the running server's chunks, so the server could
+  still rewrite "its own" backup through that inode, and retention's `RemoveAll` does a
+  chmod walk that would quietly un-seal any *other* snapshot sharing the same chunk. The
+  layout keeps `chunks/` separate so a size-vs-safety tradeoff (copy-on-write on a
+  WORM target, or a separate incremental pass) can be added with the space hardening in
+  M7 — but it is a tradeoff, not a free win, and it is not the default here.
 - **A backup on the same host as the server** survives deleted files and a broken
   install. It does not survive a dead disk. The target is meant to be a NAS or a second
   disk.

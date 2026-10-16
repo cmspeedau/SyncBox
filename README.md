@@ -64,10 +64,15 @@ cd server && go run ./cmd/syncboxd serve
 
 ## Status
 
-Milestone **M0 — scaffolding**. The crate and package layout, the protocol
-types, the backup engine's shape, and the toolchain wiring are in place. The
-cryptographic formats, the sync engine, the mount, and packaging are still
-stubs and are tracked by the milestones below.
+Milestone **M2 — durable server** is in place: the Go server runs on a SQLite
+metadata store and a content-addressed chunk store on disk, takes self-contained
+snapshots with GFS retention on a schedule or on demand, notifies clients of changes,
+and ships as a static multi-stage `scratch` image. An offline `syncboxd restore`
+produces a directory the server starts straight from.
+
+Still ahead: the crypto crate and vault format (M1 — the reference format is
+specified in `docs/format.md`), the client sync engine (M3), the desktop app (M4), the
+mount (M5), and packaging (M6). The milestones below track the rest.
 
 | Milestone | Scope |
 | --- | --- |
