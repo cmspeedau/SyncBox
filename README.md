@@ -64,22 +64,24 @@ cd server && go run ./cmd/syncboxd serve
 
 ## Status
 
-Milestone **M0 — scaffolding**. The crate and package layout, the protocol
-types, the backup engine's shape, and the toolchain wiring are in place. The
-cryptographic formats, the sync engine, the mount, and packaging are still
-stubs and are tracked by the milestones below.
+Milestone **M1 — crypto & vault format**. `syncbox-crypto` implements Argon2id
+key derivation, AES-SIV filenames, AES-GCM content chunks, and the HKDF key tree;
+`syncbox-vault` creates and unlocks a vault on disk. The byte-level format is
+specified with test vectors in [`docs/format.md`](docs/format.md), pinned by an
+assertion in the crate. Per-file chunked read/write lands with M3's content-defined
+chunker.
 
-| Milestone | Scope |
-| --- | --- |
-| M0 | Scaffolding: workspaces, compose, CI |
-| M1 | Crypto crate + vault format + test vectors |
-| M2 | Server core + snapshot engine + Docker image |
-| M3 | Client core + CLI sync harness |
-| M4 | Tauri desktop app |
-| M5 | Mount: FUSE / macFUSE / WinFsp |
-| M6 | Packaging: AppImage, .dmg, .msi, signing |
-| M7 | Hardening: conflicts, GC, verification, restore drills |
-| M8 | Alternate backup targets: S3 object-lock, restic |
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| M0 | Scaffolding: workspaces, compose, CI | done |
+| M1 | Crypto crate + vault format + test vectors | done |
+| M2 | Server core + snapshot engine + Docker image | in review |
+| M3 | Client core + CLI sync harness | next |
+| M4 | Tauri desktop app | not started |
+| M5 | Mount: FUSE / macFUSE / WinFsp | not started |
+| M6 | Packaging: AppImage, .dmg, .msi, signing | not started |
+| M7 | Hardening: conflicts, GC, verification, restore drills | not started |
+| M8 | Alternate backup targets: S3 object-lock, restic | not started |
 
 ## License
 
