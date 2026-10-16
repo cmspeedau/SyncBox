@@ -5,12 +5,6 @@ use thiserror::Error;
 /// Everything that can go wrong in this crate.
 #[derive(Debug, Error)]
 pub enum CryptoError {
-    /// The operation is part of the intended API but is not implemented yet.
-    /// Every such call names itself, so a half-built vault cannot pretend to
-    /// have finished.
-    #[error("{0} is not implemented yet")]
-    Unimplemented(&'static str),
-
     /// The wrapped master keys did not authenticate, which means either the
     /// password is wrong or `vault.json` has been tampered with.
     #[error("wrong password or corrupted vault header")]
@@ -27,6 +21,13 @@ pub enum CryptoError {
     /// Input was too short, too long, or otherwise malformed.
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
+
+    /// A cryptographic backend refused to run: bad parameters, a derivation
+    /// length the primitive does not allow, or the OS entropy source failing.
+    /// Distinct from [`CryptoError::KeyAuth`], which means bytes that decrypted
+    /// but did not authenticate.
+    #[error("cryptographic operation failed: {0}")]
+    Backend(&'static str),
 }
 
 /// Result alias used across this crate.
@@ -39,16 +40,16 @@ mod tests {
     #[test]
     fn errors_carry_their_reason() {
         assert_eq!(
-            CryptoError::Unimplemented("Argon2id key derivation").to_string(),
-            "Argon2id key derivation is not implemented yet"
-        );
-        assert_eq!(
             CryptoError::UnsupportedVersion(2).to_string(),
             "unsupported vault format version 2"
         );
         assert_eq!(
             CryptoError::UnsupportedAlgorithm("scrypt".into()).to_string(),
             "unsupported key derivation algorithm \"scrypt\""
+        );
+        assert_eq!(
+            CryptoError::KeyAuth.to_string(),
+            "wrong password or corrupted vault header"
         );
     }
 }
