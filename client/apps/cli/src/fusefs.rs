@@ -847,6 +847,19 @@ mod tests {
         }
     }
 
+    /// Real mounts are serialized: establishing two FUSE mounts concurrently in one
+    /// process races inside fusermount3's handshake (`fstat of comm fd` fails as
+    /// the two fork-and-exec launches touch shared fds), failing a mount before the
+    /// filesystem sees any request. A mutex, not a fix in us — our code is nowhere
+    /// on that path. `into_inner` on a poison just means another mount test died.
+    static MOUNT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn mount_gate() -> std::sync::MutexGuard<'static, ()> {
+        MOUNT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     // --- pure helpers ---------------------------------------------------------
 
     #[test]
@@ -931,6 +944,15 @@ mod tests {
         fn referenced_bytes(&self) -> u64 {
             self.0.lock().unwrap().referenced_bytes()
         }
+        fn note_delete(&mut self, entry: &FileEntry) {
+            self.0.lock().unwrap().note_delete(entry);
+        }
+        fn pending_deletes(&self) -> Vec<syncbox_index::DeletedFile> {
+            self.0.lock().unwrap().pending_deletes()
+        }
+        fn clear_deletes(&mut self, keys: &[(syncbox_crypto::names::DirId, String)]) {
+            self.0.lock().unwrap().clear_deletes(keys);
+        }
     }
 
     /// A [`WriteStore`] sharing a [`MemoryStore`] behind `Arc<Mutex<..>>`.
@@ -971,6 +993,7 @@ mod tests {
     #[test]
     #[ignore = "requires a FUSE driver (/dev/fuse, fusermount3)"]
     fn a_real_readonly_mount_serves_the_staged_files() {
+        let _serial = mount_gate();
         let mountpoint = tempfile::tempdir().unwrap();
         let files = tempfile::tempdir().unwrap();
         let vault = Vault::new(keys(), "vault", files.path()).expect("vault");
@@ -1022,6 +1045,7 @@ mod tests {
     #[test]
     #[ignore = "requires a FUSE driver (/dev/fuse, fusermount3)"]
     fn a_real_writable_mount_edits_the_vault_in_place() {
+        let _serial = mount_gate();
         let mountpoint = tempfile::tempdir().unwrap();
         let scratch = tempfile::tempdir().unwrap();
 

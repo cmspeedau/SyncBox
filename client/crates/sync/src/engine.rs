@@ -35,16 +35,18 @@ use syncbox_transport::{Client, Http, TransportError};
 
 use crate::conflict::conflicted_copy_name;
 use crate::error::{Result, SyncError};
-use crate::store::PullStore;
+use crate::store::SyncStore;
 use crate::vault::Vault;
 
 /// The optional local store a pull tees the ciphertext it downloads into, so a
-/// read-only mount can later serve a server-sourced file without fetching it again.
-/// `None` for a plain plaintext-folder sync, which keeps no ciphertext copy. A newtype
-/// so the derived [`Debug`] on [`Engine`] does not have to print a `dyn` trait object.
-/// `Send + Sync` because the [`syncbox_agent`](https://docs.rs/syncbox-agent) worker
-/// drives an engine from a background thread.
-struct Store(Option<Box<dyn PullStore + Send + Sync>>);
+/// read-only mount can later serve a server-sourced file without fetching it again,
+/// and — in a folderless engine — the source a push decrypts dirty records back out
+/// of. `None` for a plain plaintext-folder sync, which keeps no ciphertext copy. A
+/// newtype so the derived [`Debug`] on [`Engine`] does not have to print a `dyn` trait
+/// object. `Send + Sync` because the
+/// [`syncbox_agent`](https://docs.rs/syncbox-agent) worker drives an engine from a
+/// background thread.
+struct Store(Option<Box<dyn SyncStore + Send + Sync>>);
 
 impl std::fmt::Debug for Store {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -98,6 +100,10 @@ pub struct Engine<I: Index> {
     pub vault: Vault,
     /// Where a pull deposits downloaded ciphertext, if a local store is configured.
     store: Store,
+    /// True when there is no plaintext folder at all: the mount (or the store) is the
+    /// interface, so push uploads dirty records from the store and pull never writes
+    /// a plaintext file.
+    folderless: bool,
 }
 
 impl<I: Index> Engine<I> {
@@ -108,20 +114,31 @@ impl<I: Index> Engine<I> {
             index,
             vault,
             store: Store(None),
+            folderless: false,
         }
+    }
+
+    /// Runs with no plaintext folder: a push uploads each dirty index record by
+    /// decrypting it back out of the store, and a pull keeps ciphertext and index
+    /// records without writing any plaintext. Requires a store ([`Self::with_store`]);
+    /// `vault`'s plaintext root is then never read or written.
+    #[must_use]
+    pub fn folderless(mut self) -> Self {
+        self.folderless = true;
+        self
     }
 
     /// Adds a local content store: on a pull, each file's manifest and downloaded
     /// chunks are teed into it, so a read-only mount backed by the same store can serve
     /// server-sourced files without re-fetching them. Chaining constructor.
     #[must_use]
-    pub fn with_store(mut self, store: impl PullStore + Send + Sync + 'static) -> Self {
+    pub fn with_store(mut self, store: impl SyncStore + Send + Sync + 'static) -> Self {
         self.set_store(store);
         self
     }
 
     /// Installs (or replaces) the local content store a pull writes into.
-    pub fn set_store(&mut self, store: impl PullStore + Send + Sync + 'static) {
+    pub fn set_store(&mut self, store: impl SyncStore + Send + Sync + 'static) {
         self.store = Store(Some(Box::new(store)));
     }
 
@@ -175,6 +192,12 @@ impl<I: Index> Engine<I> {
     /// not fatal: it means another client won the head, and the lost file is kept
     /// as a conflicted copy for a later pass to reconcile.
     pub fn sync_once<H: Http>(&mut self, client: &mut Client<H>, now: &str) -> Result<SyncReport> {
+        if self.folderless && self.store.0.is_none() {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "a folderless sync has no plaintext folder and no store: it can read nothing",
+            )));
+        }
         let mut report = SyncReport::default();
         let vault_id = self.vault.vault_id().to_owned();
 
@@ -209,7 +232,14 @@ impl<I: Index> Engine<I> {
         let mut revisions: Vec<Revision> = latest.into_values().collect();
         revisions.sort_by_key(|r| r.revision);
 
-        let dir_map = self.vault.dir_map()?;
+        // Folderless: only the vault root names files here (there is no plaintext tree
+        // to walk, and a peer's new subdirectory stays unnameable, so it is skipped);
+        // folder mode maps every local directory by decrypting its tree.
+        let dir_map = if self.folderless {
+            HashMap::from([(self.vault.root().clone(), String::new())])
+        } else {
+            self.vault.dir_map()?
+        };
         let index_by_key: HashMap<(String, String), FileEntry> = self
             .index
             .files()
@@ -231,7 +261,9 @@ impl<I: Index> Engine<I> {
 
             if revision.deleted {
                 if known.is_some() {
-                    delete_local(self.vault.plaintext_root(), &path)?;
+                    if !self.folderless {
+                        delete_local(self.vault.plaintext_root(), &path)?;
+                    }
                     self.index.remove_file(&path);
                     report.deleted += 1;
                 }
@@ -244,13 +276,23 @@ impl<I: Index> Engine<I> {
                 continue;
             }
 
-            // The server is ahead. If our on-disk copy also differs from what the
-            // index says we synced, both sides edited: keep ours as a conflicted
-            // copy before the server's version takes the canonical name.
-            if let (Some(entry), Some((size, mtime))) = (
+            if self.folderless {
+                // There is no on-disk copy to weigh: the index's dirty flag is the
+                // whole story. A local edit recorded in the index is this device's
+                // newest word, so it outranks the server's newer revision — push will
+                // commit ours over it, and the server's version stays in the log,
+                // recoverable by revision. Nothing is downloaded over it.
+                if known.as_ref().is_some_and(|entry| entry.local_dirty) {
+                    report.conflicts += 1;
+                    continue;
+                }
+            } else if let (Some(entry), Some((size, mtime))) = (
                 known.as_ref(),
                 stat_local(self.vault.plaintext_root(), &path),
             ) {
+                // The server is ahead and our on-disk copy differs from what the
+                // index says we synced: both sides edited. Keep ours as a conflicted
+                // copy before the server's version takes the canonical name.
                 if entry.size != size || entry.modified_unix != mtime {
                     let ours = read_local(self.vault.plaintext_root(), &path)?;
                     let copy = conflict_path(&path, now);
@@ -282,11 +324,18 @@ impl<I: Index> Engine<I> {
             if let Some(store) = self.store.0.as_mut() {
                 store.put_pulled(&dir_id, &revision.cipher_name, &manifest, &downloaded)?;
             }
-            write_local(self.vault.plaintext_root(), &path, &plaintext)?;
-            // Record the mtime the filesystem actually landed, so the next scan
-            // sees this file as unchanged rather than freshly touched.
-            let (size, mtime) = stat_local(self.vault.plaintext_root(), &path)
-                .unwrap_or((plaintext.len() as u64, 0));
+            if !self.folderless {
+                write_local(self.vault.plaintext_root(), &path, &plaintext)?;
+            }
+            // Folder mode records the mtime the filesystem actually landed, so the
+            // next scan sees this file as unchanged rather than freshly touched;
+            // folderless has no filesystem copy, so it echoes the revision's own time.
+            let (size, mtime) = if self.folderless {
+                (plaintext.len() as u64, revision.modified_unix)
+            } else {
+                stat_local(self.vault.plaintext_root(), &path)
+                    .unwrap_or((plaintext.len() as u64, 0))
+            };
             self.index.put_file(FileEntry {
                 path,
                 dir_id,
@@ -314,6 +363,38 @@ impl<I: Index> Engine<I> {
         now: &str,
         report: &mut SyncReport,
     ) -> Result<()> {
+        // Recorded tombstones first: a mutation that removed its index record (a
+        // mount unlink, a rename's old name) is known only to this queue, so it is
+        // the one deletion signal in folderless mode and a supplement to the folder
+        // scan in folder mode. Each is cleared once committed, so a mid-loop failure
+        // replays only what is still owed.
+        for record in self.index.pending_deletes() {
+            let response = client.commit(
+                vault_id,
+                &CommitRequest {
+                    parent: head,
+                    revision: Revision {
+                        revision: 0,
+                        parent: head,
+                        dir_id: record.dir_id.as_str().to_owned(),
+                        cipher_name: record.cipher_name.clone(),
+                        manifest: String::new(),
+                        size: 0,
+                        modified_unix: record.modified_unix,
+                        deleted: true,
+                    },
+                },
+            )?;
+            head = response.revision;
+            self.index
+                .clear_deletes(&[(record.dir_id, record.cipher_name)]);
+            report.deleted += 1;
+        }
+
+        if self.folderless {
+            return self.push_folderless(client, vault_id, head, report);
+        }
+
         // Scan after the pull so anything we just downloaded is seen as settled and
         // any conflicted copy the pull wrote is queued to upload as a new file.
         let mut local: BTreeMap<String, (u64, i64)> = BTreeMap::new();
@@ -413,6 +494,98 @@ impl<I: Index> Engine<I> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Uploads every dirty index record by decrypting it back out of the store and
+    /// re-sealing it: with no plaintext folder to scan, the index is the plan and the
+    /// store is the content. A rename's new name is just another dirty record; its
+    /// old name was already tombstoned from the pending-deletes queue.
+    ///
+    /// A `409` ends the pass rather than stashing a copy (there is no folder to write
+    /// one into): the record stays dirty and the next pull re-learns the head.
+    fn push_folderless<H: Http>(
+        &mut self,
+        client: &mut Client<H>,
+        vault_id: &str,
+        mut head: u64,
+        report: &mut SyncReport,
+    ) -> Result<()> {
+        for path in self.pending_uploads() {
+            let Some(entry) = self.index.file(&path) else {
+                continue;
+            };
+            let manifest = self
+                .store
+                .0
+                .as_ref()
+                .and_then(|store| store.manifest(&entry.dir_id, &entry.cipher_name))
+                .ok_or_else(|| {
+                    SyncError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("the store holds no manifest for {path}"),
+                    ))
+                })?;
+            let (plaintext, _chunk_ids) =
+                self.vault
+                    .open(&entry.dir_id, &entry.cipher_name, &manifest, &mut |id| {
+                        self.store
+                            .0
+                            .as_ref()
+                            .and_then(|store| store.chunk(id))
+                            .ok_or_else(|| {
+                                SyncError::Io(std::io::Error::new(
+                                    std::io::ErrorKind::NotFound,
+                                    format!("the store holds no chunk {} for {path}", id.as_str()),
+                                ))
+                            })
+                    })?;
+
+            let sealed = self
+                .vault
+                .seal(&entry.dir_id, &entry.cipher_name, &plaintext)?;
+            let offered: Vec<ChunkId> = sealed.chunks.iter().map(|(id, _)| id.clone()).collect();
+            let missing = client.missing_chunks(vault_id, &offered)?;
+            for (id, stored) in sealed.chunks.iter().filter(|(id, _)| missing.contains(id)) {
+                client.upload_chunk(vault_id, id, stored)?;
+                report.chunks_uploaded += 1;
+                report.bytes_uploaded +=
+                    (stored.len() as u64).saturating_sub((NONCE_LEN + TAG_LEN) as u64);
+            }
+
+            let request = CommitRequest {
+                parent: head,
+                revision: Revision {
+                    revision: 0,
+                    parent: head,
+                    dir_id: entry.dir_id.as_str().to_owned(),
+                    cipher_name: entry.cipher_name.clone(),
+                    manifest: BASE64.encode(&sealed.manifest),
+                    size: plaintext.len() as u64,
+                    modified_unix: entry.modified_unix,
+                    deleted: false,
+                },
+            };
+            match client.commit(vault_id, &request) {
+                Ok(response) => {
+                    head = response.revision;
+                    self.index.put_file(FileEntry {
+                        size: plaintext.len() as u64,
+                        revision: response.revision,
+                        chunk_ids: sealed.chunk_ids,
+                        local_dirty: false,
+                        remote_dirty: false,
+                        ..entry
+                    });
+                    report.uploaded += 1;
+                }
+                Err(TransportError::Refused { ref code, .. }) if code == "conflict" => {
+                    report.conflicts += 1;
+                    break;
+                }
+                Err(other) => return Err(SyncError::from(other)),
+            }
+        }
         Ok(())
     }
 

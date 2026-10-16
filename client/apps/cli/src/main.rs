@@ -110,9 +110,11 @@ enum SyncCommand {
         /// Directory holding `vault.json` (the encrypted keys).
         #[arg(long)]
         vault: PathBuf,
-        /// The plaintext folder to keep in sync with the vault.
+        /// The plaintext folder to keep in sync with the vault. Omit for a folderless
+        /// pass (a mounted vault): nothing plaintext is read or written, dirty index
+        /// records are pushed from the store, and pulls keep only ciphertext.
         #[arg(long)]
-        folder: PathBuf,
+        folder: Option<PathBuf>,
         /// Where the local SQLite index lives; defaults to `<vault>/index.db`.
         #[arg(long)]
         index: Option<PathBuf>,
@@ -152,7 +154,7 @@ fn main() -> Result<()> {
             &server,
             &vault_id,
             &vault,
-            &folder,
+            folder.as_deref(),
             index,
             store,
             &resolve_password(password)?,
@@ -219,7 +221,7 @@ fn sync_once(
     server: &str,
     vault_id: &str,
     vault_dir: &Path,
-    folder: &Path,
+    folder: Option<&Path>,
     index: Option<PathBuf>,
     store: Option<PathBuf>,
     password: &str,
@@ -230,17 +232,27 @@ fn sync_once(
     let index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
 
-    let vault = Vault::new(keys, vault_id.to_owned(), folder.to_path_buf())?;
+    // No folder means folderless: the vault directory stands in for the plaintext
+    // root, which the engine then never reads or writes.
+    let plaintext_root = folder.unwrap_or(vault_dir);
+    let vault = Vault::new(keys, vault_id.to_owned(), plaintext_root.to_path_buf())?;
     let mut client = Client::new(server, UreqHttp::new(server));
     client
         .token(password)
         .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
 
     let mut engine = Engine::new(index, vault);
-    // With a store configured, a pull also leaves its ciphertext here, so the same
-    // directory can be mounted read-only (`syncbox mount`) and serve server-sourced
-    // files. Without one, the pass is the plain plaintext-folder sync as before.
-    if let Some(store) = store {
+    // Folderless always has a store — it is the only content — defaulting to
+    // `<vault>/blobs` exactly where `syncbox mount` looks. With a folder, a store is
+    // optional: a pull then also leaves its ciphertext there, so the same directory
+    // can be mounted (`syncbox mount`) and serve server-sourced files; without one,
+    // the pass is the plain plaintext-folder sync as before.
+    if folder.is_none() {
+        let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
+        engine = engine
+            .with_store(syncbox_mount::DiskStore::new(store_dir))
+            .folderless();
+    } else if let Some(store) = store {
         engine = engine.with_store(syncbox_mount::DiskStore::new(store));
     }
     let report = engine
@@ -333,7 +345,13 @@ fn mount_cmd(
             // The mountpoint becomes the plaintext sync folder; keep it in sync.
             loop {
                 sync_once(
-                    server, vault_id, vault_dir, mountpoint, None, None, password,
+                    server,
+                    vault_id,
+                    vault_dir,
+                    Some(mountpoint),
+                    None,
+                    None,
+                    password,
                 )?;
                 std::thread::sleep(std::time::Duration::from_secs(30));
             }

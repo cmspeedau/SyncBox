@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syncbox_crypto::names::DirId;
 use syncbox_crypto::{ChunkId, MasterKey, MasterKeys};
-use syncbox_index::MemoryIndex;
-use syncbox_sync::{Engine, PullStore, SyncError, Vault};
+use syncbox_index::{FileEntry, Index, MemoryIndex};
+use syncbox_sync::{ContentStore, Engine, PullStore, SyncError, Vault};
 use syncbox_transport::{Client, Http, Request, Response, Result as TResult, TransportError};
 
 // ---- the fake server ---------------------------------------------------------
@@ -469,6 +469,46 @@ impl PullStore for TeeStore {
     }
 }
 
+// The tee is also readable, so a folderless engine can push dirty records back out of
+// it — the same two lookups the engine makes against a real `DiskStore`.
+impl ContentStore for TeeStore {
+    fn manifest(&self, dir_id: &DirId, cipher_name: &str) -> Option<Vec<u8>> {
+        self.0
+            .lock()
+            .unwrap()
+            .manifests
+            .get(&(dir_id.as_str().to_owned(), cipher_name.to_owned()))
+            .cloned()
+    }
+
+    fn chunk(&self, id: &ChunkId) -> Option<Vec<u8>> {
+        self.0.lock().unwrap().chunks.get(id.as_str()).cloned()
+    }
+}
+
+/// Stages a file the way a mount write would: seal it through the vault, drop the
+/// manifest + chunks into the store, and record a **dirty** index entry. No plaintext
+/// file is ever written — this is the state a folderless push has to notice and ship.
+fn stage_dirty(tee: &TeeStore, index: &mut MemoryIndex, vault: &Vault, path: &str, bytes: &[u8]) {
+    let (dir_id, cipher_name, _name) = vault.locate(path).unwrap();
+    let sealed = vault.seal(&dir_id, &cipher_name, bytes).unwrap();
+    tee.0.lock().unwrap().manifests.insert(
+        (dir_id.as_str().to_owned(), cipher_name.clone()),
+        sealed.manifest.clone(),
+    );
+    for (id, stored) in &sealed.chunks {
+        tee.0
+            .lock()
+            .unwrap()
+            .chunks
+            .insert(id.as_str().to_owned(), stored.clone());
+    }
+    let mut entry = FileEntry::fresh(path, dir_id, &cipher_name);
+    entry.chunk_ids = sealed.chunk_ids;
+    entry.size = bytes.len() as u64;
+    index.put_file(entry);
+}
+
 #[test]
 fn a_pull_populates_a_store_a_mount_can_read_from() {
     let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
@@ -511,4 +551,124 @@ fn a_pull_populates_a_store_a_mount_can_read_from() {
         .expect("reconstructs from the store alone");
     assert_eq!(plaintext, b"# server-only content");
     assert!(!ids.is_empty(), "the chunk ids were recorded");
+}
+
+// ---- folderless sync (the mount is the interface) ----------------------------
+
+#[test]
+fn a_folderless_push_ships_dirty_store_records_and_their_tombstones() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let vault_dir = tempfile::tempdir().unwrap();
+    let tee = TeeStore::default();
+    let mut e = engine(vault_dir.path())
+        .with_store(tee.clone())
+        .folderless();
+
+    // Two mount-writes, staged the way FsMut leaves them: content in the store,
+    // dirty records in the index, no plaintext on disk anywhere.
+    stage_dirty(
+        &tee,
+        &mut e.index,
+        &e.vault,
+        "plan.txt",
+        b"written through the mount",
+    );
+    stage_dirty(&tee, &mut e.index, &e.vault, "notes.md", b"# mount notes");
+
+    let mut e_client = client(&shared);
+    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+    assert_eq!(report.uploaded, 2, "both dirty records reached the server");
+    assert!(e.index.file("plan.txt").unwrap().is_clean());
+    assert!(
+        !vault_dir.path().join("plan.txt").exists(),
+        "a folderless pass writes no plaintext"
+    );
+
+    // A plain folder client pulls both — the push went through the normal pipeline.
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 2);
+    assert_eq!(
+        read_client(b_root.path(), "plan.txt").unwrap(),
+        b"written through the mount"
+    );
+    assert_eq!(
+        read_client(b_root.path(), "notes.md").unwrap(),
+        b"# mount notes"
+    );
+
+    // The mount deletes a file: exactly the bookkeeping FsMut::unlink leaves behind.
+    let entry = e.index.file("plan.txt").unwrap();
+    e.index.note_delete(&entry);
+    e.index.remove_file("plan.txt");
+    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+    assert_eq!(report.deleted, 1, "the queued tombstone is committed");
+    assert!(
+        e.index.pending_deletes().is_empty(),
+        "the queue drains only once the server has it"
+    );
+
+    // The folder client mirrors the deletion.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.deleted, 1);
+    assert!(read_client(b_root.path(), "plan.txt").is_none());
+}
+
+#[test]
+fn a_folderless_local_edit_outranks_a_newer_server_revision() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let vault_dir = tempfile::tempdir().unwrap();
+    let tee = TeeStore::default();
+    let mut e = engine(vault_dir.path())
+        .with_store(tee.clone())
+        .folderless();
+    let mut e_client = client(&shared);
+
+    stage_dirty(
+        &tee,
+        &mut e.index,
+        &e.vault,
+        "shared.txt",
+        b"v1 from the mount",
+    );
+    e.sync_once(&mut e_client, "2026-10-16").unwrap();
+
+    // B (a folder client) pulls v1, then commits its own v2.
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    write_client(b_root.path(), "shared.txt", b"v2 from the folder client");
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    // Back on the mount device, a fresh edit is dirty when the pass runs: the server
+    // is newer, but the store's bytes are this device's newest word.
+    stage_dirty(
+        &tee,
+        &mut e.index,
+        &e.vault,
+        "shared.txt",
+        b"v2 from the mount",
+    );
+    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+    assert_eq!(
+        report.conflicts, 1,
+        "the newer server revision meets a dirty record"
+    );
+    assert_eq!(
+        report.downloaded, 0,
+        "nothing was pulled over the local edit"
+    );
+    assert_eq!(report.uploaded, 1, "our edit is committed over it");
+
+    // The mount's bytes win the canonical name; B picks them up next pass (with its
+    // own v2 kept as a conflicted copy, folder mode's usual rescue).
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        read_client(b_root.path(), "shared.txt").unwrap(),
+        b"v2 from the mount"
+    );
 }

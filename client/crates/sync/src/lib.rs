@@ -31,5 +31,5 @@ pub use chunker::{Chunk, Chunker, FastCdc, FixedSize};
 pub use conflict::conflicted_copy_name;
 pub use engine::{Engine, SyncReport};
 pub use error::{Result, SyncError};
-pub use store::{NullStore, PullStore};
+pub use store::{ContentStore, NullStore, PullStore, SyncStore};
 pub use vault::{Sealed, Vault};

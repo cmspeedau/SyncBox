@@ -16,7 +16,7 @@ pub mod types;
 
 pub use memory::MemoryIndex;
 pub use sqlite::SqliteIndex;
-pub use types::{FileEntry, PendingOp};
+pub use types::{DeletedFile, FileEntry};
 
 use syncbox_crypto::ChunkId;
 
@@ -51,6 +51,19 @@ pub trait Index {
 
     /// Bytes still referenced by at least one file.
     fn referenced_bytes(&self) -> u64;
+
+    /// Queues a tombstone for a file being deleted locally, so a later sync pass
+    /// commits its deletion to the server. Callers record this just before (or
+    /// instead of) [`Index::remove_file`] for deletions that must propagate; a
+    /// deletion *caused by* a server tombstone must not be recorded. Duplicate keys
+    /// collapse to the newest record.
+    fn note_delete(&mut self, entry: &FileEntry);
+
+    /// The deletions owed a tombstone, in the order they were recorded.
+    fn pending_deletes(&self) -> Vec<DeletedFile>;
+
+    /// Forgets these queued deletions — call once their tombstones are committed.
+    fn clear_deletes(&mut self, keys: &[(syncbox_crypto::names::DirId, String)]);
 }
 
 #[cfg(test)]
