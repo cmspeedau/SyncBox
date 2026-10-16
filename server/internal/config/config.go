@@ -32,9 +32,24 @@ type Config struct {
 	// SQLite metadata. It defaults to ./data so the container's volume mount is
 	// correct out of the box.
 	DataDir string
-	// BackupTarget is a directory to write snapshots into. Empty disables the
+	// BackupTarget is a directory to write snapshots into, or an
+	// "s3://bucket[/prefix]" URL for object storage. Empty disables the
 	// administrative backup endpoints.
 	BackupTarget string
+	// S3Endpoint points the backup target at an S3-compatible service
+	// (MinIO, R2, Wasabi) instead of AWS; requests then go path-style.
+	S3Endpoint string
+	// S3Region signs requests for; AWS_REGION is honored, "us-east-1" assumed.
+	S3Region string
+	// S3AccessKey and S3SecretKey sign backup requests. The AWS_* names are
+	// the fallback; without either pair an s3:// target fails at boot.
+	S3AccessKey string
+	S3SecretKey string
+	// BackupLockDays is the COMPLIANCE object-lock retention each sealed
+	// snapshot gets on an s3:// target — how long even the bucket owner
+	// cannot delete a snapshot. Default 400: past the yearly rung of the
+	// GFS ladder, so no snapshot is retired while a rung still wants it.
+	BackupLockDays int
 	// BackupSchedule is how often the server snapshots itself, e.g. "1h". Zero
 	// disables the timer; backups remain available on demand.
 	BackupSchedule time.Duration
@@ -88,6 +103,18 @@ func FromEnv() (Config, error) {
 	cfg.TokenSecret = strings.TrimSpace(os.Getenv("SYNCBOX_TOKEN_SECRET"))
 	cfg.DataDir = valueOr(os.Getenv("SYNCBOX_DATA_DIR"), cfg.DataDir)
 	cfg.BackupTarget = strings.TrimSpace(os.Getenv("SYNCBOX_BACKUP_TARGET"))
+	cfg.S3Endpoint = strings.TrimSpace(os.Getenv("SYNCBOX_S3_ENDPOINT"))
+	cfg.S3Region = firstSet(os.Getenv("SYNCBOX_S3_REGION"), os.Getenv("AWS_REGION"), "us-east-1")
+	cfg.S3AccessKey = firstSet(os.Getenv("SYNCBOX_S3_ACCESS_KEY"), os.Getenv("AWS_ACCESS_KEY_ID"))
+	cfg.S3SecretKey = firstSet(os.Getenv("SYNCBOX_S3_SECRET_KEY"), os.Getenv("AWS_SECRET_ACCESS_KEY"))
+	cfg.BackupLockDays = 400
+	if value := strings.TrimSpace(os.Getenv("SYNCBOX_BACKUP_LOCK_DAYS")); value != "" {
+		days, err := strconv.Atoi(value)
+		if err != nil || days <= 0 {
+			return Config{}, fmt.Errorf("SYNCBOX_BACKUP_LOCK_DAYS %q is not a positive number of days", value)
+		}
+		cfg.BackupLockDays = days
+	}
 
 	if value := strings.TrimSpace(os.Getenv("SYNCBOX_TOKEN_TTL")); value != "" {
 		ttl, err := time.ParseDuration(value)
@@ -165,6 +192,17 @@ func valueOr(env, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+// firstSet returns the first non-empty value, for the settings where a
+// Syncbox-specific name shadows a shared AWS_* one.
+func firstSet(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // randomHex returns n random bytes as hex.

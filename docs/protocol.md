@@ -208,7 +208,9 @@ POST /admin/backups/{id}/restore → { "dest_dir" }
                                → 200 { "id", "dest_dir", "chunks", "chunk_bytes" }
 ```
 
-All four answer `501 not_configured` when no `SYNCBOX_BACKUP_TARGET` is set.
+All four answer `501 not_configured` when no `SYNCBOX_BACKUP_TARGET` is set. The
+target may be a directory or an `s3://bucket[/prefix]` URL — what sealing and retiring
+mean on each is in [docs/backup.md](backup.md).
 `verify` re-hashes every chunk and the metadata file against the manifest the snapshot
 was sealed with, and answers `404 not_found` for a snapshot that never landed,
 `404 incomplete_snapshot` for a half-written bundle, or `500 corrupt_snapshot` when a

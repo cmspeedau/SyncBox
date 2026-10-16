@@ -3,6 +3,7 @@ package backup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -293,6 +294,88 @@ func TestPruneDeletesWhatThePolicyRetires(t *testing.T) {
 	}
 	if _, err := os.Stat(f.snapshotPath(first.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("retired snapshot still on disk: %v", err)
+	}
+}
+
+// retentionTarget refuses RemoveAll on one path with ErrRetained, exactly as
+// a bucket whose object lock keeps sealed bytes undeletable until the
+// retention date passes.
+type retentionTarget struct {
+	target.Target
+	refuse string
+}
+
+func (r retentionTarget) RemoveAll(ctx context.Context, rel string) error {
+	if strings.HasPrefix(rel, r.refuse) {
+		return fmt.Errorf("s3: 403 AccessDenied: %w", target.ErrRetained)
+	}
+	return r.Target.RemoveAll(ctx, rel)
+}
+
+func TestPruneKeepsSnapshotsStillUnderRetention(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t)
+
+	sealed, err := f.manager.Create(context.Background(), DefaultPolicy())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Wrap the same target so this one snapshot answers "retained", and prune
+	// with a policy that would retire everything: the refusal must surface as
+	// kept, not as failure and not as a false drop.
+	wrapped := retentionTarget{
+		Target: mustTarget(t, filepath.Join(f.root, "target")),
+		refuse: "snapshots/" + sealed.ID,
+	}
+	manager := NewManager(wrapped, f.stored, "test")
+
+	kept, dropped, err := manager.Prune(context.Background(), Policy{})
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(kept) != 1 || kept[0].ID != sealed.ID {
+		t.Fatalf("kept = %v, want just the retained snapshot", kept)
+	}
+	if len(dropped) != 0 {
+		t.Fatalf("dropped = %v, want none — a refused delete was not a drop", dropped)
+	}
+	// The bytes the refusal protected are still whole enough to verify.
+	if _, err := manager.Verify(context.Background(), sealed.ID); err != nil {
+		t.Errorf("retained snapshot must still verify: %v", err)
+	}
+}
+
+// sealFailTarget refuses to seal, the way a bucket without object lock does.
+type sealFailTarget struct {
+	target.Target
+}
+
+func (r sealFailTarget) ReadOnly(context.Context, string) error {
+	return fmt.Errorf("s3: 405 MethodNotAllowed")
+}
+
+func TestCreateCleansUpAfterAFailedSeal(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t)
+	ctx := context.Background()
+
+	// The MinIO drill surfaced this: a seal that the service refuses must
+	// not leave a complete-looking snapshot sitting in every listing. The
+	// one failure mode that matters — a bucket without object lock — refuses
+	// before locking anything, so cleanup can and must fully succeed.
+	wrapped := sealFailTarget{Target: mustTarget(t, filepath.Join(f.root, "target"))}
+	manager := NewManager(wrapped, f.stored, "test")
+
+	if _, err := manager.Create(ctx, DefaultPolicy()); err == nil {
+		t.Fatal("Create must report the seal failure")
+	}
+	listed, err := manager.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("a create that failed to seal left %d snapshot(s) listed", len(listed))
 	}
 }
 

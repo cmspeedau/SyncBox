@@ -40,7 +40,7 @@ const usageText = `syncboxd - the Syncbox server
 Usage:
   syncboxd serve     [-addr host:port]
   syncboxd backup    [-url URL] [-token TOKEN]
-  syncboxd restore   -snapshot ID -target DIR -to DIR
+  syncboxd restore   -snapshot ID -target DIR|s3://BUCKET[/PREFIX] -to DIR
   syncboxd version
 
 Configuration is read from the environment. Run "syncboxd serve -h" for the
@@ -109,7 +109,7 @@ func serve(args []string, stdout io.Writer) error {
 
 	var backups *backup.Manager
 	if cfg.BackupTarget != "" {
-		tgt, err := target.NewLocal(cfg.BackupTarget)
+		tgt, err := openBackupTarget(cfg.BackupTarget, cfg)
 		if err != nil {
 			return err
 		}
@@ -258,12 +258,32 @@ func backupCommand(args []string, stdout io.Writer) error {
 	return nil
 }
 
+// openBackupTarget builds the target the backup location names: an
+// "s3://bucket[/prefix]" URL selects object storage — endpoint, region and
+// credentials come from the environment like every other setting — and
+// anything else is a local directory.
+func openBackupTarget(location string, cfg config.Config) (target.Target, error) {
+	if rest, ok := strings.CutPrefix(location, "s3://"); ok {
+		bucket, prefix, _ := strings.Cut(rest, "/")
+		return target.NewS3(target.S3Config{
+			Bucket:    bucket,
+			Prefix:    prefix,
+			Region:    cfg.S3Region,
+			Endpoint:  cfg.S3Endpoint,
+			AccessKey: cfg.S3AccessKey,
+			SecretKey: cfg.S3SecretKey,
+			LockDays:  cfg.BackupLockDays,
+		})
+	}
+	return target.NewLocal(location)
+}
+
 // restoreCommand writes a snapshot into a directory, without a running server.
 func restoreCommand(args []string, stdout io.Writer) error {
 	set := flag.NewFlagSet("restore", flag.ContinueOnError)
 	set.SetOutput(stdout)
 	snapshotID := set.String("snapshot", "", "snapshot id to restore")
-	targetDir := set.String("target", "", "directory the snapshots live in")
+	targetDir := set.String("target", "", "directory or s3://bucket[/prefix] the snapshots live in")
 	dest := set.String("to", "", "directory to restore into")
 	if err := set.Parse(args); err != nil {
 		return fmt.Errorf("parsing restore flags: %w", err)
@@ -273,7 +293,13 @@ func restoreCommand(args []string, stdout io.Writer) error {
 		return errors.New("restore needs -snapshot, -target, and -to")
 	}
 
-	tgt, err := target.NewLocal(*targetDir)
+	// An s3:// target takes its endpoint and credentials from the environment,
+	// which is the only place they can come from without a running server.
+	cfg, err := config.FromEnv()
+	if err != nil {
+		return err
+	}
+	tgt, err := openBackupTarget(*targetDir, cfg)
 	if err != nil {
 		return err
 	}
