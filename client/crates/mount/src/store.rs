@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use syncbox_crypto::{names::DirId, ChunkId};
 use syncbox_sync::{PullStore, Sealed};
 
+use crate::gc::GcStore;
+
 /// The read side of a store lives in `syncbox-sync` as one contract: the mount asks it
 /// to serve the tree, and a folderless engine asks it to rebuild a dirty record's
 /// plaintext. Re-exported so mount users name a single, familiar type.
@@ -139,6 +141,29 @@ impl DiskStore {
         // all entries of one directory sit together.
         shard_path(&self.root.join("manifests"), dir_id).join(cipher_name)
     }
+
+    /// Deletes one blob file (absence is success) and prunes the shard
+    /// directories it leaves empty, never climbing past the store's own root.
+    fn remove_blob(&self, path: &Path) -> io::Result<u64> {
+        let size = match fs::metadata(path) {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        }
+        let mut parent = path.parent().map(PathBuf::from);
+        while let Some(dir) = parent {
+            if dir == self.root || fs::remove_dir(&dir).is_err() {
+                break; // the store root stays; a non-empty (or vanished) dir ends the climb
+            }
+            parent = dir.parent().map(PathBuf::from);
+        }
+        Ok(size)
+    }
 }
 
 impl ContentStore for DiskStore {
@@ -158,6 +183,54 @@ impl WriteStore for DiskStore {
 
     fn put_manifest(&mut self, dir_id: &DirId, cipher_name: &str, bytes: &[u8]) -> io::Result<()> {
         write_blob(&self.manifest_path(dir_id.as_str(), cipher_name), bytes)
+    }
+}
+
+impl GcStore for MemoryStore {
+    fn all_chunk_ids(&self) -> Vec<ChunkId> {
+        self.chunks.keys().cloned().collect()
+    }
+
+    fn all_manifest_keys(&self) -> Vec<(String, String)> {
+        self.manifests.keys().cloned().collect()
+    }
+
+    fn delete_chunk(&mut self, id: &ChunkId) -> io::Result<u64> {
+        Ok(self
+            .chunks
+            .remove(id)
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or(0))
+    }
+
+    fn delete_manifest(&mut self, dir_id: &str, cipher_name: &str) -> io::Result<()> {
+        self.manifests
+            .remove(&(dir_id.to_owned(), cipher_name.to_owned()));
+        Ok(())
+    }
+}
+
+impl GcStore for DiskStore {
+    fn all_chunk_ids(&self) -> Vec<ChunkId> {
+        blob_files(&self.root.join("chunks"))
+            .into_iter()
+            .map(|(_dir, name)| ChunkId::from_base32(&name))
+            .collect()
+    }
+
+    fn all_manifest_keys(&self) -> Vec<(String, String)> {
+        // A manifest's directory name is the (sharded, full) dir id it is
+        // stored under, its file name the cipher name.
+        blob_files(&self.root.join("manifests"))
+    }
+
+    fn delete_chunk(&mut self, id: &ChunkId) -> io::Result<u64> {
+        self.remove_blob(&self.chunk_path(id.as_str()))
+    }
+
+    fn delete_manifest(&mut self, dir_id: &str, cipher_name: &str) -> io::Result<()> {
+        let path = self.manifest_path(dir_id, cipher_name);
+        self.remove_blob(&path).map(|_| ())
     }
 }
 
@@ -229,6 +302,42 @@ fn write_blob(path: &Path, bytes: &[u8]) -> io::Result<()> {
 /// Reads a blob, treating any read failure (missing, permissions) as a cache miss.
 fn read_blob(path: &Path) -> Option<Vec<u8>> {
     fs::read(path).ok()
+}
+
+/// Every real blob file under `base` as `(parent dir name, file name)`.
+///
+/// Anything with a dot in its name is skipped: chunk ids, dir ids and cipher
+/// names are dotless base32, so the only dotted files around are leftovers of
+/// an in-flight `write_blob` (`.tmp`), which belong to their writer, not to GC.
+fn blob_files(base: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue; // an absent base is just an empty store
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if name.contains('.') {
+                continue;
+            }
+            let dir_name = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            out.push((dir_name, name.to_owned()));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

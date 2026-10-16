@@ -73,6 +73,20 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
     },
+    /// Reclaim ciphertext the store no longer needs.
+    ///
+    /// Deletes stored chunks and manifests that no record in the vault's index
+    /// references — orphans left by overwrites, unlinks and renames. Needs no
+    /// password: the index holds what is live, and the blobs it names are the
+    /// only things kept. Run it while nothing else is writing the vault (no
+    /// live mount, no sync pass).
+    Gc {
+        /// Directory holding `vault.json`, its `index.db`, and local ciphertext blobs.
+        vault: PathBuf,
+        /// Where local ciphertext blobs live; defaults to `<vault>/blobs`.
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
     /// Report the format this build reads and writes.
     Status,
 }
@@ -179,6 +193,7 @@ fn main() -> Result<()> {
             vault_id.as_deref(),
             &resolve_password(password)?,
         ),
+        Command::Gc { vault, store } => gc_cmd(&vault, store),
         Command::Status => status(),
     }
 }
@@ -316,6 +331,29 @@ fn status() -> Result<()> {
         }
     );
     println!("capabilities     : create, unlock, sync once");
+    Ok(())
+}
+
+/// Deletes store content no index record references and prints what went.
+/// No unlock happens: liveness is pure bookkeeping the index can answer on its
+/// own, and what it names is exactly what stays.
+fn gc_cmd(vault_dir: &Path, store: Option<PathBuf>) -> Result<()> {
+    let index_path = vault_dir.join("index.db");
+    let index = SqliteIndex::open(&index_path)
+        .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
+    let store_dir = store.unwrap_or_else(|| vault_dir.join("blobs"));
+    let mut store = syncbox_mount::DiskStore::new(&store_dir);
+    let report = syncbox_mount::collect(&index, &mut store)
+        .with_context(|| format!("collecting garbage in {}", store_dir.display()))?;
+    let freed = if report.freed_bytes > 0 {
+        format!(" ({} bytes freed)", report.freed_bytes)
+    } else {
+        String::new()
+    };
+    println!(
+        "gc: {} live chunks kept; removed {} chunks and {} manifests{freed}",
+        report.live_chunks, report.removed_chunks, report.removed_manifests
+    );
     Ok(())
 }
 
