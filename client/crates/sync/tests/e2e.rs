@@ -1205,3 +1205,45 @@ fn pull_staging_is_invisible_to_the_folder_scan() {
         "it arrives intact"
     );
 }
+
+#[test]
+fn a_clean_pass_reclaims_its_empty_staging_directory() {
+    // `.syncbox-tmp` is scaffolding: folder-mode pulls assemble files inside
+    // it, and the folder scan is trained to skip it. A pass that finished
+    // with nothing half-fetched earned the right to hide it again — an empty
+    // dot-directory squatting in the user's tree is pure debris.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    write_client(a_root.path(), "doc.txt", b"complete on the first pass");
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let b_root = tempfile::tempdir().unwrap();
+    let mut b = engine(b_root.path());
+    let mut b_client = client(&shared);
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+    assert_eq!(
+        std::fs::read(b_root.path().join("doc.txt")).unwrap(),
+        b"complete on the first pass",
+        "the file itself arrived whole, as ever"
+    );
+    assert!(
+        !b_root.path().join(".syncbox-tmp").exists(),
+        "a completed pass reclaimed its empty staging directory"
+    );
+
+    // The user's own directory of the same name, deeper in the tree, is not
+    // scaffolding and must survive a hundred clean passes.
+    std::fs::create_dir_all(b_root.path().join("notes/.syncbox-tmp")).unwrap();
+    std::fs::write(b_root.path().join("notes/.syncbox-tmp/keep.txt"), b"mine").unwrap();
+    let mut b2 = engine(b_root.path());
+    let mut b2_client = client(&shared);
+    b2.sync_once(&mut b2_client, "2026-10-17").unwrap();
+    assert_eq!(
+        std::fs::read(b_root.path().join("notes/.syncbox-tmp/keep.txt")).unwrap(),
+        b"mine",
+        "the tidy is root-scoped; the user's directory is untouched"
+    );
+}
