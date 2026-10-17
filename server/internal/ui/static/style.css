@@ -1,4 +1,4 @@
-/* One page, three panels, no framework. Light and dark come from the
+/* One page, a handful of panels, no framework. Light and dark come from the
    operator's own system setting — the server has no business deciding that. */
 
 :root {
@@ -59,6 +59,8 @@ h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
 
 .error { color: var(--danger); font-size: 0.9rem; min-height: 1.2em; margin: 0.5rem 0 0; }
 
+.ok { color: var(--accent); font-size: 0.9rem; min-height: 1.2em; margin: 0.5rem 0 0; }
+
 form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0 0; }
 
 input {
@@ -96,7 +98,7 @@ dt { color: var(--muted); font-size: 0.85rem; }
 
 dd { margin: 0; font-variant-numeric: tabular-nums; }
 
-#vault-list { display: grid; gap: 1rem; margin-top: 1rem; }
+#vault-list, #snapshot-list { display: grid; gap: 1rem; margin-top: 1rem; }
 
 .vault-card {
   background: var(--card);

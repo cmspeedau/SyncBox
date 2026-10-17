@@ -129,7 +129,7 @@ The surface, all under a bearer header:
 | `HEAD/GET/PUT /api/v1/vaults/{id}/chunks/{id}` | presence check, download, upload |
 | `GET /vaults` | the vault registry in client shape (id, name, location, archived) |
 | `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create, rename/locate, retire |
-| `GET/POST /admin/backups` | list snapshots; take one now |
+| `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 
 Every non-2xx reply is `{"code": …, "reason": …}`. PUTs are

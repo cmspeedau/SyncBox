@@ -106,13 +106,15 @@ function fmtTime(unix) {
 }
 
 async function refresh() {
-  const [vaultsResponse, health, card] = await Promise.all([
+  const [vaultsResponse, snapshotsResponse, health, card] = await Promise.all([
     api("GET", "/admin/vaults"),
+    api("GET", "/admin/backups"),
     fetch("/healthz").then((r) => (r.ok ? r.json() : null)),
     fetch("/", { headers: { Accept: "application/json" } }).then((r) => (r.ok ? r.json() : null)),
   ]);
   $("version").textContent = card ? "syncbox " + card.version : "";
   if (health) renderStats(health);
+  await renderSnapshots(snapshotsResponse);
   if (!vaultsResponse.ok) {
     $("vault-error").textContent = await reason(vaultsResponse);
     return;
@@ -270,6 +272,143 @@ function renderVaults(vaults) {
   $("vaults-empty").hidden = vaults.length > 0;
   for (const vault of vaults) host.appendChild(vaultCard(vault));
 }
+
+// Snapshots are whole-server, and the panel drives the same admin routes the
+// CLI does. Taking and listing are ordinary; verify re-reads every stored
+// object to prove it survived; restore writes ciphertext back into a directory
+// the server can reach, so it is gated twice — the bearer token, and typing the
+// snapshot id — because a mis-typed restore would be a real overwrite. Nothing
+// here decrypts anything, which is why the console may offer it at all.
+function fmtDate(value) {
+  return value ? new Date(value).toLocaleString() : "unknown";
+}
+
+function snapshotCard(snapshot) {
+  const manifest = snapshot.Manifest || {};
+  const card = document.createElement("article");
+  card.className = "vault-card";
+
+  const title = document.createElement("h3");
+  title.textContent = snapshot.ID;
+  card.appendChild(title);
+
+  card.appendChild(definitionList([
+    ["Taken", fmtDate(snapshot.CreatedAt)],
+    ["Chunks", String((manifest.chunks || []).length)],
+    ["Chunk bytes", fmtBytes(manifest.chunk_bytes ?? 0)],
+    ["Server", manifest.server_version || "unknown"],
+  ]));
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const verify = document.createElement("button");
+  verify.type = "button";
+  verify.textContent = "Verify";
+  verify.addEventListener("click", async () => {
+    $("snapshot-error").textContent = "";
+    $("snapshot-note").textContent = "";
+    verify.disabled = true;
+    try {
+      const response = await api(
+        "POST", "/admin/backups/" + encodeURIComponent(snapshot.ID) + "/verify");
+      if (!response.ok) {
+        $("snapshot-error").textContent = await reason(response);
+        return;
+      }
+      const report = await response.json();
+      $("snapshot-note").textContent =
+        snapshot.ID + " verified: " + report.chunks + " chunks, " +
+        fmtBytes(report.chunk_bytes || 0) + " re-read byte for byte.";
+    } finally {
+      verify.disabled = false;
+    }
+  });
+
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.textContent = "Restore";
+  restore.addEventListener("click", async () => {
+    $("snapshot-error").textContent = "";
+    $("snapshot-note").textContent = "";
+    const dest = window.prompt(
+      "Restore " + snapshot.ID + " into which directory on the server?\n" +
+        "(the server writes it there, and refuses a directory that already holds a metadata.json)",
+      "");
+    if (dest === null || dest.trim() === "") return;
+    const typed = window.prompt(
+      "This copies the snapshot's contents into that directory.\n" +
+        "Type the snapshot id to confirm:\n" + snapshot.ID);
+    if (typed !== snapshot.ID) {
+      $("snapshot-error").textContent = "Restore cancelled — the id did not match.";
+      return;
+    }
+    const response = await api(
+      "POST", "/admin/backups/" + encodeURIComponent(snapshot.ID) + "/restore",
+      { dest_dir: dest.trim() });
+    if (!response.ok) {
+      $("snapshot-error").textContent = await reason(response);
+      return;
+    }
+    const report = await response.json();
+    $("snapshot-note").textContent =
+      "Restored " + report.id + " into " + report.dest_dir + " (" +
+      report.chunks + " chunks, " + fmtBytes(report.chunk_bytes || 0) + ").";
+  });
+
+  actions.append(verify, restore);
+  card.appendChild(actions);
+  return card;
+}
+
+async function renderSnapshots(response) {
+  if (response.status === 501) {
+    // No target configured: say so plainly rather than showing an empty list
+    // that reads as "no snapshots yet".
+    $("take-snapshot").disabled = true;
+    $("snapshot-list").textContent = "";
+    $("snapshot-note").textContent = "";
+    $("snapshots-empty").hidden = false;
+    $("snapshots-empty").textContent =
+      "No backup target is configured, so there is nowhere to write a snapshot.";
+    return;
+  }
+  $("take-snapshot").disabled = false;
+  if (!response.ok) {
+    $("snapshot-error").textContent = await reason(response);
+    return;
+  }
+  $("snapshot-error").textContent = "";
+  const snapshots = await response.json();
+  const host = $("snapshot-list");
+  host.textContent = "";
+  $("snapshots-empty").hidden = snapshots.length > 0;
+  if (snapshots.length === 0) {
+    $("snapshots-empty").textContent = "No snapshots yet. Take one before you need it.";
+  }
+  for (const snapshot of snapshots) host.appendChild(snapshotCard(snapshot));
+}
+
+$("take-snapshot").addEventListener("click", async () => {
+  const button = $("take-snapshot");
+  $("snapshot-error").textContent = "";
+  $("snapshot-note").textContent = "";
+  button.disabled = true;
+  button.textContent = "Taking…";
+  try {
+    const response = await api("POST", "/admin/backups");
+    if (!response.ok) {
+      $("snapshot-error").textContent = await reason(response);
+      return;
+    }
+    const snapshot = await response.json();
+    $("snapshot-note").textContent = "Took " + snapshot.ID + ".";
+  } finally {
+    button.textContent = "Take snapshot";
+    button.disabled = false;
+    refresh();
+  }
+});
 
 $("create-form").addEventListener("submit", async (event) => {
   event.preventDefault();

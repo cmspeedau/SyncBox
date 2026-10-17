@@ -248,6 +248,11 @@ and refuses a destination that already holds a `metadata.json` with
 `409 restore_target_occupied` — replacing live data is the one thing restore must not
 do silently.
 
+The operator's console carries a Snapshots panel over these same four routes:
+list, take, verify, and a restore that asks for the destination directory and
+then for the snapshot id typed back, because a wrong destination is a real
+overwrite and the console has no other hand on the wheel.
+
 Refusals carry a stable `code` in the error body, and that code — not the HTTP status —
 is what a client should branch on: `500 corrupt_snapshot` and a generic `500 internal`
 are different problems an operator acts on differently. See
