@@ -874,7 +874,7 @@ func TestConsoleServedToBrowsers(t *testing.T) {
 		t.Fatalf("reading page: %v", err)
 	}
 	body := string(page)
-	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files"} {
+	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files", "id=\"snapshots\"", "Take snapshot"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page is missing %q", want)
 		}

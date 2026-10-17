@@ -57,6 +57,22 @@
         is where everything starts.</p>
     </section>
 
+    <section id="snapshots">
+      <h2>Snapshots</h2>
+      <p class="hint">A snapshot is a complete, sealed copy of everything this
+        server holds — every vault's chunks and the bookkeeping — written to the
+        configured backup target. It stays ciphertext: taking one never touches a
+        key, and a stolen snapshot is no more readable than a stolen server.
+        Snapshots cover the whole server, not one vault.</p>
+
+      <p><button type="button" id="take-snapshot">Take snapshot</button></p>
+      <p id="snapshot-error" class="error" role="alert"></p>
+      <p id="snapshot-note" class="ok" role="status"></p>
+
+      <div id="snapshot-list"></div>
+      <p id="snapshots-empty" class="hint" hidden></p>
+    </section>
+
   </section>
 
 </main>
