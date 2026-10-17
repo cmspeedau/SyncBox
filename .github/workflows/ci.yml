@@ -165,15 +165,18 @@ jobs:
 
   package:
     name: Package (Linux desktop)
-    # Self-hosted: both Linux runners carry the webkit2gtk/gtk development
-    # libraries and the bundler needs no Debian packaging tools for its .deb —
-    # it emits one through ar/tar, and linuxdeploy bootstraps its own patchelf.
+    # The `desktop` box (githubrunner-desktop), and only it: the CachyOS
+    # desktop carries the webkit2gtk/gtk/libsoup development libraries natively
+    # and, unlike the containerised NUC runner, has real FUSE — which
+    # linuxdeploy (itself an AppImage) needs to bundle the AppImage. The
+    # bundler needs no packaging tools for its .deb either: it emits one
+    # through ar/tar, and linuxdeploy bootstraps its own patchelf.
     # The first run on a fresh runner installs cargo-tauri into ~/.cargo/bin and
     # every later one reuses it. Bundles are uploaded as build artifacts only —
     # signing and publishing stay deliberate (Windows packaging still needs a
     # runner of its own; macOS's lives in package-macos below).
     # Linux only — see the note on `rust` about the Mac mini.
-    runs-on: [self-hosted, Linux]
+    runs-on: [self-hosted, desktop]
     needs: rust
     defaults:
       run:
@@ -189,7 +192,7 @@ jobs:
 
       - name: Install system libraries (hosted runners only)
         run: |
-          # Both self-hosted runners carry the webkit dev stack permanently, so
+          # The self-hosted runners carry the webkit dev stack permanently, so
           # the apt dance is a hosted-runner fallback — and checking for the
           # library itself (not for apt) means a warm runner never re-installs
           # 200 MB of already-present packages.
