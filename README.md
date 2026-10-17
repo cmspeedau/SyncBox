@@ -41,7 +41,7 @@ Read [docs/format.md](docs/format.md) for the vault format,
 | `client/crates/agent` | The desktop app's sync controller, Tauri-free and testable |
 | `client/apps/cli` | Headless `syncbox`: vault, sync, mount, gc, backup commands |
 | `client/apps/desktop` | Tauri v2 desktop app (its own workspace; built separately) |
-| `server` | Go server: API, metadata, chunk store, rate limiting, backup engine |
+| `server` | Go server: API, metadata, chunk store, rate limiting, backup engine ([operator's manual](server/README.md)) |
 | `deploy` | Dockerfile, docker-compose, Caddyfile |
 
 ## Prerequisites
@@ -68,7 +68,7 @@ To sync a folder against it:
 
 ```sh
 syncbox vault create ~/myvault
-syncbox sync once --server http://127.0.0.1:18510 --vault-id <root-id> \
+syncbox sync once --server http://127.0.0.1:8080 --vault-id <root-id> \
                   --vault ~/myvault --folder ~/Documents
 syncbox mount ~/myvault /mnt/syncbox --writable
 ```
