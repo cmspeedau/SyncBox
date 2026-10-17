@@ -195,6 +195,12 @@
       const { invoke } = window.__TAURI__.core;
       const $ = (id) => document.getElementById(id);
 
+      // The server's names for its vaults, keyed by id. The id is the server's
+      // handle, not the vault's name — so wherever the UI would print an id it
+      // prints the operator's name instead, and the id itself only where this
+      // session never learned one (an id typed by hand).
+      const vaultNames = new Map();
+
       const fmtTime = (unix) =>
         unix ? new Date(unix * 1000).toLocaleString() : "never";
 
@@ -204,7 +210,7 @@
         badge.className = "badge " + s.state;
         $("locked-view").classList.toggle("hidden", s.unlocked);
         $("unlocked-view").classList.toggle("hidden", !s.unlocked);
-        if (s.vaultId) $("u-vault").textContent = s.vaultId;
+        if (s.vaultId) $("u-vault").textContent = vaultNames.get(s.vaultId) || s.vaultId;
         $("u-last").textContent = fmtTime(s.lastSyncUnix);
         $("u-passes").textContent = String(s.passes);
         renderReport(s);
@@ -328,6 +334,7 @@
             password: $("password").value,
           });
           const live = vaults.filter((v) => !v.archived);
+          vaultNames.clear();
           pick.innerHTML = "";
           for (const v of live) {
             const option = document.createElement("option");
@@ -337,6 +344,7 @@
             // vault's name. A vault nobody registered yet has no name, and
             // then the id is all there is to show.
             option.textContent = v.name || v.id;
+            vaultNames.set(v.id, v.name || v.id);
             pick.appendChild(option);
           }
           pick.disabled = live.length === 0 || $("manualId").checked;
