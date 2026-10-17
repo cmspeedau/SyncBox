@@ -71,9 +71,17 @@ func (l *Local) checkWritable(full string) error {
 	return nil
 }
 
-// Write stores r at rel by writing a temporary file and renaming it into place,
-// so a crash mid-write cannot leave a half-written manifest.
-func (l *Local) Write(ctx context.Context, rel string, r io.Reader) (int64, error) {
+// Write stores the reader's bytes and returns the count; a plain directory has
+// no version notion, so the identity is empty and later reads simply read the
+// file that is there.
+func (l *Local) Write(ctx context.Context, rel string, r io.Reader) (int64, string, error) {
+	n, err := l.writeAtomic(ctx, rel, r)
+	return n, "", err
+}
+
+// writeAtomic stores r at rel by writing a temporary file and renaming it into
+// place, so a crash mid-write cannot leave a half-written manifest.
+func (l *Local) writeAtomic(ctx context.Context, rel string, r io.Reader) (int64, error) {
 	full, err := l.resolve(rel)
 	if err != nil {
 		return 0, err

@@ -50,9 +50,12 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	tgt, _ := newTarget(t)
 	ctx := context.Background()
 
-	written, err := tgt.Write(ctx, "snapshots/one/metadata.json", strings.NewReader(`{"hello":"world"}`))
+	written, version, err := tgt.Write(ctx, "snapshots/one/metadata.json", strings.NewReader(`{"hello":"world"}`))
 	if err != nil {
 		t.Fatalf("Write: %v", err)
+	}
+	if version != "" {
+		t.Errorf("a directory target invented a version identity %q, want empty", version)
 	}
 	if written != int64(len(`{"hello":"world"}`)) {
 		t.Errorf("wrote %d bytes, want %d", written, len(`{"hello":"world"}`))
@@ -93,10 +96,10 @@ func TestWriteReplacesAndLeavesNoTempFiles(t *testing.T) {
 	tgt, root := newTarget(t)
 	ctx := context.Background()
 
-	if _, err := tgt.Write(ctx, "a/b/obj", strings.NewReader("first")); err != nil {
+	if _, _, err := tgt.Write(ctx, "a/b/obj", strings.NewReader("first")); err != nil {
 		t.Fatalf("first Write: %v", err)
 	}
-	if _, err := tgt.Write(ctx, "a/b/obj", strings.NewReader("second")); err != nil {
+	if _, _, err := tgt.Write(ctx, "a/b/obj", strings.NewReader("second")); err != nil {
 		t.Fatalf("second Write: %v", err)
 	}
 
@@ -129,7 +132,7 @@ func TestPathsCannotEscapeTheRoot(t *testing.T) {
 
 	outside := filepath.Join(filepath.Dir(root), "escaped")
 	for _, rel := range []string{"../escaped", "../../escaped", "/../escaped", "a/../../escaped"} {
-		if _, err := tgt.Write(ctx, rel, strings.NewReader("x")); err != nil {
+		if _, _, err := tgt.Write(ctx, rel, strings.NewReader("x")); err != nil {
 			// A refusal is the good outcome either way.
 			continue
 		}
@@ -144,7 +147,7 @@ func TestEntriesAreSortedAndMissingDirsAreEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	for _, rel := range []string{"s/c/manifest.json", "s/a/manifest.json", "s/b/manifest.json"} {
-		if _, err := tgt.Write(ctx, rel, strings.NewReader("{}")); err != nil {
+		if _, _, err := tgt.Write(ctx, rel, strings.NewReader("{}")); err != nil {
 			t.Fatalf("Write %s: %v", rel, err)
 		}
 	}
@@ -170,17 +173,17 @@ func TestReadOnlyBlocksLaterWritesButNotReads(t *testing.T) {
 	tgt, _ := newTarget(t)
 	ctx := context.Background()
 
-	if _, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("{}")); err != nil {
+	if _, _, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("{}")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := tgt.Write(ctx, "s/one/chunk", strings.NewReader("bytes")); err != nil {
+	if _, _, err := tgt.Write(ctx, "s/one/chunk", strings.NewReader("bytes")); err != nil {
 		t.Fatalf("Write chunk: %v", err)
 	}
 	if err := tgt.ReadOnly(ctx, "s/one"); err != nil {
 		t.Fatalf("ReadOnly: %v", err)
 	}
 
-	_, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("tampered"))
+	_, _, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("tampered"))
 	if !errors.Is(err, ErrReadOnly) {
 		t.Errorf("write into a sealed snapshot = %v, want ErrReadOnly", err)
 	}
@@ -197,7 +200,7 @@ func TestRemoveAllClearsTheSeal(t *testing.T) {
 	tgt, root := newTarget(t)
 	ctx := context.Background()
 
-	if _, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("{}")); err != nil {
+	if _, _, err := tgt.Write(ctx, "s/one/manifest.json", strings.NewReader("{}")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if err := tgt.ReadOnly(ctx, "s/one"); err != nil {

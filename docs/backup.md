@@ -32,11 +32,16 @@ The manifest is what makes a snapshot a snapshot:
   "server_version": "0.1.0",
   "metadata_bytes": 4128,
   "metadata_sha256": "…",
+  "metadata_version_id": "7a68ca76-…",
   "chunk_bytes": 10485760,
-  "chunks": [ { "id": "ABCDEFGHIJKLMNOP", "size": 65536, "sha256": "…" } ],
+  "chunks": [ { "id": "ABCDEFGHIJKLMNOP", "size": 65536, "sha256": "…", "version_id": "d4a726d6-…" } ],
   "policy": { "hourly": 24, "daily": 7, "weekly": 8, "monthly": 12 }
 }
 ```
+
+The `*_version_id` fields appear only on an `s3://` target, where the service hands
+back the identity of every version a write creates; on a plain directory there is
+nothing to pin them to, and they are absent.
 
 Three properties follow from that layout, and they are the reason it is arranged this
 way:
@@ -65,12 +70,22 @@ caller can overwrite or permanently delete those versions before the retention d
 not the server, not root, not the bucket owner. The MinIO drill put that to the test
 and the service refused destruction with the sealed version's back — `WORM protected`.
 
-What object lock does *not* promise is that readers see the sealed version: on a
-versioned bucket anyone with write access can still stand a **new** version up in
-front of it. The bytes behind the seal survive untouched, and every checksum `verify`
-re-reads fails loudly the moment a substitution is in the way — the backup stays
-tamper-*evident* against an attacker the seal cannot silence. Pinning sealed version
-ids in the manifest and reading by id is the next hardening step, noted under Limits.
+What object lock alone does *not* promise is that readers see the sealed version: on
+a versioned bucket anyone with write access can still stand a **new** version up in
+front of it — the drill did exactly that with `mc cp`, and the service accepted it,
+because a PUT never overwrites a locked version, it joins the stack. So the seal also
+records *where the bytes are*: every write in a snapshot returns the version id the
+service gave it, and the manifest pins those ids on the metadata file and every
+chunk. `verify` and `restore` then read **by id**. A substitution in front of the
+seal is not merely detected, it is never read at all — the drill replayed the earlier
+tamper (8 bytes of junk stood up over a sealed chunk) and this time `verify` passed
+while a fresh server and client resurrected the original files byte-for-byte from the
+same forged bucket. The tampered current version is noise now, not data.
+
+One honesty note this creates in the other direction: `verify` passing states that
+*the sealed bytes* are intact. It no longer states that the bucket's current version
+is honest — reading that would be reading the tamper, which is precisely what pinning
+is for.
 
 ## Targets
 
@@ -289,9 +304,13 @@ alone.
 - **A backup on the same host as the server** survives deleted files and a broken
   install. It does not survive a dead disk. The target is meant to be elsewhere — a
   NAS mount or, properly, an object-lock bucket on a different account.
-- **`verify` and `restore` read the current version of each object.** A sealed version
-  can never be destroyed, and a substitution in front of it trips the manifest
-  checksums the moment anything reads too closely, but the readers follow the bucket's
-  "now" rather than the seal. Recording sealed version ids in the manifest and reading
-  by id is the next hardening step, along with per-rung retention (a monthly snapshot
-  that deserves a longer lock horizon than an hourly one).
+- **`manifest.json` is the one object read unpinned.** Chunks and the metadata file
+  are read at the versions the snapshot sealed, but a manifest cannot name its own
+  version id — that identity exists only after its bytes are final. So `verify` reads
+  the *current* manifest and proves self-consistency from there: a forged manifest
+  passes only against chunks that satisfy the hashes it itself claims, which the real
+  chunks do and an attacker's copies must replace wholesale. Closing this last hop
+  means anchoring snapshot ids on the client side — the server cannot vouch for its
+  own bookkeeping against itself — which is the remaining piece of the version story,
+  along with per-rung retention (a monthly snapshot that deserves a longer lock
+  horizon than an hourly one).

@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +114,9 @@ func TestCreateWritesACompleteSealedSnapshot(t *testing.T) {
 	}
 	if snapshot.Manifest.ServerVersion != "test" {
 		t.Errorf("ServerVersion = %q, want test", snapshot.Manifest.ServerVersion)
+	}
+	if snapshot.Manifest.Pinned() {
+		t.Error("a directory target has no versions, so the manifest must claim no pins")
 	}
 
 	dir := f.snapshotPath(snapshot.ID)
@@ -343,6 +348,132 @@ func TestPruneKeepsSnapshotsStillUnderRetention(t *testing.T) {
 	// The bytes the refusal protected are still whole enough to verify.
 	if _, err := manager.Verify(context.Background(), sealed.ID); err != nil {
 		t.Errorf("retained snapshot must still verify: %v", err)
+	}
+}
+
+// versionedTarget is a Target that stacks versions like a bucket: a Write
+// pushes a new one, Read sees the top of the stack, ReadVersion reads the
+// version it names. The file on disk is always the newest — that is what
+// makes a tamper visible to an unpinned read — while the ledger keeps every
+// version the snapshot pinned still readable.
+type versionedTarget struct {
+	*target.Local
+	mu       sync.Mutex
+	versions map[string]map[string][]byte // rel -> version id -> body
+	seq      map[string]int
+}
+
+var _ target.Versioned = (*versionedTarget)(nil)
+
+func newVersionedTarget(t *testing.T, dir string) *versionedTarget {
+	t.Helper()
+	return &versionedTarget{
+		Local:    mustTarget(t, dir),
+		versions: map[string]map[string][]byte{},
+		seq:      map[string]int{},
+	}
+}
+
+// ReadOnly is a no-op here: like a bucket, this target's seal lives in the
+// version semantics, not in filesystem bits — and a bucket's seal never
+// stops a newer version from landing, which is exactly what the test drives.
+func (v *versionedTarget) ReadOnly(context.Context, string) error { return nil }
+
+func (v *versionedTarget) Write(ctx context.Context, rel string, r io.Reader) (int64, string, error) {
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return 0, "", err
+	}
+	n, _, err := v.Local.Write(ctx, rel, bytes.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.seq[rel]++
+	id := fmt.Sprintf("v%03d", v.seq[rel])
+	if v.versions[rel] == nil {
+		v.versions[rel] = map[string][]byte{}
+	}
+	v.versions[rel][id] = body
+	return n, id, nil
+}
+
+func (v *versionedTarget) ReadVersion(_ context.Context, rel, versionID string) (io.ReadCloser, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	body, ok := v.versions[rel][versionID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s version %s", target.ErrNotFound, rel, versionID)
+	}
+	return io.NopCloser(bytes.NewReader(body)), nil
+}
+
+func TestVerifyAndRestoreReadThePinnedVersions(t *testing.T) {
+	f := newFixture(t)
+	f.seed(t)
+	ctx := context.Background()
+
+	vt := newVersionedTarget(t, filepath.Join(f.root, "target"))
+	manager := NewManager(vt, f.stored, "test")
+	snapshot, err := manager.Create(ctx, DefaultPolicy())
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if snapshot.Manifest.MetadataVersionID == "" {
+		t.Error("manifest did not pin the metadata version")
+	}
+	if !snapshot.Manifest.Pinned() {
+		t.Error("a manifest carrying version ids must report itself pinned")
+	}
+	for _, entry := range snapshot.Manifest.Chunks {
+		if entry.VersionID == "" {
+			t.Errorf("chunk %s did not pin a version", entry.ID)
+		}
+	}
+
+	// A manager whose target exposes no versions reads the current bytes
+	// just the same: recorded identities are a capability to use, not a
+	// requirement to have.
+	plain := NewManager(target.Target(vt), f.stored, "test")
+	if _, err := plain.Verify(ctx, snapshot.ID); err != nil {
+		t.Errorf("a versionless view of the same bytes must still verify: %v", err)
+	}
+
+	// Tamper the way a bucket writer can: PUT a newer version of one chunk.
+	// The sealed version survives under its identity; the stack top lies.
+	victim := snapshot.Manifest.Chunks[0]
+	if _, _, err := vt.Write(ctx, chunkRel(snapshot.ID, victim.ID), strings.NewReader("forged")); err != nil {
+		t.Fatalf("tamper Write: %v", err)
+	}
+	lie, err := vt.Local.Read(ctx, chunkRel(snapshot.ID, victim.ID))
+	if err != nil {
+		t.Fatalf("reading tampered current: %v", err)
+	}
+	if body, _ := io.ReadAll(lie); string(body) != "forged" {
+		t.Fatalf("tamper did not land on the current version: %q", body)
+	}
+	lie.Close()
+
+	// Verify reads the versions the manifest pinned, not the stack tops:
+	// the snapshot is still whole — and that is the honest answer, not a
+	// missed tamper, because nothing ever serves these lying bytes.
+	if _, err := manager.Verify(ctx, snapshot.ID); err != nil {
+		t.Fatalf("Verify of a pinned snapshot: %v", err)
+	}
+
+	// And Restore serves the sealed bytes despite the tamper: it does not
+	// catch the lie, it never reads it.
+	dest := filepath.Join(f.root, "restored")
+	if _, err := manager.Restore(ctx, snapshot.ID, dest); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dest, "chunks", filepath.Base(victim.ID)))
+	if err != nil {
+		t.Fatalf("read restored chunk: %v", err)
+	}
+	if got := hexSHA256(body); got != victim.SHA256 {
+		t.Errorf("restored chunk is %s, sealed bytes were %s", got, victim.SHA256)
 	}
 }
 

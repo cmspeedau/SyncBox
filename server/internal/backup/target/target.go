@@ -1,10 +1,12 @@
 // Package target is where snapshot bundles are written.
 //
-// One interface covers a second disk, an S3 bucket, and a restic repository, so
-// the backup engine does not change when a deployment moves off the local
+// One interface covers a directory on a second disk and an object-lock bucket,
+// so the backup engine does not change when a deployment moves off the local
 // filesystem. What each implementation owes the engine is the interesting part:
 // paths are relative and cannot escape the target, and ReadOnly is the hook that
 // makes a finalized snapshot something a compromised server cannot rewrite.
+// (Tools like restic sit on the OTHER side of this seam: they consume sealed
+// bundles from outside — see docs/backup.md — rather than being a Target.)
 package target
 
 import (
@@ -27,8 +29,10 @@ var ErrRetained = errors.New("snapshot target: retained until its retention date
 // Target stores snapshot bundles under relative paths.
 type Target interface {
 	// Write stores r at rel, replacing any existing object, and reports the
-	// number of bytes written.
-	Write(ctx context.Context, rel string, r io.Reader) (int64, error)
+	// number of bytes written plus the identity of the version created — the
+	// empty string for targets without versions. The engine records identities
+	// so later reads can pin the exact bytes the snapshot wrote (see Versioned).
+	Write(ctx context.Context, rel string, r io.Reader) (int64, string, error)
 	// Read opens rel for reading. It is the caller's to close.
 	Read(ctx context.Context, rel string) (io.ReadCloser, error)
 	// Exists reports whether rel is present.
@@ -47,4 +51,16 @@ type Target interface {
 	RemoveAll(ctx context.Context, rel string) error
 	// Location describes the target for logs and command output.
 	Location() string
+}
+
+// Versioned is the optional capability of targets whose objects have versions —
+// versioned object storage chiefly, where a sealed version cannot be destroyed
+// but a newer version can still be PUT in front of it. Recording version
+// identities at Write time lets Verify and Restore pin the exact bytes the
+// snapshot sealed, so substitution stops being something the backup notices
+// and becomes something the backup simply never reads.
+type Versioned interface {
+	// ReadVersion opens one pinned version, as identified by Write's second
+	// return value. A version that no longer exists is ErrNotFound.
+	ReadVersion(ctx context.Context, rel, versionID string) (io.ReadCloser, error)
 }

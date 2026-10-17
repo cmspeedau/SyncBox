@@ -73,19 +73,41 @@ type ChunkEntry struct {
 	ID     string `json:"id"`
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
+	// VersionID names the exact object version this entry's bytes went into,
+	// when the target has versions (empty otherwise). Verify and Restore read
+	// by it, so a newer version PUT in front of the bundle cannot be served.
+	VersionID string `json:"version_id,omitempty"`
 }
 
 // Manifest describes a snapshot and commits to its contents.
 type Manifest struct {
-	Version        int          `json:"version"`
-	ID             string       `json:"id"`
-	CreatedAt      time.Time    `json:"created_at"`
-	ServerVersion  string       `json:"server_version"`
-	MetadataBytes  int64        `json:"metadata_bytes"`
-	MetadataSHA256 string       `json:"metadata_sha256"`
-	ChunkBytes     int64        `json:"chunk_bytes"`
-	Chunks         []ChunkEntry `json:"chunks"`
-	Policy         Policy       `json:"policy"`
+	Version        int       `json:"version"`
+	ID             string    `json:"id"`
+	CreatedAt      time.Time `json:"created_at"`
+	ServerVersion  string    `json:"server_version"`
+	MetadataBytes  int64     `json:"metadata_bytes"`
+	MetadataSHA256 string    `json:"metadata_sha256"`
+	// MetadataVersionID pins the metadata object's version where the target
+	// has versions, like ChunkEntry.VersionID does for chunks.
+	MetadataVersionID string       `json:"metadata_version_id,omitempty"`
+	ChunkBytes        int64        `json:"chunk_bytes"`
+	Chunks            []ChunkEntry `json:"chunks"`
+	Policy            Policy       `json:"policy"`
+}
+
+// Pinned reports whether the manifest recorded version identities for any of
+// its objects — which tells a reader whether Verify and Restore followed the
+// sealed bytes or the current ones.
+func (m Manifest) Pinned() bool {
+	if m.MetadataVersionID != "" {
+		return true
+	}
+	for _, entry := range m.Chunks {
+		if entry.VersionID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Snapshot is a manifest plus where it lives.
@@ -153,9 +175,11 @@ func (m *Manager) Create(ctx context.Context, policy Policy) (Snapshot, error) {
 		Policy:         policy,
 	}
 
-	if err := m.write(ctx, metadataRel(id), bytes.NewReader(metadata)); err != nil {
+	metadataVersion, err := m.write(ctx, metadataRel(id), bytes.NewReader(metadata))
+	if err != nil {
 		return Snapshot{}, err
 	}
+	manifest.MetadataVersionID = metadataVersion
 
 	ids, err := m.src.ChunkIDs(ctx)
 	if err != nil {
@@ -178,7 +202,10 @@ func (m *Manager) Create(ctx context.Context, policy Policy) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("snapshot %s: encoding manifest: %w", id, err)
 	}
-	if err := m.write(ctx, manifestRel(id), bytes.NewReader(body)); err != nil {
+	// The manifest cannot name its own version (the identity exists only
+	// after its bytes are final), so it is the one object Verify and Restore
+	// read unpinned — the documented bootstrap boundary in docs/backup.md.
+	if _, err := m.write(ctx, manifestRel(id), bytes.NewReader(body)); err != nil {
 		return Snapshot{}, err
 	}
 	if err := m.tgt.ReadOnly(ctx, snapshotRel(id)); err != nil {
@@ -201,7 +228,8 @@ func (m *Manager) Create(ctx context.Context, policy Policy) (Snapshot, error) {
 	return snapshot, nil
 }
 
-// copyChunk streams one chunk into the snapshot, checksumming it in passing.
+// copyChunk streams one chunk into the snapshot, checksumming it in passing
+// and recording the version the bytes landed in.
 func (m *Manager) copyChunk(ctx context.Context, snapshotID, chunkID string) (ChunkEntry, error) {
 	if err := checkChunkID(chunkID); err != nil {
 		return ChunkEntry{}, fmt.Errorf("snapshot %s: %w", snapshotID, err)
@@ -214,19 +242,34 @@ func (m *Manager) copyChunk(ctx context.Context, snapshotID, chunkID string) (Ch
 	defer reader.Close()
 
 	hasher := sha256.New()
-	written, err := m.tgt.Write(ctx, chunkRel(snapshotID, chunkID), io.TeeReader(reader, hasher))
+	written, version, err := m.tgt.Write(ctx, chunkRel(snapshotID, chunkID), io.TeeReader(reader, hasher))
 	if err != nil {
 		return ChunkEntry{}, fmt.Errorf("snapshot %s: storing chunk %s: %w", snapshotID, chunkID, err)
 	}
-	return ChunkEntry{ID: chunkID, Size: written, SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
+	return ChunkEntry{ID: chunkID, Size: written, SHA256: hex.EncodeToString(hasher.Sum(nil)), VersionID: version}, nil
 }
 
-// write is Target.Write with the error context every caller would repeat.
-func (m *Manager) write(ctx context.Context, rel string, body io.Reader) error {
-	if _, err := m.tgt.Write(ctx, rel, body); err != nil {
-		return fmt.Errorf("writing %s: %w", rel, err)
+// write is Target.Write with the error context every caller would repeat; it
+// hands back the version identity for callers that pin.
+func (m *Manager) write(ctx context.Context, rel string, body io.Reader) (string, error) {
+	if _, version, err := m.tgt.Write(ctx, rel, body); err != nil {
+		return "", fmt.Errorf("writing %s: %w", rel, err)
+	} else {
+		return version, nil
 	}
-	return nil
+}
+
+// openAt opens rel, preferring the version pinned at snapshot time when the
+// target has versions and the manifest recorded an identity. A snapshot
+// written to a target without versions (a plain directory) recorded none and
+// reads the file that is there, exactly as it always has.
+func (m *Manager) openAt(ctx context.Context, rel, versionID string) (io.ReadCloser, error) {
+	if versionID != "" {
+		if versions, ok := m.tgt.(target.Versioned); ok {
+			return versions.ReadVersion(ctx, rel, versionID)
+		}
+	}
+	return m.tgt.Read(ctx, rel)
 }
 
 // List returns complete snapshots, newest first. Directories without a manifest
@@ -286,7 +329,7 @@ func (m *Manager) Verify(ctx context.Context, id string) (Manifest, error) {
 		return Manifest{}, err
 	}
 
-	metadata, err := m.readAll(ctx, metadataRel(id))
+	metadata, err := m.readAllAt(ctx, metadataRel(id), manifest.MetadataVersionID)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("verifying %s: %w", id, err)
 	}
@@ -296,7 +339,7 @@ func (m *Manager) Verify(ctx context.Context, id string) (Manifest, error) {
 	}
 
 	for _, entry := range manifest.Chunks {
-		body, err := m.readAll(ctx, chunkRel(id, entry.ID))
+		body, err := m.readAllAt(ctx, chunkRel(id, entry.ID), entry.VersionID)
 		if err != nil {
 			return Manifest{}, fmt.Errorf("verifying %s: %w", id, err)
 		}
@@ -337,7 +380,7 @@ func (m *Manager) Restore(ctx context.Context, id, destDir string) (Manifest, er
 		return Manifest{}, fmt.Errorf("creating %s: %w", destDir, err)
 	}
 
-	metadata, err := m.readAll(ctx, metadataRel(id))
+	metadata, err := m.readAllAt(ctx, metadataRel(id), manifest.MetadataVersionID)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("restoring %s: %w", id, err)
 	}
@@ -349,7 +392,7 @@ func (m *Manager) Restore(ctx context.Context, id, destDir string) (Manifest, er
 		if err := ctx.Err(); err != nil {
 			return Manifest{}, fmt.Errorf("restoring %s: %w", id, err)
 		}
-		body, err := m.readAll(ctx, chunkRel(id, entry.ID))
+		body, err := m.readAllAt(ctx, chunkRel(id, entry.ID), entry.VersionID)
 		if err != nil {
 			return Manifest{}, fmt.Errorf("restoring %s: %w", id, err)
 		}
@@ -408,9 +451,11 @@ func without(all, gone []Snapshot) []Snapshot {
 	return out
 }
 
-// readAll loads an object from the target fully, for checksumming.
-func (m *Manager) readAll(ctx context.Context, rel string) ([]byte, error) {
-	reader, err := m.tgt.Read(ctx, rel)
+// readAllAt loads an object from the target fully, for checksumming, pinned
+// to the version the snapshot wrote when the target has versions and the
+// manifest recorded one (see openAt).
+func (m *Manager) readAllAt(ctx context.Context, rel, versionID string) ([]byte, error) {
+	reader, err := m.openAt(ctx, rel, versionID)
 	if err != nil {
 		if errors.Is(err, target.ErrNotFound) {
 			return nil, fmt.Errorf("%w: %s is missing", ErrCorrupt, rel)
