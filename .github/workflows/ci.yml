@@ -72,10 +72,11 @@ jobs:
 
   image:
     name: Server image builds
-    # GitHub-hosted: it ships Docker. The self-hosted runner has no container
-    # toolchain installed, so `docker build` there fails with exit 127. The image is
-    # still only built, never pushed — publishing stays a deliberate act.
-    runs-on: desktop
+    # Self-hosted with Docker: the NUC host runner (label `docker`) builds the
+    # image without pushing it. The Incus CI container deliberately stays out —
+    # it is unprivileged, so container-in-container would be sandpaper. Building
+    # here also keeps the laptop runner free; publishing stays a deliberate act.
+    runs-on: [self-hosted, docker]
     needs: go
     steps:
       - uses: actions/checkout@v4
@@ -87,14 +88,13 @@ jobs:
 
   package:
     name: Package (Linux desktop)
-    # Self-hosted: this box already carries the webkit2gtk/gtk development
-    # libraries (the desktop app builds here) and the tauri CLI in ~/.cargo/bin,
-    # and the bundler needs no Debian packaging tools to do its job — it emits
-    # the .deb through ar/tar and linuxdeploy bootstraps patchelf itself. The
-    # apt step below stays for a hosted runner, should this ever move back.
-    # Bundles are uploaded as build artifacts only — signing and publishing
-    # stay deliberate (and macOS/Windows packaging needs their own runners and
-    # identities, deferred).
+    # Self-hosted: both Linux runners carry the webkit2gtk/gtk development
+    # libraries and the bundler needs no Debian packaging tools for its .deb —
+    # it emits one through ar/tar, and linuxdeploy bootstraps its own patchelf.
+    # The first run on a fresh runner installs cargo-tauri into ~/.cargo/bin and
+    # every later one reuses it. Bundles are uploaded as build artifacts only —
+    # signing and publishing stay deliberate (and macOS/Windows packaging needs
+    # their own runners and identities, deferred).
     runs-on: self-hosted
     needs: rust
     defaults:
@@ -111,14 +111,17 @@ jobs:
 
       - name: Install system libraries (hosted runners only)
         run: |
-          if command -v apt-get >/dev/null 2>&1; then
+          # Both self-hosted runners carry the webkit dev stack permanently, so
+          # the apt dance is a hosted-runner fallback — and checking for the
+          # library itself (not for apt) means a warm runner never re-installs
+          # 200 MB of already-present packages.
+          if command -v apt-get >/dev/null 2>&1 && ! pkg-config --exists webkit2gtk-4.1; then
             sudo apt-get update
             sudo apt-get install -y \
               libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
               libjavascriptcoregtk-4.1-dev patchelf
           else
-            echo "no apt (self-hosted): webkit dev libs are already installed and" \
-                 "the bundler supplies ar/tar + its own patchelf — skipping"
+            echo "webkit2gtk-4.1 already present (or no apt): nothing to install"
           fi
 
       - name: Install tauri CLI
