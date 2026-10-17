@@ -581,3 +581,168 @@ func TestBackupsReportWhenNotConfigured(t *testing.T) {
 		t.Errorf("code = %q, want not_configured", code)
 	}
 }
+
+func TestRootAnswersWithNameCard(t *testing.T) {
+	c := newClient(t, false)
+
+	// No token: the root answers whoever asks, human or script. The 404 it
+	// replaces was the server's whole first impression.
+	response := c.raw(http.MethodGet, "/", nil, "")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / = %s, want 200", response.Status)
+	}
+
+	var card struct {
+		Name    string            `json:"name"`
+		Version string            `json:"version"`
+		Docs    string            `json:"docs"`
+		API     map[string]string `json:"api"`
+	}
+	c.mustDecode(response, &card)
+	if card.Name != "syncbox" {
+		t.Errorf("name = %q, want syncbox", card.Name)
+	}
+	if card.Version == "" {
+		t.Error("name-card omits its version")
+	}
+	if card.Docs == "" {
+		t.Error("name-card omits the docs link")
+	}
+	for _, key := range []string{"token", "revisions", "chunks", "vault_registry", "backups"} {
+		if card.API[key] == "" {
+			t.Errorf("name-card api map missing %q", key)
+		}
+	}
+
+	// The card answers "/" alone: a mistyped path stays a 404 rather than
+	// confidently showing everyone the wrong page.
+	response = c.raw(http.MethodGet, "/definitely-not-a-page", nil, "")
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /definitely-not-a-page = %s, want 404", response.Status)
+	}
+}
+
+func TestVaultRegistryNeedsAToken(t *testing.T) {
+	c := newClient(t, false)
+
+	for _, request := range []struct{ method, path string }{
+		{http.MethodGet, "/admin/vaults"},
+		{http.MethodPost, "/admin/vaults"},
+		{http.MethodPatch, "/admin/vaults/ABCDEFGH"},
+		{http.MethodPost, "/admin/vaults/ABCDEFGH/archive"},
+	} {
+		response := c.raw(request.method, request.path, nil, "")
+		code, _ := c.errorBodyOf(response)
+		response.Body.Close()
+		if code != "unauthorized" {
+			t.Errorf("%s %s without a token = %q, want unauthorized",
+				request.method, request.path, code)
+		}
+	}
+}
+
+func TestVaultRegistryLifecycle(t *testing.T) {
+	c := newClient(t, false)
+
+	// Create: the server mints the id, and the fresh vault answers in its own
+	// full shape so a console can render it without a second round trip.
+	body, _ := json.Marshal(map[string]string{"name": "Photos"})
+	response := c.do(http.MethodPost, "/admin/vaults", body)
+	if response.StatusCode != http.StatusCreated {
+		defer response.Body.Close()
+		t.Fatalf("create = %s", response.Status)
+	}
+	var created store.VaultInfo
+	c.mustDecode(response, &created)
+	if len(created.ID) != 8 || created.Name != "Photos" || created.CreatedAt == 0 {
+		t.Fatalf("created = %+v, want a minted 8-char id, name Photos, real timestamp", created)
+	}
+
+	// A name that would render as a blank row is refused on the way in.
+	for _, bad := range []string{`{"name":"  "}`, `{"name":""}`} {
+		response := c.do(http.MethodPost, "/admin/vaults", []byte(bad))
+		code, _ := c.errorBodyOf(response)
+		response.Body.Close()
+		if code != "invalid_name" {
+			t.Errorf("create with %s = %q, want invalid_name", bad, code)
+		}
+	}
+
+	// A client that commits into a vault nobody registered still works —
+	// enforcement is a later milestone — and the vault appears in the
+	// registry nameless, which is the migration story made visible.
+	commitBody, _ := json.Marshal(map[string]any{
+		"parent": 0,
+		"revision": map[string]any{
+			"parent": 0, "dir_id": "DIRID", "cipher_name": "AAAA",
+			"manifest": "ZW5jcnlwdGVk", "size": 12, "modified_unix": 1_700_000_000,
+		},
+	})
+	response = c.do(http.MethodPost, "/api/v1/vaults/GRANDMA1/revisions", commitBody)
+	response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("commit into unregistered vault = %s, want 201 while registration is optional", response.Status)
+	}
+
+	list := func() []store.VaultInfo {
+		t.Helper()
+		response := c.do(http.MethodGet, "/admin/vaults", nil)
+		defer response.Body.Close()
+		var decoded struct {
+			Vaults []store.VaultInfo `json:"vaults"`
+		}
+		c.mustDecode(response, &decoded)
+		return decoded.Vaults
+	}
+
+	// Rename, with a 404 for ids that were never minted or committed.
+	body, _ = json.Marshal(map[string]string{"name": "Family Photos"})
+	response = c.do(http.MethodPatch, "/admin/vaults/"+created.ID, body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("rename = %s, want 200", response.Status)
+	}
+	body, _ = json.Marshal(map[string]string{"name": "Nothing"})
+	response = c.do(http.MethodPatch, "/admin/vaults/NOSUCHVA", body)
+	code, _ := c.errorBodyOf(response)
+	response.Body.Close()
+	if code != "not_found" {
+		t.Errorf("rename unknown id = %q, want not_found", code)
+	}
+
+	// Archive, and its 404.
+	body, _ = json.Marshal(map[string]bool{"archived": true})
+	response = c.do(http.MethodPost, "/admin/vaults/GRANDMA1/archive", body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("archive = %s, want 200", response.Status)
+	}
+	response = c.do(http.MethodPost, "/admin/vaults/NOSUCHVA/archive", body)
+	code, _ = c.errorBodyOf(response)
+	response.Body.Close()
+	if code != "not_found" {
+		t.Errorf("archive unknown id = %q, want not_found", code)
+	}
+
+	vaults := list()
+	byID := map[string]store.VaultInfo{}
+	for _, info := range vaults {
+		byID[info.ID] = info
+	}
+	if len(byID) != 2 {
+		t.Fatalf("registry lists %+v, want two vaults", vaults)
+	}
+	if renamed := byID[created.ID]; renamed.Name != "Family Photos" || renamed.Revisions != 0 {
+		t.Errorf("renamed vault reads %+v", renamed)
+	}
+	grandma, ok := byID["GRANDMA1"]
+	if !ok {
+		t.Fatal("committed vault never entered the registry")
+	}
+	if grandma.Name != "" || !grandma.Archived || grandma.Revisions != 1 ||
+		grandma.LiveFiles != 1 || grandma.Bytes != 12 {
+		t.Errorf("commit-born vault reads %+v, want nameless, archived, 1 revision of 12 live bytes", grandma)
+	}
+}

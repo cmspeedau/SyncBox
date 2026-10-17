@@ -15,6 +15,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,6 +73,22 @@ type Stats struct {
 	LargestChunk int64 `json:"largest_chunk"`
 }
 
+// VaultInfo is one row of the vault registry: everything the server can know
+// about a vault while holding no key. Name is metadata an operator typed;
+// the rest is bookkeeping counted from revisions. LiveFiles and Bytes count
+// only each file's newest revision when that revision is not a tombstone, so
+// a deleted-then-reuploaded file counts once and at its current size.
+type VaultInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	CreatedAt   int64  `json:"created_at"`
+	Archived    bool   `json:"archived"`
+	Revisions   int    `json:"revisions"`
+	LiveFiles   int    `json:"live_files"`
+	Bytes       int64  `json:"bytes"`
+	LastWriteAt int64  `json:"last_write_at"`
+}
+
 // Store is what the API and the backup engine need.
 type Store interface {
 	// PutChunk stores body under id, returning the bytes written. Storing the
@@ -94,6 +112,22 @@ type Store interface {
 	// DumpMetadata serialises the bookkeeping, for a snapshot. It contains no
 	// chunk content.
 	DumpMetadata(ctx context.Context) ([]byte, error)
+
+	// The vault registry (M10). Vaults are becoming server-side facts an
+	// operator creates in the console and points clients at, rather than
+	// namespaces a client invents silently. Registration through the registry
+	// is not yet required — commits still birth vaults implicitly, and the
+	// registry reports those too, nameless — until enforcement lands.
+	//
+	// CreateVault mints a fresh id and registers it under name.
+	CreateVault(ctx context.Context, name string) (string, error)
+	// ListVaults returns every vault, registry-created or implied by stored
+	// revisions, with per-vault bookkeeping. Order is by creation, then id.
+	ListVaults(ctx context.Context) ([]VaultInfo, error)
+	// RenameVault sets an operator's name, or returns ErrNotFound.
+	RenameVault(ctx context.Context, id, name string) error
+	// SetVaultArchived flags a vault as retired, or returns ErrNotFound.
+	SetVaultArchived(ctx context.Context, id string, archived bool) error
 }
 
 // Memory is an in-RAM Store.
@@ -102,8 +136,17 @@ type Memory struct {
 	chunks    map[string]Chunk
 	bodies    map[string][]byte
 	revisions map[string][]Revision
+	vaults    map[string]*memoryVault
 	maxChunk  int64
 	now       func() time.Time
+}
+
+// memoryVault is the registry half of a vault in Memory: what an operator set,
+// as opposed to the revision history kept beside it.
+type memoryVault struct {
+	name      string
+	createdAt int64
+	archived  bool
 }
 
 // compile-time check that Memory satisfies the interface it exists to demonstrate.
@@ -118,6 +161,7 @@ func NewMemory(maxChunk int64) *Memory {
 		chunks:    make(map[string]Chunk),
 		bodies:    make(map[string][]byte),
 		revisions: make(map[string][]Revision),
+		vaults:    make(map[string]*memoryVault),
 		maxChunk:  maxChunk,
 		now:       time.Now,
 	}
@@ -224,6 +268,12 @@ func (m *Memory) Commit(ctx context.Context, rev Revision) (uint64, error) {
 	rev.Revision = next
 	rev.StoredAt = m.now()
 	m.revisions[rev.VaultID] = append(history, rev)
+
+	// Mirror the durable store: a commit is also where an unregistered vault
+	// enters the registry, nameless, until enforcement requires registration.
+	if _, ok := m.vaults[rev.VaultID]; !ok {
+		m.vaults[rev.VaultID] = &memoryVault{createdAt: rev.StoredAt.Unix()}
+	}
 	return next, nil
 }
 
@@ -277,6 +327,131 @@ func (m *Memory) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
+// CreateVault mints a fresh id and registers it under name.
+func (m *Memory) CreateVault(ctx context.Context, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("creating vault: %w", err)
+	}
+	id, err := newVaultID()
+	if err != nil {
+		return "", err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.vaults[id] = &memoryVault{name: name, createdAt: m.now().Unix()}
+	return id, nil
+}
+
+// ListVaults returns every registered or revision-implied vault with its
+// bookkeeping.
+func (m *Memory) ListVaults(ctx context.Context) ([]VaultInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing vaults: %w", err)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// A vault can exist on either side alone: created in the console before
+	// any client pointed at it, or committed into without registration.
+	ids := make(map[string]struct{}, len(m.vaults)+len(m.revisions))
+	for id := range m.vaults {
+		ids[id] = struct{}{}
+	}
+	for id := range m.revisions {
+		ids[id] = struct{}{}
+	}
+
+	out := make([]VaultInfo, 0, len(ids))
+	for id := range ids {
+		info := VaultInfo{ID: id}
+		if registered, ok := m.vaults[id]; ok {
+			info.Name = registered.name
+			info.CreatedAt = registered.createdAt
+			info.Archived = registered.archived
+		}
+		for _, rev := range m.revisions[id] {
+			info.Revisions++
+			if rev.StoredAt.Unix() > info.LastWriteAt {
+				info.LastWriteAt = rev.StoredAt.Unix()
+			}
+		}
+		info.LiveFiles, info.Bytes = liveTally(m.revisions[id])
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt < out[j].CreatedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+// liveTally counts each file's newest revision, skipping tombstones. Revision
+// histories are in commit order, so the last entry per (dir, name) wins.
+func liveTally(history []Revision) (files int, bytes int64) {
+	type fileKey struct{ dirID, cipherName string }
+	latest := make(map[fileKey]Revision, len(history))
+	for _, rev := range history {
+		latest[fileKey{rev.DirID, rev.CipherName}] = rev
+	}
+	for _, rev := range latest {
+		if rev.Deleted {
+			continue
+		}
+		files++
+		bytes += rev.Size
+	}
+	return files, bytes
+}
+
+// RenameVault sets an operator's name.
+func (m *Memory) RenameVault(ctx context.Context, id, name string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("renaming vault %s: %w", id, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	registered, ok := m.vaults[id]
+	if !ok {
+		return fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	registered.name = name
+	return nil
+}
+
+// SetVaultArchived flags a vault as retired.
+func (m *Memory) SetVaultArchived(ctx context.Context, id string, archived bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("archiving vault %s: %w", id, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	registered, ok := m.vaults[id]
+	if !ok {
+		return fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	registered.archived = archived
+	return nil
+}
+
+// newVaultID mints a short, typeable vault id: five random bytes as base32,
+// eight characters from A–Z2–7 — the alphabet vault root ids already use, so
+// a pairing code can be read out loud without a hex table.
+func newVaultID() (string, error) {
+	var buf [5]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", fmt.Errorf("minting vault id: %w", err)
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf[:]), nil
+}
+
 // ChunkIDs lists stored chunk ids, sorted.
 func (m *Memory) ChunkIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
@@ -303,20 +478,37 @@ func (m *Memory) DumpMetadata(ctx context.Context) ([]byte, error) {
 	for _, chunk := range m.chunks {
 		chunks = append(chunks, chunk)
 	}
-	vaults := make([]string, 0, len(m.revisions))
+	vaults := make([]string, 0, len(m.revisions)+len(m.vaults))
 	for vault := range m.revisions {
 		vaults = append(vaults, vault)
+	}
+	for vault := range m.vaults {
+		if _, committed := m.revisions[vault]; !committed {
+			vaults = append(vaults, vault)
+		}
 	}
 	revisions := make(map[string][]Revision, len(m.revisions))
 	for vault, history := range m.revisions {
 		revisions[vault] = append([]Revision(nil), history...)
 	}
+	// The dump reflects the registry exactly as the live store holds it:
+	// every vault Memory knows — registered, committed-into, or both.
+	registry := make([]VaultRecord, 0, len(m.vaults))
+	for id, registered := range m.vaults {
+		registry = append(registry, VaultRecord{
+			ID:        id,
+			Name:      registered.name,
+			CreatedAt: registered.createdAt,
+			Archived:  registered.archived,
+		})
+	}
 	m.mu.RUnlock()
 
 	sort.Slice(chunks, func(i, j int) bool { return chunks[i].ID < chunks[j].ID })
 	sort.Strings(vaults)
+	sort.Slice(registry, func(i, j int) bool { return registry[i].ID < registry[j].ID })
 
-	return encodeMetadata(Metadata{Chunks: chunks, Vaults: vaults, Revisions: revisions})
+	return encodeMetadata(Metadata{Chunks: chunks, Vaults: vaults, Revisions: revisions, VaultRegistry: registry})
 }
 
 // Metadata is the bookkeeping a snapshot captures: which chunks exist and which
@@ -327,6 +519,22 @@ type Metadata struct {
 	Chunks    []Chunk               `json:"chunks"`
 	Vaults    []string              `json:"vaults"`
 	Revisions map[string][]Revision `json:"revisions"`
+	// VaultRegistry carries what the operator set in the console (names,
+	// retired flags, minting times) so a restore keeps a named vault named.
+	// Documents from before the registry simply lack the key, and their
+	// vaults import nameless, which is what they were.
+	VaultRegistry []VaultRecord `json:"vault_registry,omitempty"`
+}
+
+// VaultRecord is the registry row as a snapshot captures it: only the facts
+// an operator (or the minting) established. The counted halves of VaultInfo —
+// revision counts, live bytes — are re-derived from the revisions a snapshot
+// already carries, so they are not stored twice and cannot drift.
+type VaultRecord struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"created_at"`
+	Archived  bool   `json:"archived,omitempty"`
 }
 
 // encodeMetadata renders the document with a stable field order and sorted keys,

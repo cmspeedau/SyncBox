@@ -123,6 +123,7 @@ func serve(args []string, stdout io.Writer) error {
 
 	issuer := auth.NewIssuer(cfg.TokenSecret, cfg.TokenTTL)
 	srv := api.New(st, backups, issuer, cfg.Password)
+	srv.SetVersion(version)
 	if cfg.RatePerSecond > 0 {
 		srv.SetRateLimit(cfg.RatePerSecond, cfg.RateBurst)
 		log.Printf("throttling each address to %.1f requests/s (burst %d)", cfg.RatePerSecond, cfg.RateBurst)

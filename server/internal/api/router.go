@@ -52,6 +52,7 @@ type Server struct {
 	backups  *backup.Manager
 	issuer   *auth.Issuer
 	password string
+	version  string
 	hub      *hub
 	limiter  *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
 	now      func() time.Time
@@ -78,6 +79,14 @@ func (s *Server) SetRateLimit(rate float64, burst int) {
 	s.limiter = ratelimit.New(rate, burst)
 }
 
+// SetVersion tells the server its own release string, so the root name-card
+// can answer "what is this" with more than a guess. It is a setter for the
+// same reason the limiter is: the stamp belongs to the build, not to what a
+// server is built over.
+func (s *Server) SetVersion(version string) {
+	s.version = version
+}
+
 // Routes builds the handler tree.
 //
 // Health is the only route that needs no token: a reverse proxy and a container
@@ -87,6 +96,12 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/token", s.handleToken)
+
+	// The root answers instead of 404-ing: a name-card for scripts today,
+	// the console's front door as M10 grows it. {$} pins it to exactly "/":
+	// a bare "/" pattern is the mux's catch-all and would hand this card —
+	// or a 405 — to every unmatched path on the server.
+	mux.HandleFunc("GET /{$}", s.handleIndex)
 
 	// Everything below the vault prefix is authenticated.
 	mux.Handle("GET /api/v1/vaults/{vaultID}/revisions", s.requireToken(http.HandlerFunc(s.handleListRevisions)))
@@ -102,6 +117,11 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupCreate)))
 	mux.Handle("POST /admin/backups/{id}/verify", s.requireToken(http.HandlerFunc(s.handleBackupVerify)))
 	mux.Handle("POST /admin/backups/{id}/restore", s.requireToken(http.HandlerFunc(s.handleBackupRestore)))
+
+	mux.Handle("GET /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsList)))
+	mux.Handle("POST /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsCreate)))
+	mux.Handle("PATCH /admin/vaults/{id}", s.requireToken(http.HandlerFunc(s.handleAdminVaultsRename)))
+	mux.Handle("POST /admin/vaults/{id}/archive", s.requireToken(http.HandlerFunc(s.handleAdminVaultsArchive)))
 
 	var handler http.Handler = mux
 	handler = s.limit(handler)
