@@ -147,12 +147,22 @@ function renderStats(health) {
   );
 }
 
+// The folder a client will use. The server stores it relative to each client's
+// home ("Syncbox/Photos"); a `~`-prefixed or absolute value is used as typed.
+// An empty location means the operator left it to each client, so the plain
+// default is shown — and the field is editable on the card either way.
+function resolvedFolder(location) {
+  if (!location) return "~/Syncbox";
+  if (location.startsWith("~") || location.startsWith("/")) return location;
+  return "~/" + location;
+}
+
 function pairingCommand(vault) {
   return [
     "syncbox sync once",
     "  --server " + location.origin,
     "  --vault-id " + vault.id,
-    "  --folder ~/Syncbox",
+    "  --folder " + resolvedFolder(vault.location),
     "  --password <server password>",
   ].join(" \\\n");
 }
@@ -173,6 +183,7 @@ function vaultCard(vault) {
 
   card.appendChild(definitionList([
     ["Vault id", vault.id],
+    ["Folder", resolvedFolder(vault.location)],
     ["Revisions", String(vault.revisions)],
     ["Live files", String(vault.live_files)],
     ["Live bytes", fmtBytes(vault.bytes)],
@@ -222,6 +233,22 @@ function vaultCard(vault) {
     refresh();
   });
 
+  const locate = document.createElement("button");
+  locate.type = "button";
+  locate.textContent = "Set folder";
+  locate.addEventListener("click", async () => {
+    const current = vault.location || "";
+    const location = window.prompt(
+      "Folder for this vault, relative to each client's home\n" +
+        "(for example Syncbox/Photos; ~/Photos or /srv/photos are used as typed; empty means clients choose)",
+      current);
+    if (location === null) return;
+    const response = await api("PATCH", "/admin/vaults/" + encodeURIComponent(vault.id),
+      { location: location.trim() });
+    if (!response.ok) $("vault-error").textContent = await reason(response);
+    refresh();
+  });
+
   const retire = document.createElement("button");
   retire.type = "button";
   retire.textContent = vault.archived ? "Restore" : "Archive";
@@ -232,7 +259,7 @@ function vaultCard(vault) {
     refresh();
   });
 
-  actions.append(rename, retire);
+  actions.append(rename, locate, retire);
   card.appendChild(actions);
   return card;
 }
@@ -248,12 +275,14 @@ $("create-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   $("vault-error").textContent = "";
   const name = $("vault-name").value.trim();
-  const response = await api("POST", "/admin/vaults", { name });
+  const location = $("vault-location").value.trim();
+  const response = await api("POST", "/admin/vaults", location ? { name, location } : { name });
   if (!response.ok) {
     $("vault-error").textContent = await reason(response);
     return;
   }
   $("vault-name").value = "";
+  $("vault-location").value = "";
   refresh();
 });
 

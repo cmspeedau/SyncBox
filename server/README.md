@@ -127,6 +127,8 @@ The surface, all under a bearer header:
 | `GET /api/v1/vaults/{id}/events` | long-poll-style wakeups when a vault changes |
 | `POST /api/v1/vaults/{id}/chunks/exists` | "which of these chunk IDs do you already have" — dedup before upload |
 | `HEAD/GET/PUT /api/v1/vaults/{id}/chunks/{id}` | presence check, download, upload |
+| `GET /vaults` | the vault registry in client shape (id, name, location, archived) |
+| `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create, rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots; take one now |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 

@@ -3,14 +3,16 @@
 //! JSON. Keeping the mapping in one pure module means it is unit-testable with no
 //! window (see the tests at the bottom).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use syncbox_agent::{AgentStatus, Snapshot, SyncEvent, SyncState};
+use syncbox_agent::{AgentStatus, SyncEvent, SyncState};
 use syncbox_sync::SyncReport;
 
+use crate::state::Session;
+
 /// Vault settings as the frontend submits them (`camelCase`), turned into the
-/// agent's [`Config`] plus the password it needs to unlock.
+/// durable [`Session`] plus the password it needs to unlock.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VaultSettings {
@@ -20,24 +22,62 @@ pub struct VaultSettings {
     pub vault_id: String,
     /// Directory holding `vault.json`.
     pub vault_dir: String,
-    /// The plaintext folder kept in sync.
-    pub folder: String,
+    /// The plaintext folders kept in sync. A vault can live in as many as the
+    /// user wants; blank rows (an empty input) are dropped rather than opened.
+    pub folders: Vec<String>,
     /// Vault password (never persisted; only used to unlock this session).
     pub password: String,
 }
 
 impl VaultSettings {
-    /// Splits into the durable [`Config`] and the (transient) password.
-    pub fn into_parts(self) -> (syncbox_agent::Config, String) {
-        let config = syncbox_agent::Config {
+    /// Splits into the durable [`Session`] and the (transient) password. An
+    /// empty or whitespace-only folder is dropped, so "Add folder" then leaving
+    /// it blank is harmless.
+    pub fn into_parts(self) -> (Session, String) {
+        let folders = self
+            .folders
+            .into_iter()
+            .map(|folder| PathBuf::from(folder.trim()))
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .collect();
+        let session = Session {
             server: self.server,
             vault_id: self.vault_id,
             vault_dir: PathBuf::from(self.vault_dir),
-            folder: PathBuf::from(self.folder),
-            index: None,
+            folders,
         };
-        (config, self.password)
+        (session, self.password)
     }
+}
+
+/// Resolves a server-side location against a client's home directory, as the
+/// desktop will use it. `None` home (no `$HOME`) leaves a relative location
+/// unresolved. An empty location means the operator left the choice to each
+/// client, so there is no default folder to offer.
+///
+/// - `Syncbox/Photos` → `<home>/Syncbox/Photos`
+/// - `~/Photos` → `<home>/Photos`
+/// - `/srv/photos` → used as typed
+#[must_use]
+pub fn resolve_location(location: &str, home: Option<&Path>) -> Option<PathBuf> {
+    let location = location.trim();
+    if location.is_empty() {
+        return None;
+    }
+    if let Some(rest) = location.strip_prefix('~') {
+        let home = home?;
+        let rest = rest.strip_prefix('/').unwrap_or(rest);
+        return Some(if rest.is_empty() {
+            home.to_path_buf()
+        } else {
+            home.join(rest)
+        });
+    }
+    let path = Path::new(location);
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    home.map(|home| home.join(path))
 }
 
 /// One entry of the server's vault registry, as `list_vaults` returns it and
@@ -50,29 +90,57 @@ pub struct VaultChoice {
     pub id: String,
     /// The operator's label on the server; empty while unnamed.
     pub name: String,
+    /// Where the operator said the vault's files land, as stored on the server.
+    pub location: String,
+    /// `location` resolved against this client's home, ready to prefill the
+    /// folders editor; `null` when the operator left the choice to the client.
+    pub default_folder: Option<String>,
     /// Retired on the server; the picker hides these rather than trusting
     /// the human to read a badge.
     pub archived: bool,
 }
 
-/// The tray/status line the frontend renders.
+/// The tray/status line the frontend renders. A vault can live in many folders,
+/// so the top-line numbers are the aggregate and `folders` carries each row.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    /// `"locked"`, `"idle"`, `"syncing"`, or `"error"`.
+    /// `"locked"`, `"idle"`, `"syncing"`, or `"error"` — the worst across folders.
     pub state: &'static str,
     /// Whether keys are in hand (a worker exists).
     pub unlocked: bool,
     /// The vault id, when unlocked.
     pub vault_id: Option<String>,
-    /// Unix seconds of the last successful pass.
+    /// Unix seconds of the last successful pass across folders.
     pub last_sync_unix: Option<i64>,
-    /// Why the last pass failed, if it did.
+    /// Why the last pass failed, if any folder's did.
     pub last_error: Option<String>,
-    /// How many passes have run (liveness).
+    /// The most passes any one folder has run (liveness).
     pub passes: u32,
-    /// What the last pass did.
-    pub last_report: Option<Report>,
+    /// One entry per synced folder, in the order they were unlocked.
+    pub folders: Vec<FolderStatus>,
+}
+
+/// One synced folder's line in [`Status`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderStatus {
+    /// The plaintext folder this copy lives in.
+    pub folder: String,
+    /// `"idle"`, `"syncing"`, or `"error"`.
+    pub state: &'static str,
+    /// Unix seconds of this folder's last successful pass.
+    pub last_sync_unix: Option<i64>,
+    /// Why this folder's last pass failed, if it did.
+    pub last_error: Option<String>,
+}
+
+/// One folder's live snapshot, paired with its path for [`status`].
+pub struct FolderSnapshot {
+    /// The plaintext folder this snapshot came from.
+    pub folder: String,
+    /// The agent status behind that folder's worker.
+    pub status: AgentStatus,
 }
 
 /// A [`SyncReport`] as JSON (also embedded in activity rows).
@@ -101,6 +169,8 @@ pub struct Report {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Activity {
+    /// The plaintext folder the pass ran in.
+    pub folder: String,
     /// `"done"` or `"failed"`.
     pub kind: &'static str,
     /// Unix seconds it happened.
@@ -109,45 +179,6 @@ pub struct Activity {
     pub error: Option<String>,
     /// The pass outcome, for a done row.
     pub report: Option<Report>,
-}
-
-/// A snapshot row for the Backups panel.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Backup {
-    /// Snapshot id.
-    pub id: String,
-    /// Creation time (RFC 3339 as the server writes it).
-    pub created_at: String,
-    /// Chunks the snapshot captured.
-    pub chunk_count: usize,
-    /// Total bytes across those chunks.
-    pub chunk_bytes: i64,
-}
-
-/// Result of listing backups, distinguishing "the server has none configured"
-/// (a `501`) from a real failure — the panel renders them differently.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BackupResult {
-    /// The server listed its snapshots.
-    Listed(Vec<Backup>),
-    /// No backup target is configured (HTTP 501).
-    NotConfigured,
-    /// Some other error, with its message.
-    Error(String),
-}
-
-/// Result of asking for a snapshot now.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BackupAction {
-    /// A snapshot was taken; here it is.
-    Taken(Backup),
-    /// No backup target is configured (HTTP 501).
-    NotConfigured,
-    /// Some other error, with its message.
-    Error(String),
 }
 
 /// The locked state, shown when no session exists yet.
@@ -160,37 +191,74 @@ pub fn locked() -> Status {
         last_sync_unix: None,
         last_error: None,
         passes: 0,
-        last_report: None,
+        folders: Vec::new(),
     }
 }
 
-/// Maps a live status snapshot to its JSON shape.
+/// Maps the live snapshots to the JSON shape. The aggregate is deliberately
+/// pessimistic: one folder in error makes the whole vault read "error", one
+/// folder mid-pass reads "syncing", and only all-idle reads "idle" — a syncing
+/// folder is not something to hide behind a quiet sibling.
 #[must_use]
-pub fn status(snapshot: &AgentStatus, vault_id: Option<String>) -> Status {
-    Status {
-        state: state_str(snapshot.state),
-        unlocked: snapshot.state != SyncState::Locked,
-        vault_id,
-        last_sync_unix: snapshot.last_sync_unix,
-        last_error: snapshot.last_error.clone(),
-        passes: snapshot.passes,
-        last_report: snapshot.last_report.as_ref().map(map_report),
-    }
-}
-
-/// Maps the activity feed, oldest first (the frontend may reverse it).
-#[must_use]
-pub fn activity(events: &[SyncEvent]) -> Vec<Activity> {
-    events
+pub fn status(vault_id: Option<String>, folders: &[FolderSnapshot]) -> Status {
+    let state = if folders
         .iter()
-        .map(|event| match event {
+        .any(|folder| folder.status.state == SyncState::Error)
+    {
+        "error"
+    } else if folders
+        .iter()
+        .any(|folder| folder.status.state == SyncState::Syncing)
+    {
+        "syncing"
+    } else {
+        "idle"
+    };
+    Status {
+        state,
+        unlocked: !folders.is_empty(),
+        vault_id,
+        last_sync_unix: folders
+            .iter()
+            .filter_map(|folder| folder.status.last_sync_unix)
+            .max(),
+        last_error: folders
+            .iter()
+            .find_map(|folder| folder.status.last_error.clone()),
+        passes: folders
+            .iter()
+            .map(|folder| folder.status.passes)
+            .max()
+            .unwrap_or(0),
+        folders: folders
+            .iter()
+            .map(|folder| FolderStatus {
+                folder: folder.folder.clone(),
+                state: state_str(folder.status.state),
+                last_sync_unix: folder.status.last_sync_unix,
+                last_error: folder.status.last_error.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Maps the activity feed, oldest first (the frontend may reverse it). Each
+/// event carries the folder its pass ran in, so a feed from many folders reads
+/// straight.
+#[must_use]
+pub fn activity(entries: &[(String, SyncEvent)]) -> Vec<Activity> {
+    entries
+        .iter()
+        .map(|(folder, event)| match event {
             SyncEvent::Done { report, at_unix } => Activity {
+                folder: folder.clone(),
                 kind: "done",
                 at_unix: *at_unix,
                 error: None,
                 report: Some(map_report(report)),
             },
             SyncEvent::Failed { error, at_unix } => Activity {
+                folder: folder.clone(),
                 kind: "failed",
                 at_unix: *at_unix,
                 error: Some(error.clone()),
@@ -198,17 +266,6 @@ pub fn activity(events: &[SyncEvent]) -> Vec<Activity> {
             },
         })
         .collect()
-}
-
-/// Maps one server snapshot to a row.
-#[must_use]
-pub fn backup(snapshot: &Snapshot) -> Backup {
-    Backup {
-        id: snapshot.id.clone(),
-        created_at: snapshot.created_at.clone(),
-        chunk_count: snapshot.manifest.chunk_count(),
-        chunk_bytes: snapshot.manifest.chunk_bytes,
-    }
 }
 
 fn map_report(report: &SyncReport) -> Report {
@@ -261,13 +318,66 @@ mod tests {
             last_report: Some(quiet_report()),
             ..Default::default()
         };
-        let json = serde_json::to_value(status(&snapshot, Some("vault-1".into()))).unwrap();
+        let folders = vec![FolderSnapshot {
+            folder: "/home/me/Syncbox".into(),
+            status: snapshot,
+        }];
+        let json = serde_json::to_value(status(Some("vault-1".into()), &folders)).unwrap();
         assert_eq!(json["state"], "idle");
         assert_eq!(json["unlocked"], true);
         assert_eq!(json["vaultId"], "vault-1");
         assert_eq!(json["passes"], 4);
-        assert_eq!(json["lastReport"]["uploaded"], 2);
-        assert_eq!(json["lastReport"]["quiet"], false);
+        assert_eq!(json["folders"][0]["folder"], "/home/me/Syncbox");
+        assert_eq!(json["folders"][0]["state"], "idle");
+        // The IPC status deliberately stops at liveness — what the last pass
+        // did belongs to the activity feed, not to a panel of its own.
+        assert!(json.get("lastReport").is_none());
+    }
+
+    #[test]
+    fn the_aggregate_takes_the_worst_folder() {
+        let idle = AgentStatus {
+            state: SyncState::Idle,
+            last_sync_unix: Some(100),
+            passes: 3,
+            ..Default::default()
+        };
+        let syncing = AgentStatus {
+            state: SyncState::Syncing,
+            last_sync_unix: Some(200),
+            passes: 5,
+            ..Default::default()
+        };
+        let errored = AgentStatus {
+            state: SyncState::Error,
+            last_sync_unix: None,
+            passes: 5,
+            last_error: Some("server exploded".into()),
+            ..Default::default()
+        };
+        let folders = vec![
+            FolderSnapshot {
+                folder: "/a".into(),
+                status: idle,
+            },
+            FolderSnapshot {
+                folder: "/b".into(),
+                status: syncing,
+            },
+            FolderSnapshot {
+                folder: "/c".into(),
+                status: errored,
+            },
+        ];
+        let mapped = status(Some("v".into()), &folders);
+        assert_eq!(mapped.state, "error", "one error is the whole vault's");
+        assert_eq!(mapped.last_sync_unix, Some(200), "the newest pass");
+        assert_eq!(mapped.last_error.as_deref(), Some("server exploded"));
+        assert_eq!(mapped.passes, 5);
+        assert_eq!(mapped.folders.len(), 3);
+        // The error is the reported one even though another folder synced later:
+        // a failure is never hidden behind a quiet sibling.
+        assert_eq!(mapped.folders[2].state, "error");
     }
 
     #[test]
@@ -276,47 +386,81 @@ mod tests {
         assert_eq!(json["state"], "locked");
         assert_eq!(json["unlocked"], false);
         assert!(json["vaultId"].is_null());
+        assert_eq!(json["folders"].as_array().unwrap().len(), 0);
     }
 
     #[test]
     fn activity_rows_carry_done_and_failed_shapes() {
-        let events = vec![
-            SyncEvent::Done {
-                report: quiet_report(),
-                at_unix: 10,
-            },
-            SyncEvent::Failed {
-                error: "boom".into(),
-                at_unix: 20,
-            },
+        let entries = vec![
+            (
+                "/home/me/Syncbox".to_string(),
+                SyncEvent::Done {
+                    report: quiet_report(),
+                    at_unix: 10,
+                },
+            ),
+            (
+                "/home/me/Backup".to_string(),
+                SyncEvent::Failed {
+                    error: "boom".into(),
+                    at_unix: 20,
+                },
+            ),
         ];
-        let rows = activity(&events);
+        let rows = activity(&entries);
         assert_eq!(rows[0].kind, "done");
+        assert_eq!(rows[0].folder, "/home/me/Syncbox");
         assert!(rows[0].report.is_some());
         assert_eq!(rows[1].kind, "failed");
+        assert_eq!(rows[1].folder, "/home/me/Backup");
         assert_eq!(rows[1].error.as_deref(), Some("boom"));
     }
 
     #[test]
-    fn settings_map_to_an_agent_config() {
+    fn a_location_resolves_against_home_or_stands_alone() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            resolve_location("Syncbox/Photos", Some(home)),
+            Some(PathBuf::from("/home/me/Syncbox/Photos"))
+        );
+        assert_eq!(
+            resolve_location("~/Photos", Some(home)),
+            Some(PathBuf::from("/home/me/Photos"))
+        );
+        assert_eq!(
+            resolve_location("~", Some(home)),
+            Some(PathBuf::from("/home/me"))
+        );
+        assert_eq!(
+            resolve_location("/srv/photos", Some(home)),
+            Some(PathBuf::from("/srv/photos")),
+            "an absolute location is used as typed"
+        );
+        assert_eq!(
+            resolve_location("  ", Some(home)),
+            None,
+            "empty means no default"
+        );
+        assert_eq!(resolve_location("Photos", None), None, "no home, no guess");
+    }
+
+    #[test]
+    fn settings_map_to_a_session_and_drop_blank_folders() {
         let settings = VaultSettings {
             server: "https://srv".into(),
             vault_id: "v".into(),
             vault_dir: "/vault".into(),
-            folder: "/files".into(),
+            folders: vec!["/files".into(), "  ".into(), "/backup".into()],
             password: "pw".into(),
         };
-        let (config, password) = settings.into_parts();
-        assert_eq!(config.index_path(), PathBuf::from("/vault/index.db"));
+        let (session, password) = settings.into_parts();
+        assert_eq!(session.server, "https://srv");
+        assert_eq!(session.vault_id, "v");
+        assert_eq!(session.vault_dir, PathBuf::from("/vault"));
+        assert_eq!(
+            session.folders,
+            vec![PathBuf::from("/files"), PathBuf::from("/backup")]
+        );
         assert_eq!(password, "pw");
-    }
-
-    #[test]
-    fn backup_result_distinguishes_not_configured() {
-        let json = serde_json::to_value(BackupResult::NotConfigured).unwrap();
-        assert_eq!(json["kind"], "notConfigured");
-        let json = serde_json::to_value(BackupResult::Error("nope".into())).unwrap();
-        assert_eq!(json["kind"], "error");
-        assert_eq!(json["data"], "nope");
     }
 }

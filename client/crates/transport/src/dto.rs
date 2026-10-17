@@ -54,6 +54,12 @@ pub struct ServerVault {
     pub id: String,
     /// The operator's label; empty while the vault is unnamed.
     pub name: String,
+    /// Where the vault's files land on a client, relative to its home
+    /// directory (`Syncbox/Photos`); empty when the operator left it to each
+    /// client. A `~`-prefixed or absolute value is used as typed. Older
+    /// servers predate the field and send nothing, which reads as empty.
+    #[serde(default)]
+    pub location: String,
     /// Retired on the server. Its history remains readable, but nothing new
     /// should be pointed at it, so name-based selection refuses these.
     pub archived: bool,

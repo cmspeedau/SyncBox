@@ -144,6 +144,50 @@ impl Config {
     }
 }
 
+/// One plaintext folder a session keeps in sync, and where its local index
+/// lives. One vault can be kept in as many folders as the user wants: each is
+/// its own copy, converging with the others through the server exactly as two
+/// machines would, so each needs its own index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    /// The plaintext folder kept in sync with the vault.
+    pub path: PathBuf,
+    /// The SQLite index for this folder's copy.
+    pub index: PathBuf,
+}
+
+/// The index file a folder's copy uses, beside the vault header. Two folders
+/// get two databases, and the same folder always resolves to the same one, so
+/// adding a folder and reopening the app picks the same replica back up. The
+/// name is the folder path flattened to a filename plus a small checksum, so
+/// long paths stay distinct without needing a directory tree of their own.
+#[must_use]
+pub fn index_path_for(vault_dir: &Path, folder: &Path) -> PathBuf {
+    let raw = folder.to_string_lossy();
+    let mut name = String::with_capacity(raw.len().min(80) + 16);
+    name.push_str("index-");
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            name.push(ch);
+        } else if !name.ends_with('-') {
+            name.push('-');
+        }
+        if name.len() >= 80 {
+            break;
+        }
+    }
+    // FNV-1a over the exact path bytes: stable across runs and versions, and
+    // cheap. It only has to separate folder names that flattened to the same
+    // prefix, not resist an attacker.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in raw.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    name.push_str(&format!("-{hash:016x}.db"));
+    vault_dir.join(name)
+}
+
 /// Anything that can go wrong assembling or running a session.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentError {
@@ -321,6 +365,37 @@ impl Agent<SqliteIndex> {
         let index = SqliteIndex::open(config.index_path())?;
         let vault = Vault::new(keys, config.vault_id.clone(), config.folder.clone())?;
         Ok(Self::from_engine(Engine::new(index, vault)))
+    }
+
+    /// Unlocks `vault_dir` once, then opens one independent session per folder.
+    ///
+    /// A vault can live in as many folders as the user wants; each folder is its
+    /// own copy with its own index, converging with the others through the server
+    /// exactly as two machines would. Unlocking once means a vault in five
+    /// folders pays Argon2id once, not five times.
+    ///
+    /// Does not contact the server, as [`Agent::unlock`].
+    ///
+    /// # Errors
+    ///
+    /// [`AgentError::Vault`] for a wrong password or missing header;
+    /// [`AgentError::Index`] if a folder's database cannot be opened. A failure
+    /// part-way through leaves the earlier sessions dropped, so no key outlives
+    /// the call on the error path.
+    pub fn unlock_folders(
+        vault_dir: &Path,
+        vault_id: &str,
+        password: &str,
+        folders: &[Folder],
+    ) -> Result<Vec<Self>> {
+        let keys = syncbox_vault::unlock(vault_dir, password)?;
+        let mut sessions = Vec::with_capacity(folders.len());
+        for folder in folders {
+            let index = SqliteIndex::open(&folder.index)?;
+            let vault = Vault::new(keys.clone(), vault_id.to_owned(), folder.path.clone())?;
+            sessions.push(Self::from_engine(Engine::new(index, vault)));
+        }
+        Ok(sessions)
     }
 }
 
@@ -528,6 +603,68 @@ mod tests {
             ..override_config
         };
         assert_eq!(defaulting.index_path(), PathBuf::from("/vault/index.db"));
+    }
+
+    #[test]
+    fn a_folder_names_one_stable_index() {
+        let vault_dir = Path::new("/vaults/ABCDEFGH");
+        let first = index_path_for(vault_dir, Path::new("/home/me/Syncbox"));
+        let again = index_path_for(vault_dir, Path::new("/home/me/Syncbox"));
+        assert_eq!(first, again, "the same folder always names the same index");
+        assert_eq!(
+            first.parent(),
+            Some(vault_dir),
+            "indexes sit beside the header"
+        );
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("index-") && name.ends_with(".db"),
+            "{name}"
+        );
+
+        let other = index_path_for(vault_dir, Path::new("/home/me/Photos"));
+        assert_ne!(first, other, "different folders get different indexes");
+
+        // Two paths that flatten to the same prefix stay distinct, because the
+        // checksum is over the whole path.
+        let long = "a".repeat(120);
+        let deep_a = index_path_for(vault_dir, Path::new(&format!("/a/b/c/{long}")));
+        let deep_b = index_path_for(vault_dir, Path::new(&format!("/a/b/c/{long}2")));
+        assert_ne!(deep_a, deep_b);
+    }
+
+    #[test]
+    fn one_vault_unlocks_into_many_folders_from_one_password() {
+        let home = tempfile::tempdir().unwrap();
+        let params = syncbox_crypto::kdf::Params::default();
+        syncbox_vault::create(home.path(), "hunter2", &params).expect("create");
+
+        let folders = vec![
+            Folder {
+                path: home.path().join("Syncbox"),
+                index: index_path_for(home.path(), &home.path().join("Syncbox")),
+            },
+            Folder {
+                path: home.path().join("Backup"),
+                index: index_path_for(home.path(), &home.path().join("Backup")),
+            },
+        ];
+
+        let sessions =
+            Agent::unlock_folders(home.path(), "vault-1", "hunter2", &folders).expect("unlock");
+        assert_eq!(sessions.len(), folders.len());
+        for (session, folder) in sessions.iter().zip(&folders) {
+            assert_eq!(
+                session.folder(),
+                folder.path,
+                "each session owns its folder"
+            );
+            assert_eq!(session.vault_id(), "vault-1");
+            assert_eq!(session.state(), SyncState::Idle);
+        }
+
+        // One wrong password is refused before any session opens.
+        assert!(Agent::unlock_folders(home.path(), "vault-1", "wrong", &folders).is_err());
     }
 
     fn scripted(replies: Vec<(u16, String)>) -> FakeServer {

@@ -660,6 +660,9 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	if len(created.ID) != 8 || created.Name != "Photos" || created.CreatedAt == 0 {
 		t.Fatalf("created = %+v, want a minted 8-char id, name Photos, real timestamp", created)
 	}
+	if created.Location != "Photos" {
+		t.Errorf("a vault with no location given should default to its name, got %q", created.Location)
+	}
 
 	// A name that would render as a blank row is refused on the way in.
 	for _, bad := range []string{`{"name":"  "}`, `{"name":""}`} {
@@ -713,6 +716,39 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 		t.Errorf("rename unknown id = %q, want not_found", code)
 	}
 
+	// Location: set on the vault's card, refused when another live vault
+	// already claims the folder, and clearable (empty means "clients choose").
+	body, _ = json.Marshal(map[string]string{"location": "Syncbox/Family Photos"})
+	response = c.do(http.MethodPatch, "/admin/vaults/"+created.ID, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("set location = %s, want 200", response.Status)
+	}
+	secondBody, _ := json.Marshal(map[string]string{"name": "Work"})
+	response = c.do(http.MethodPost, "/admin/vaults", secondBody)
+	var second store.VaultInfo
+	c.mustDecode(response, &second)
+	body, _ = json.Marshal(map[string]string{"location": "Syncbox/Family Photos"})
+	response = c.do(http.MethodPatch, "/admin/vaults/"+second.ID, body)
+	code, _ = c.errorBodyOf(response)
+	response.Body.Close()
+	if code != "location_taken" {
+		t.Errorf("claiming a live vault's folder = %q, want location_taken", code)
+	}
+	body, _ = json.Marshal(map[string]string{"location": "  "})
+	response = c.do(http.MethodPatch, "/admin/vaults/"+second.ID, body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Errorf("clearing a location = %s, want 200", response.Status)
+	}
+	body, _ = json.Marshal(map[string]string{})
+	response = c.do(http.MethodPatch, "/admin/vaults/"+second.ID, body)
+	code, _ = c.errorBodyOf(response)
+	response.Body.Close()
+	if code != "invalid_request" {
+		t.Errorf("patch with neither name nor location = %q, want invalid_request", code)
+	}
+
 	// Archive, and its 404.
 	body, _ = json.Marshal(map[string]bool{"archived": true})
 	response = c.do(http.MethodPost, "/admin/vaults/GRANDMA1/archive", body)
@@ -732,11 +768,15 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	for _, info := range vaults {
 		byID[info.ID] = info
 	}
-	if len(byID) != 2 {
-		t.Fatalf("registry lists %+v, want two vaults", vaults)
+	if len(byID) != 3 {
+		t.Fatalf("registry lists %+v, want three vaults", vaults)
 	}
-	if renamed := byID[created.ID]; renamed.Name != "Family Photos" || renamed.Revisions != 0 {
+	if renamed := byID[created.ID]; renamed.Name != "Family Photos" ||
+		renamed.Location != "Syncbox/Family Photos" || renamed.Revisions != 0 {
 		t.Errorf("renamed vault reads %+v", renamed)
+	}
+	if work := byID[second.ID]; work.Name != "Work" || work.Location != "" {
+		t.Errorf("vault %s reads %+v, want name Work and a cleared location", second.ID, work)
 	}
 	grandma, ok := byID["GRANDMA1"]
 	if !ok {
@@ -785,8 +825,9 @@ func TestClientsSeeVaultsWithoutBookkeeping(t *testing.T) {
 	if len(byID) != 2 {
 		t.Fatalf("client list = %+v, want the two registered vaults", decoded.Vaults)
 	}
-	if photos := byID[created.ID]; photos["name"] != "Photos" || photos["archived"] != false {
-		t.Errorf("Photos reads %+v", photos)
+	if photos := byID[created.ID]; photos["name"] != "Photos" || photos["archived"] != false ||
+		photos["location"] != "Photos" {
+		t.Errorf("Photos reads %+v, want name Photos at its defaulted location", photos)
 	}
 	if retired := byID[retiring.ID]; retired["archived"] != true {
 		t.Errorf("retired vault reads %+v, want archived true", retired)

@@ -274,14 +274,14 @@ func TestConformVaultRegistry(t *testing.T) {
 	runPerStore(t, func(t *testing.T, st Store) {
 		ctx := context.Background()
 
-		id, err := st.CreateVault(ctx, "Photos")
+		id, err := st.CreateVault(ctx, "Photos", "")
 		if err != nil {
 			t.Fatalf("CreateVault: %v", err)
 		}
 		if len(id) != 8 {
 			t.Errorf("minted id %q, want eight base32 characters", id)
 		}
-		second, err := st.CreateVault(ctx, "Work")
+		second, err := st.CreateVault(ctx, "Work", "Syncbox/Work")
 		if err != nil || second == id {
 			t.Errorf("second CreateVault = %q, %v; want a different id", second, err)
 		}
@@ -297,6 +297,16 @@ func TestConformVaultRegistry(t *testing.T) {
 			if info.Revisions != 0 || info.LiveFiles != 0 || info.Bytes != 0 {
 				t.Errorf("vault %s reports bookkeeping for a vault nothing touched: %+v", info.ID, info)
 			}
+		}
+		byID := map[string]VaultInfo{}
+		for _, info := range vaults {
+			byID[info.ID] = info
+		}
+		if byID[id].Location != "Photos" {
+			t.Errorf("an empty location should default to the name, got %q", byID[id].Location)
+		}
+		if byID[second].Location != "Syncbox/Work" {
+			t.Errorf("explicit location = %q, want Syncbox/Work", byID[second].Location)
 		}
 
 		// A commit into an unregistered vault enters the registry nameless,
@@ -342,6 +352,34 @@ func TestConformVaultRegistry(t *testing.T) {
 		}
 		if found.LastWriteAt == 0 {
 			t.Error("LastWriteAt is zero after commits")
+		}
+
+		// Locations (S3c): a vault may keep its own, take a free one, or be
+		// refused one a live vault already claims. Unknown ids 404.
+		if err := st.SetVaultLocation(ctx, id, "Photos"); err != nil {
+			t.Errorf("re-setting a vault's own location = %v, want nil", err)
+		}
+		if err := st.SetVaultLocation(ctx, legacy, "Syncbox/Work"); !errors.Is(err, ErrLocationTaken) {
+			t.Errorf("taking a live vault's location = %v, want ErrLocationTaken", err)
+		}
+		if err := st.SetVaultLocation(ctx, legacy, "Grandma"); err != nil {
+			t.Errorf("SetVaultLocation on a commit-born vault: %v", err)
+		}
+		if err := st.SetVaultLocation(ctx, "NOSUCHVAULT", "x"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("locating an unknown vault = %v, want ErrNotFound", err)
+		}
+		// An archived vault no longer claims its folder, so it can be reused.
+		if err := st.SetVaultArchived(ctx, second, true); err != nil {
+			t.Fatalf("archiving the second vault: %v", err)
+		}
+		if err := st.SetVaultLocation(ctx, legacy, "Syncbox/Work"); err != nil {
+			t.Errorf("a retired vault should not hoard its folder: %v", err)
+		}
+		if err := st.SetVaultArchived(ctx, second, false); err != nil {
+			t.Fatalf("restoring the second vault: %v", err)
+		}
+		if err := st.SetVaultLocation(ctx, legacy, "Grandma"); err != nil {
+			t.Errorf("restoring the location for later assertions: %v", err)
 		}
 
 		// Operator facts are set on either kind of vault, and unknown ids

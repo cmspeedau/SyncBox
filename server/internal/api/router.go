@@ -124,7 +124,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("GET /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsList)))
 	mux.Handle("POST /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsCreate)))
-	mux.Handle("PATCH /admin/vaults/{id}", s.requireToken(http.HandlerFunc(s.handleAdminVaultsRename)))
+	mux.Handle("PATCH /admin/vaults/{id}", s.requireToken(http.HandlerFunc(s.handleAdminVaultsPatch)))
 	mux.Handle("POST /admin/vaults/{id}/archive", s.requireToken(http.HandlerFunc(s.handleAdminVaultsArchive)))
 
 	var handler http.Handler = mux
@@ -476,6 +476,8 @@ func writeErrorFrom(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
 	case errors.Is(err, store.ErrConflict):
 		writeError(w, http.StatusConflict, "conflict", err.Error())
+	case errors.Is(err, store.ErrLocationTaken):
+		writeError(w, http.StatusConflict, "location_taken", err.Error())
 	case errors.Is(err, store.ErrTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", err.Error())
 	case errors.Is(err, store.ErrBadChunkID):

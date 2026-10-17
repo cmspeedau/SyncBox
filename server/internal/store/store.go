@@ -38,6 +38,10 @@ var (
 	ErrTooLarge = errors.New("body too large")
 	// ErrBadChunkID means the id is not a well-formed content address.
 	ErrBadChunkID = errors.New("malformed chunk id")
+	// ErrLocationTaken means a live vault already claims the folder a vault is
+	// being pointed at. Two vaults sharing one folder would shred each other's
+	// index, so the second is refused rather than silently allowed.
+	ErrLocationTaken = errors.New("location already in use")
 )
 
 // Chunk is one stored object.
@@ -74,13 +78,15 @@ type Stats struct {
 }
 
 // VaultInfo is one row of the vault registry: everything the server can know
-// about a vault while holding no key. Name is metadata an operator typed;
-// the rest is bookkeeping counted from revisions. LiveFiles and Bytes count
-// only each file's newest revision when that revision is not a tombstone, so
-// a deleted-then-reuploaded file counts once and at its current size.
+// about a vault while holding no key. Name and Location are metadata an
+// operator typed; the rest is bookkeeping counted from revisions. LiveFiles and
+// Bytes count only each file's newest revision when that revision is not a
+// tombstone, so a deleted-then-reuploaded file counts once and at its current
+// size.
 type VaultInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
+	Location    string `json:"location"`
 	CreatedAt   int64  `json:"created_at"`
 	Archived    bool   `json:"archived"`
 	Revisions   int    `json:"revisions"`
@@ -119,13 +125,17 @@ type Store interface {
 	// is not yet required — commits still birth vaults implicitly, and the
 	// registry reports those too, nameless — until enforcement lands.
 	//
-	// CreateVault mints a fresh id and registers it under name.
-	CreateVault(ctx context.Context, name string) (string, error)
+	// CreateVault mints a fresh id and registers it under name, in location.
+	// An empty location means the vault's name is the default.
+	CreateVault(ctx context.Context, name, location string) (string, error)
 	// ListVaults returns every vault, registry-created or implied by stored
 	// revisions, with per-vault bookkeeping. Order is by creation, then id.
 	ListVaults(ctx context.Context) ([]VaultInfo, error)
 	// RenameVault sets an operator's name, or returns ErrNotFound.
 	RenameVault(ctx context.Context, id, name string) error
+	// SetVaultLocation points a vault at a folder, or returns ErrNotFound. It
+	// returns ErrLocationTaken if another live vault already claims it.
+	SetVaultLocation(ctx context.Context, id, location string) error
 	// SetVaultArchived flags a vault as retired, or returns ErrNotFound.
 	SetVaultArchived(ctx context.Context, id string, archived bool) error
 }
@@ -145,6 +155,7 @@ type Memory struct {
 // as opposed to the revision history kept beside it.
 type memoryVault struct {
 	name      string
+	location  string
 	createdAt int64
 	archived  bool
 }
@@ -327,10 +338,15 @@ func (m *Memory) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
-// CreateVault mints a fresh id and registers it under name.
-func (m *Memory) CreateVault(ctx context.Context, name string) (string, error) {
+// CreateVault mints a fresh id and registers it under name, in location. An
+// empty location defaults to the vault's name, and a location another live
+// vault already claims is refused.
+func (m *Memory) CreateVault(ctx context.Context, name, location string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("creating vault: %w", err)
+	}
+	if location == "" {
+		location = name
 	}
 	id, err := newVaultID()
 	if err != nil {
@@ -339,8 +355,29 @@ func (m *Memory) CreateVault(ctx context.Context, name string) (string, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.vaults[id] = &memoryVault{name: name, createdAt: m.now().Unix()}
+	if locationLiveInMemory(m.vaults, location, "") {
+		return "", fmt.Errorf("%w: %s", ErrLocationTaken, location)
+	}
+	m.vaults[id] = &memoryVault{name: name, location: location, createdAt: m.now().Unix()}
 	return id, nil
+}
+
+// locationLiveInMemory reports whether a live (unarchived) vault other than
+// skipID already claims location. An empty location is never a claim, so
+// commit-born vaults that were never pointed anywhere do not collide.
+func locationLiveInMemory(vaults map[string]*memoryVault, location, skipID string) bool {
+	if location == "" {
+		return false
+	}
+	for id, vault := range vaults {
+		if id == skipID || vault.archived {
+			continue
+		}
+		if vault.location == location {
+			return true
+		}
+	}
+	return false
 }
 
 // ListVaults returns every registered or revision-implied vault with its
@@ -368,6 +405,7 @@ func (m *Memory) ListVaults(ctx context.Context) ([]VaultInfo, error) {
 		info := VaultInfo{ID: id}
 		if registered, ok := m.vaults[id]; ok {
 			info.Name = registered.name
+			info.Location = registered.location
 			info.CreatedAt = registered.createdAt
 			info.Archived = registered.archived
 		}
@@ -421,6 +459,27 @@ func (m *Memory) RenameVault(ctx context.Context, id, name string) error {
 		return fmt.Errorf("%w: vault %s", ErrNotFound, id)
 	}
 	registered.name = name
+	return nil
+}
+
+// SetVaultLocation points a vault at a folder, refusing one another live vault
+// already claims.
+func (m *Memory) SetVaultLocation(ctx context.Context, id, location string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("locating vault %s: %w", id, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	registered, ok := m.vaults[id]
+	if !ok {
+		return fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	if locationLiveInMemory(m.vaults, location, id) {
+		return fmt.Errorf("%w: %s", ErrLocationTaken, location)
+	}
+	registered.location = location
 	return nil
 }
 
@@ -498,6 +557,7 @@ func (m *Memory) DumpMetadata(ctx context.Context) ([]byte, error) {
 		registry = append(registry, VaultRecord{
 			ID:        id,
 			Name:      registered.name,
+			Location:  registered.location,
 			CreatedAt: registered.createdAt,
 			Archived:  registered.archived,
 		})
@@ -520,9 +580,9 @@ type Metadata struct {
 	Vaults    []string              `json:"vaults"`
 	Revisions map[string][]Revision `json:"revisions"`
 	// VaultRegistry carries what the operator set in the console (names,
-	// retired flags, minting times) so a restore keeps a named vault named.
-	// Documents from before the registry simply lack the key, and their
-	// vaults import nameless, which is what they were.
+	// locations, retired flags, minting times) so a restore keeps a named
+	// vault named and pointed. Documents from before the registry simply lack
+	// the key, and their vaults import nameless, which is what they were.
 	VaultRegistry []VaultRecord `json:"vault_registry,omitempty"`
 }
 
@@ -533,6 +593,7 @@ type Metadata struct {
 type VaultRecord struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
+	Location  string `json:"location,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	Archived  bool   `json:"archived,omitempty"`
 }
