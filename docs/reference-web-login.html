@@ -11,18 +11,27 @@
   h1 { font-size: 1.05rem; font-weight: 600; }
   p.sub { color: var(--muted-foreground); font-size: 0.83rem; margin: 2px 0 14px; }
 
+  .demo { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .demo .lbl { font-size: .78rem; color: var(--muted-foreground); margin-right: 4px; }
+  .demo button { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 999px; padding: 5px 13px; font: 600 .78rem var(--font-sans); cursor: pointer; }
+  .demo button.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
   /* ===== mock window ===== */
   .app { border-radius: 12px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.18); border: 1px solid rgba(0,0,0,.15); height: 480px; display: flex; flex-direction: column; }
   .loginpage { flex: 1; background: linear-gradient(180deg, #0a86cc 0%, #05649c 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; position: relative; padding: 24px; }
   .mark { color: #fff; display: flex; flex-direction: column; align-items: center; gap: 10px; margin-bottom: 26px; }
   .mark .nm { font-size: 26px; font-weight: 600; letter-spacing: .5px; }
+  .view { display: flex; flex-direction: column; align-items: center; }
+  .cap { color: rgba(255,255,255,.85); font-size: 12px; margin-bottom: 16px; text-align: center; }
   .pw { width: 300px; border: 1px solid rgba(255,255,255,.55); border-radius: 22px; background: #fff; padding: 11px 16px; font: 13px var(--font-sans, ui-sans-serif, system-ui, sans-serif); color: #272833; outline: none; }
   .pw:focus { border-color: #fff; box-shadow: 0 0 0 3px rgba(255,255,255,.25); }
   .pw.err { border-color: #ffb3ab; }
+  .pw + .pw { margin-top: 12px; }
   .signin { width: 300px; margin-top: 12px; border: 0; border-radius: 22px; background: #fff; color: #006aa3; padding: 11px 16px; font: 600 13px var(--font-sans, ui-sans-serif, system-ui, sans-serif); cursor: pointer; box-shadow: 0 2px 8px rgba(0,40,70,.35); }
   .signin:hover { background: #f2f8fc; }
   .errmsg { min-height: 16px; margin-top: 10px; font-size: 12px; color: #ffd9d5; }
   .host { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 11px; color: rgba(255,255,255,.7); }
+  .hidden { display: none !important; }
 
   /* ===== specs ===== */
   .specbar { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
@@ -40,7 +49,13 @@
 <body>
 <div class="wrap">
   <h1>Syncbox — web login</h1>
-  <p class="sub">Blue screen, Syncbox name, one password field, Sign in. Submit with Enter or the button; empty password shows the error state. Design specs toggle below the mock.</p>
+  <p class="sub">Blue screen, Syncbox name, one password field, Sign in. On a server that has no password yet the same screen turns into first run: <i>Password</i>, <i>Confirm password</i>, <i>Confirm</i>. Switch the two states with the demo buttons. Design specs toggle below the mock.</p>
+
+  <div class="demo" id="demo">
+    <span class="lbl">demo:</span>
+    <button id="dSignin" class="on">Sign in</button>
+    <button id="dSetup">First run</button>
+  </div>
 
   <div class="app">
     <div class="loginpage">
@@ -48,9 +63,21 @@
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="11" cy="12" r="3.5"/><path d="M11 8.5V6.5M17 8v8"/></svg>
         <span class="nm">Syncbox</span>
       </div>
-      <input class="pw" id="pw" type="password" placeholder="Password" autocomplete="current-password">
-      <button class="signin" id="signin">Sign in</button>
-      <div class="errmsg" id="errmsg"></div>
+
+      <div class="view" id="viewSignin">
+        <input class="pw" id="pw" type="password" placeholder="Password" autocomplete="current-password">
+        <button class="signin" id="signin">Sign in</button>
+        <div class="errmsg" id="errmsg"></div>
+      </div>
+
+      <div class="view hidden" id="viewSetup">
+        <p class="cap">First run — set the server password</p>
+        <input class="pw" id="pw1" type="password" placeholder="Password" autocomplete="new-password">
+        <input class="pw" id="pw2" type="password" placeholder="Confirm password" autocomplete="new-password">
+        <button class="signin" id="confirmBtn">Confirm</button>
+        <div class="errmsg" id="errmsg2"></div>
+      </div>
+
       <div class="host">homebox</div>
     </div>
   </div>
@@ -71,13 +98,14 @@
     <h3>Layout</h3>
     <dl class="tok">
       <dt>composition</dt><dd>single centered column, vertically and horizontally centered; nothing else on screen but the server name bottom-center (11px, white 70%)</dd>
-      <dt>column width</dt><dd>300px for field and button; gap name → field 26px, field → button 12px</dd>
+      <dt>column width</dt><dd>300px for fields and button; gap name → first field 26px, between fields 12px, field → button 12px</dd>
       <dt>pills</dt><dd>radius 22px (same pill geometry as the Files UI); padding 11px 16px</dd>
+      <dt>first run</dt><dd>same screen + caption “First run — set the server password” (12px, white 85%); Password, Confirm password, white Confirm pill</dd>
     </dl>
     <h3>Type</h3>
     <dl class="tok">
       <dt>wordmark</dt><dd>26px / 600, letter-spacing .5px</dd>
-      <dt>field / button</dt><dd>13px; button 600 “Sign in”; placeholder “Password”</dd>
+      <dt>fields / buttons</dt><dd>13px; buttons 600 “Sign in” / “Confirm”</dd>
       <dt>error line</dt><dd>12px, sits under the button, reserved height (no layout shift)</dd>
     </dl>
   </div>
@@ -85,17 +113,42 @@
 
 <script>
 var pw = document.getElementById('pw'), btn = document.getElementById('signin'), msg = document.getElementById('errmsg');
-function clearErr() { pw.classList.remove('err'); msg.textContent = ''; }
+var pw1 = document.getElementById('pw1'), pw2 = document.getElementById('pw2'), btn2 = document.getElementById('confirmBtn'), msg2 = document.getElementById('errmsg2');
+
+function clearErr(a, b) { a.classList.remove('err'); if (b) b.classList.remove('err'); }
 function submit() {
   if (!pw.value) { pw.classList.add('err'); msg.textContent = 'Password required'; pw.focus(); return; }
-  clearErr();
+  clearErr(pw);
   var o = btn.textContent;
   btn.textContent = 'Signing in … (demo)';
   setTimeout(function() { btn.textContent = o; pw.value = ''; }, 1500);
 }
+function submitSetup() {
+  clearErr(pw1, pw2); msg2.textContent = '';
+  if (!pw1.value || !pw2.value) { (pw1.value ? pw2 : pw1).classList.add('err'); msg2.textContent = 'Password required'; return; }
+  if (pw1.value.length < 8) { pw1.classList.add('err'); msg2.textContent = 'Use at least 8 characters'; return; }
+  if (pw1.value !== pw2.value) { pw2.classList.add('err'); msg2.textContent = 'Passwords don’t match'; pw2.focus(); return; }
+  var o = btn2.textContent;
+  btn2.textContent = 'Password saved (demo)';
+  setTimeout(function() { btn2.textContent = o; pw1.value = ''; pw2.value = ''; }, 1500);
+}
 btn.addEventListener('click', submit);
+btn2.addEventListener('click', submitSetup);
 pw.addEventListener('keydown', function(e) { if (e.key === 'Enter') submit(); });
-pw.addEventListener('input', clearErr);
+pw2.addEventListener('keydown', function(e) { if (e.key === 'Enter') submitSetup(); });
+pw.addEventListener('input', function() { clearErr(pw); msg.textContent = ''; });
+pw1.addEventListener('input', function() { clearErr(pw1, pw2); msg2.textContent = ''; });
+pw2.addEventListener('input', function() { clearErr(pw1, pw2); msg2.textContent = ''; });
+document.getElementById('dSignin').addEventListener('click', function() {
+  document.getElementById('viewSignin').classList.remove('hidden');
+  document.getElementById('viewSetup').classList.add('hidden');
+  this.classList.add('on'); document.getElementById('dSetup').classList.remove('on');
+});
+document.getElementById('dSetup').addEventListener('click', function() {
+  document.getElementById('viewSetup').classList.remove('hidden');
+  document.getElementById('viewSignin').classList.add('hidden');
+  this.classList.add('on'); document.getElementById('dSignin').classList.remove('on');
+});
 document.getElementById('specBtn').addEventListener('click', function() {
   var s = document.getElementById('specs').classList.toggle('show');
   this.textContent = s ? 'Hide design specs' : 'Show design specs';
