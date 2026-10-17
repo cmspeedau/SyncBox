@@ -40,6 +40,21 @@ impl VaultSettings {
     }
 }
 
+/// One entry of the server's vault registry, as `list_vaults` returns it and
+/// the welcome form's picker renders it. Mirrors the wire shape of
+/// `GET /vaults` (`camelCase` for the frontend, snake_case on the wire).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultChoice {
+    /// The id unlock will receive if this entry is chosen.
+    pub id: String,
+    /// The operator's label on the server; empty while unnamed.
+    pub name: String,
+    /// Retired on the server; the picker hides these rather than trusting
+    /// the human to read a badge.
+    pub archived: bool,
+}
+
 /// The tray/status line the frontend renders.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
