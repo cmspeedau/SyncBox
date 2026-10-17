@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sync client — reference UI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: var(--font-sans); color: var(--foreground); }
+  .wrap { width: 100%; padding: 8px 16px 28px; }
+  h1 { font-size: 1.05rem; font-weight: 600; }
+  p.sub { color: var(--muted-foreground); font-size: 0.83rem; margin: 2px 0 14px; }
+
+  /* ===== mock window ===== */
+  .app { border-radius: 12px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.18); border: 1px solid rgba(0,0,0,.15); height: 560px; display: flex; flex-direction: column; background: #fff; color: #272833; font-size: 13px; line-height: 1.4; }
+  .body { flex: 1; display: flex; min-height: 0; position: relative; }
+
+  /* ===== sidebar ===== */
+  .side { width: 200px; flex: none; background: linear-gradient(160deg, #f1f8fd 0%, #dcebfa 100%); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; transition: margin-left .25s ease; }
+  .ssearch { position: relative; margin: 2px 2px 10px; }
+  .ssearch input { width: 100%; border: 1px solid #b7cfe0; border-radius: 20px; background: #fff; padding: 8px 30px 8px 12px; font: inherit; color: #272833; outline: none; }
+  .ssearch input:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
+  .ssearch .x { position: absolute; right: 30px; top: 6px; color: #8aa; font-size: 12px; display: none; cursor: pointer; }
+  .ssearch .mag { position: absolute; right: 10px; top: 8px; color: #6b8a9e; }
+  .nav { list-style: none; display: flex; flex-direction: column; gap: 2px; }
+  .nav button { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: none; font: inherit; color: #2c3e4d; text-align: left; padding: 8px 12px; border-radius: 22px; cursor: pointer; }
+  .nav button:hover { background: rgba(0,130,201,.10); }
+  .nav button.active { background: #006aa3; color: #fff; }
+  .nav svg { flex: none; }
+  .side-foot { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid rgba(0,90,140,.12); }
+  .foot-btn { display: flex; align-items: center; gap: 10px; border: 0; background: none; font: inherit; color: #2c3e4d; text-align: left; padding: 8px 12px; border-radius: 22px; cursor: pointer; }
+  .foot-btn:hover { background: rgba(0,130,201,.10); }
+  .side-foot .used { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 12px; color: #46586a; }
+
+  /* ===== main ===== */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; background: #fff; }
+  .toolbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 12px 16px; }
+  .btn-new { display: inline-flex; align-items: center; gap: 6px; background: #006aa3; color: #fff; border: 0; border-radius: 22px; padding: 9px 16px; font: 600 13px var(--font-sans); cursor: pointer; box-shadow: 0 2px 6px rgba(0,80,130,.3); }
+  .btn-new:hover { background: #0075b3; }
+  .crumbs { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; font-size: 15px; cursor: pointer; }
+  .selbar { display: none; align-items: center; gap: 10px; margin-left: 8px; color: #006aa3; font-weight: 600; }
+  .selbar button { border: 0; background: none; color: #006aa3; cursor: pointer; font: inherit; text-decoration: underline; }
+  .tb-right { margin-left: auto; display: flex; gap: 2px; }
+  .tb-right button { width: 36px; height: 36px; border: 0; background: none; border-radius: 50%; color: #5a6a77; cursor: pointer; display: grid; place-items: center; }
+  .tb-right button:hover { background: #eef5fa; color: #006aa3; }
+  .tb-right button.on { background: #dcebfa; color: #006aa3; }
+  .files { flex: 1; overflow-y: auto; padding: 4px 16px 16px; }
+
+  /* grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 20px 14px; }
+  .tile { position: relative; cursor: pointer; border-radius: 10px; }
+  .tile:hover { background: #f3f9fd; }
+  .tile .thumb { height: 96px; display: flex; align-items: center; justify-content: center; border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+  .tile .thumb svg { width: 100%; height: 100%; }
+  .tile .thumb.icon-only svg { width: 88px; height: 88px; }
+  .tile .nm { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tile .mt { font-size: 11.5px; color: #7a8694; margin-top: 2px; display: flex; align-items: center; }
+  .tile .more { margin-left: auto; color: #7a8694; cursor: pointer; padding: 2px 6px; border-radius: 12px; }
+  .tile .more:hover { background: #e3eef7; color: #006aa3; }
+  .chk { position: absolute; top: -4px; left: -4px; width: 20px; height: 20px; border-radius: 5px; border: 2px solid #9fb4c4; background: #fff; display: grid; place-items: center; color: transparent; z-index: 2; }
+  .tile:hover .chk, .listrow:hover .chk, .chk.sel { border-color: #0082c9; }
+  .chk.sel { background: #0082c9; color: #fff; border-color: #0082c9; }
+  .shared-dot { display: inline-block; color: #0082c9; margin-left: 6px; vertical-align: -2px; }
+
+  /* list */
+  .list { display: flex; flex-direction: column; }
+  .lhead, .listrow { display: grid; grid-template-columns: 24px 30px minmax(0,1fr) 130px 92px 90px 28px; align-items: center; gap: 8px; padding: 0 8px; }
+  .lhead { height: 34px; color: #7a8694; font-size: 12px; border-bottom: 1px solid #e6eef4; }
+  .listrow { position: relative; height: 48px; border-radius: 8px; cursor: pointer; }
+  .listrow:hover { background: #f3f9fd; }
+  .listrow.sel { background: #e8f3fb; }
+  .listrow .lchk { position: static; }
+  .listrow .ficon { width: 26px; height: 26px; }
+  .listrow .ficon svg { width: 100%; height: 100%; }
+  .listrow .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .shbadge { color: #0082c9; font-size: 11.5px; display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+  .listrow .sz, .listrow .mod, .lhead .sz, .lhead .mod { color: #7a8694; font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .listrow .more { color: #7a8694; text-align: center; border-radius: 12px; }
+  .listrow .more:hover { background: #e3eef7; color: #006aa3; }
+  .empty { padding: 40px; text-align: center; color: #8a96a3; }
+
+  .tfoot { flex: none; display: flex; justify-content: space-between; border-top: 1px solid #e6eef4; padding: 12px 16px; color: #7a8694; font-size: 12.5px; }
+
+  @media (max-width: 640px) {
+    .side { margin-left: -200px; }
+    .lhead, .listrow { grid-template-columns: 24px 30px minmax(0,1fr) 70px 28px; }
+    .lhead .mod, .listrow .mod, .lhead .sh, .listrow .sh { display: none; }
+  }
+
+  /* ===== specs ===== */
+  .specbar { display: flex; gap: 10px; align-items: center; margin-top: 14px; }
+  .spec-toggle { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 999px; padding: 7px 14px; font: 600 0.8rem var(--font-sans); cursor: pointer; }
+  .specs { display: none; margin-top: 14px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-size: 0.83rem; }
+  .specs.show { display: block; }
+  .tok { display: grid; grid-template-columns: 130px 1fr; gap: 6px 14px; }
+  .tok dt { font-family: var(--font-mono); font-size: 0.75rem; color: var(--muted-foreground); }
+  .tok dd { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .sw { width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--border); display: inline-block; vertical-align: -3px; }
+  .specs h3 { font-size: 0.85rem; margin: 14px 0 8px; }
+  .specs h3:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Sync client — reference UI</h1>
+  <p class="sub">No top bar; sidebar reduced to All files + footer actions. Search, grid/list toggle and selection still work. Design specs toggle below the mock.</p>
+
+  <div class="app" id="app">
+    <div class="body">
+      <aside class="side" id="side">
+        <div class="ssearch">
+          <input id="q" type="text" placeholder="Search here …">
+          <span class="x" id="qx">✕</span>
+          <svg class="mag" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m17 17 4 4"/></svg>
+        </div>
+        <ul class="nav" id="nav">
+          <li><button class="active"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>All files</button></li>
+        </ul>
+        <div class="side-foot">
+          <button class="foot-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>Deleted files</button>
+          <span class="used"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 12l4-5" stroke-linecap="round"/></svg>1.8 MB used</span>
+          <button class="foot-btn"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>Settings</button>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="toolbar">
+          <button class="btn-new"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M12 4v16M4 12h16"/></svg>New</button>
+          <span class="crumbs">All files <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          <span class="selbar" id="selbar"><span id="selcount"></span><button id="selclear">Clear selection</button></span>
+          <span class="tb-right">
+            <button title="Filter"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></svg></button>
+            <button id="btnGrid" title="Grid view" class="on"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/></svg></button>
+            <button id="btnList" title="List view"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+          </span>
+        </div>
+        <div class="files" id="files"></div>
+        <div class="tfoot"><span id="count">4 files · 2 folders</span><span>1.8 MB</span></div>
+      </main>
+    </div>
+  </div>
+
+  <div class="specbar">
+    <button class="spec-toggle" id="specBtn">Show design specs</button>
+    <span style="font-size:.78rem;color:var(--muted-foreground)">Token sheet extracted from the mockups</span>
+  </div>
+  <div class="specs" id="specs">
+    <h3>Color</h3>
+    <dl class="tok">
+      <dt>--brand</dt><dd><span class="sw" style="background:#0082c9"></span> #0082C9 — links, checkboxes, shared badge, focus ring</dd>
+      <dt>--brand-dark</dt><dd><span class="sw" style="background:#006aa3"></span> #006AA3 — New button, selected nav pill</dd>
+      <dt>--sidebar</dt><dd><span class="sw" style="background:linear-gradient(160deg,#f1f8fd,#dcebfa)"></span> diagonal tint #F1F8FD → #DCEBFA</dd>
+      <dt>--text / --muted</dt><dd><span class="sw" style="background:#272833"></span> #272833 · <span class="sw" style="background:#7a8694"></span> #7A8694 secondary/meta</dd>
+      <dt>--row-hover</dt><dd><span class="sw" style="background:#f3f9fd"></span> #F3F9FD hover · #E8F3FB selected row</dd>
+      <dt>pdf / danger</dt><dd><span class="sw" style="background:#e05252"></span> #E05252 PDF tile</dd>
+    </dl>
+    <h3>Layout</h3>
+    <dl class="tok">
+      <dt>chrome</dt><dd>none — no top bar; sidebar and content fill the window</dd>
+      <dt>sidebar</dt><dd>200px; single nav item “All files”, footer group: Deleted files · 1.8 MB used · Settings; rows 36px, radius 22px pill</dd>
+      <dt>toolbar</dt><dd>pill CTA (#006AA3, radius 22px); breadcrumb 15px/600; view toggles 36px</dd>
+      <dt>grid</dt><dd>auto-fill minmax(148px,1fr), gap 20×14; thumbnail 96px, radius 8px</dd>
+      <dt>list</dt><dd>48px rows; columns 24 / 30 / 1fr / shared / size / modified / ⋯</dd>
+      <dt>checkbox</dt><dd>20px square, radius 5px, 2px border #9FB4C4; selected = #0082C9 fill + white tick</dd>
+    </dl>
+    <h3>Type</h3>
+    <dl class="tok">
+      <dt>base</dt><dd>13px system sans; names 12.5px (ellipsis), meta 11.5–12px muted</dd>
+      <dt>shared chip</dt><dd>11.5px #0082C9 + people icon; link state adds a chain icon</dd>
+    </dl>
+  </div>
+</div>
+
+<script>
+var THUMBS = {
+  folderShared: '<svg viewBox="0 0 120 96"><path d="M28 24h22l7 8h35a6 6 0 0 1 6 6v30a6 6 0 0 1-6 6H28a6 6 0 0 1-6-6V30a6 6 0 0 1 6-6z" fill="#0b8bd2"/><circle cx="60" cy="48" r="9" fill="#fff"/><path d="M46 68a14 14 0 0 1 28 0z" fill="#fff"/><circle cx="86" cy="36" r="11" fill="#fff"/><path d="M86 30v12M80 36h12" stroke="#0b8bd2" stroke-width="3.5" stroke-linecap="round"/></svg>',
+  folder: '<svg viewBox="0 0 120 96"><path d="M28 24h22l7 8h35a6 6 0 0 1 6 6v30a6 6 0 0 1-6 6H28a6 6 0 0 1-6-6V30a6 6 0 0 1 6-6z" fill="#0b8bd2"/></svg>',
+  sunset: '<svg viewBox="0 0 120 96" preserveAspectRatio="none"><defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b88ad"/><stop offset=".55" stop-color="#e8965a"/><stop offset="1" stop-color="#f4b46a"/></linearGradient><linearGradient id="sea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3d6d8f"/><stop offset="1" stop-color="#1c3a55"/></linearGradient></defs><rect width="120" height="60" fill="url(#sky)"/><circle cx="60" cy="58" r="11" fill="#ffd98c"/><rect y="60" width="120" height="36" fill="url(#sea)"/><rect x="55" y="60" width="10" height="36" fill="#f2b268" opacity=".5"/><rect x="58" y="60" width="4" height="36" fill="#ffe1a8" opacity=".7"/></svg>',
+  pdf: '<svg viewBox="0 0 120 96"><rect x="18" y="8" width="84" height="80" rx="12" fill="#e05252"/><text x="60" y="58" font-family="Arial,sans-serif" font-size="26" font-weight="700" fill="#fff" text-anchor="middle">PDF</text></svg>',
+  mountain: '<svg viewBox="0 0 120 96" preserveAspectRatio="none"><rect width="120" height="96" fill="#cfe3f3"/><path d="M0 70 30 38l24 22 22-30 44 54v10H0z" fill="#8fb3cf"/><path d="M0 84 34 46l20 20 26-34 40 52v12H0z" fill="#f5fafd"/><path d="M80 32 96 52H64z" fill="#dcebf5"/></svg>',
+  text: '<svg viewBox="0 0 120 96"><rect width="120" height="96" fill="#fff"/><g fill="#c3ccd4"><rect x="16" y="18" width="70" height="4" rx="2"/><rect x="16" y="30" width="88" height="4" rx="2"/><rect x="16" y="42" width="80" height="4" rx="2"/><rect x="16" y="54" width="88" height="4" rx="2"/><rect x="16" y="66" width="52" height="4" rx="2"/></g></svg>'
+};
+var ICONS = {
+  folderShared: '<svg viewBox="0 0 24 24"><path d="M3 6a1.5 1.5 0 0 1 1.5-1.5h5L11 6.5h8.5A1.5 1.5 0 0 1 21 8v10.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="#0b8bd2"/><circle cx="11.6" cy="11" r="2.2" fill="#fff"/><path d="M8.6 16.5a3.2 3.2 0 0 1 6.4 0z" fill="#fff"/><circle cx="16.4" cy="8.6" r="2.6" fill="#fff"/><path d="M16.4 7v3.2M14.8 8.6h3.2" stroke="#0b8bd2" stroke-width="1" stroke-linecap="round"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path d="M3 6a1.5 1.5 0 0 1 1.5-1.5h5L11 6.5h8.5A1.5 1.5 0 0 1 21 8v10.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" fill="#0b8bd2"/></svg>',
+  sunset: '<svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="3.4" fill="#e8965a"/><path d="M3 15h18v5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 20z" fill="#3d6d8f"/><rect x="10.8" y="15" width="2.4" height="6" fill="#f2b268"/></svg>',
+  pdf: '<svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3.5" fill="#e05252"/><text x="12" y="15.5" font-family="Arial" font-size="6.5" font-weight="700" fill="#fff" text-anchor="middle">PDF</text></svg>',
+  mountain: '<svg viewBox="0 0 24 24"><rect width="24" height="24" rx="3" fill="#cfe3f3"/><path d="M2 18l6-8 4 5 5-7 5 10v2a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" fill="#8fb3cf"/><path d="M13 8l5 8H8z" fill="#f5fafd"/></svg>',
+  text: '<svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2" fill="#fff" stroke="#c3ccd4"/><g stroke="#aeb9c2" stroke-width="1.4" stroke-linecap="round"><path d="M8 8h8M8 11.5h8M8 15h5"/></g></svg>',
+  people: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3.5 18a5.5 5.5 0 0 1 11 0"/><path d="M16 5a3 3 0 0 1 0 6M17.5 18a5.5 5.5 0 0 0-2-4"/></svg>',
+  link: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 12a4 4 0 0 1 4-4h2a4 4 0 0 1 0 8h-1M15 12a4 4 0 0 1-4 4H9a4 4 0 0 1 0-8h1"/></svg>',
+  more: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>',
+  check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg>'
+};
+var FILES = [
+  { id: 1, name: 'Documents', kind: 'folderShared', thumb: 'folderShared', size: '3 KB', mod: 'a few seconds ago', shared: 'people' },
+  { id: 2, name: 'Photos', kind: 'folder', thumb: 'folder', size: '1.1 MB', mod: 'a few seconds ago', shared: null },
+  { id: 3, name: 'Ocean sunset.jpg', kind: 'image', thumb: 'sunset', size: '383 KB', mod: '4 weeks ago', shared: 'both' },
+  { id: 4, name: 'Q2 Project Proposal.pdf', kind: 'image', thumb: 'pdf', size: '3 KB', mod: 'last week', shared: 'link' },
+  { id: 5, name: 'Snowy mountain.jpg', kind: 'image', thumb: 'mountain', size: '272 KB', mod: 'December 28', shared: 'people' },
+  { id: 6, name: 'welcome.txt', kind: 'image', thumb: 'text', size: '< 1 KB', mod: 'a few seconds ago', shared: 'people' }
+];
+var state = { view: 'grid', q: '', sel: new Set() };
+
+function visible() { return FILES.filter(function(f){ return f.name.toLowerCase().indexOf(state.q) !== -1; }); }
+function shareIcons(s) {
+  if (!s) return '';
+  var out = '';
+  if (s === 'people' || s === 'both') out += ICONS.people;
+  if (s === 'link' || s === 'both') out += ICONS.link;
+  return out;
+}
+function render() {
+  var files = visible(), el = document.getElementById('files');
+  if (!files.length) { el.innerHTML = '<div class="empty">No files match “' + state.q + '”</div>'; }
+  else if (state.view === 'grid') {
+    el.innerHTML = '<div class="grid">' + files.map(function(f) {
+      return '<div class="tile" data-id="' + f.id + '">' +
+        '<span class="chk' + (state.sel.has(f.id) ? ' sel' : '') + '">' + ICONS.check + '</span>' +
+        '<div class="thumb' + (f.kind === 'folder' || f.kind === 'folderShared' ? ' icon-only' : '') + '">' + THUMBS[f.thumb] + '</div>' +
+        '<div class="nm">' + f.name + (shareIcons(f.shared) ? '<span class="shared-dot">' + shareIcons(f.shared) + '</span>' : '') + '</div>' +
+        '<div class="mt">' + f.mod + '<span class="more">' + ICONS.more + '</span></div></div>';
+    }).join('') + '</div>';
+  } else {
+    el.innerHTML = '<div class="list"><div class="lhead"><span></span><span></span><span>Name ▲</span><span class="sh"></span><span class="sz">Size</span><span class="mod">Modified</span><span></span></div>' +
+      files.map(function(f) {
+        return '<div class="listrow' + (state.sel.has(f.id) ? ' sel' : '') + '" data-id="' + f.id + '">' +
+          '<span class="chk lchk' + (state.sel.has(f.id) ? ' sel' : '') + '">' + ICONS.check + '</span>' +
+          '<span class="ficon">' + ICONS[f.thumb] + '</span>' +
+          '<span class="nm">' + f.name + '</span>' +
+          '<span class="sh">' + (f.shared ? '<span class="shbadge">Shared ' + shareIcons(f.shared) + '</span>' : '') + '</span>' +
+          '<span class="sz">' + f.size + '</span><span class="mod">' + f.mod + '</span>' +
+          '<span class="more">' + ICONS.more + '</span></div>';
+      }).join('') + '</div>';
+  }
+  var nF = files.filter(function(f){ return f.kind !== 'folder' && f.kind !== 'folderShared'; }).length;
+  var nD = files.length - nF;
+  document.getElementById('count').textContent = nF + ' file' + (nF !== 1 ? 's' : '') + ' · ' + nD + ' folder' + (nD !== 1 ? 's' : '');
+  var bar = document.getElementById('selbar');
+  if (state.sel.size) { bar.style.display = 'inline-flex'; document.getElementById('selcount').textContent = state.sel.size + ' selected'; }
+  else bar.style.display = 'none';
+}
+document.getElementById('files').addEventListener('click', function(e) {
+  var item = e.target.closest('[data-id]'); if (!item) return;
+  var id = +item.dataset.id;
+  if (state.sel.has(id)) state.sel.delete(id); else state.sel.add(id);
+  render();
+});
+document.getElementById('selclear').addEventListener('click', function() { state.sel.clear(); render(); });
+function setView(v) {
+  state.view = v;
+  document.getElementById('btnGrid').classList.toggle('on', v === 'grid');
+  document.getElementById('btnList').classList.toggle('on', v === 'list');
+  render();
+}
+document.getElementById('btnGrid').addEventListener('click', function(){ setView('grid'); });
+document.getElementById('btnList').addEventListener('click', function(){ setView('list'); });
+document.getElementById('q').addEventListener('input', function(e) {
+  state.q = e.target.value.trim().toLowerCase();
+  document.getElementById('qx').style.display = state.q ? 'block' : 'none';
+  render();
+});
+document.getElementById('qx').addEventListener('click', function() {
+  document.getElementById('q').value = ''; state.q = ''; this.style.display = 'none'; render();
+});
+document.getElementById('specBtn').addEventListener('click', function() {
+  var s = document.getElementById('specs').classList.toggle('show');
+  this.textContent = s ? 'Hide design specs' : 'Show design specs';
+});
+render();
+</script>
+</body>
+</html>
