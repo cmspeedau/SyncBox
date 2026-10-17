@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncbox agent client — reference UI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: var(--font-sans); color: var(--foreground); }
+  .wrap { width: 100%; padding: 8px 16px 28px; }
+  h1 { font-size: 1.1rem; }
+  p.sub { color: var(--muted-foreground); font-size: .83rem; margin: 2px 0 12px; }
+  h2 { font-size: .85rem; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 10px; }
+
+  .demo { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .demo .lbl { font-size: .78rem; color: var(--muted-foreground); margin-right: 4px; }
+  .demo button { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 999px; padding: 5px 13px; font: 600 .78rem var(--font-sans); cursor: pointer; }
+  .demo button.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
+  .stage { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* OS-style title bar shared by all windows */
+  .chrome { flex: none; display: flex; align-items: center; gap: 6px; height: 30px; background: #e9eef3; border-bottom: 1px solid #d8e0e8; position: relative; }
+  .chrome .tl { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .chrome .tl.r { background: #ff5f57; cursor: pointer; }
+  .chrome .tl.y { background: #febc2e; }
+  .chrome .tl.g { background: #28c840; }
+  .chrome .ct { position: absolute; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 600; color: #5b6672; pointer-events: none; }
+  .hidden { display: none !important; }
+
+  /* ===== main window ===== */
+  .win { width: 420px; max-width: 100%; height: 600px; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+
+  .bar { flex: none; display: flex; align-items: center; gap: 9px; padding: 12px 14px; background: linear-gradient(90deg, #006aa3, #0b8bd2); color: #fff; }
+  .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #7bd88f; flex: none; box-shadow: 0 0 0 3px rgba(255,255,255,.25); }
+  .st-sync .bar .dot { background: #ffe08a; animation: pulse 1s infinite; }
+  .st-err .bar .dot { background: #ffb3ad; }
+  .st-pause .bar .dot { background: #ffd280; }
+  .st-locked .bar .dot { background: #cbd5e1; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  .bar .name { font-weight: 700; font-size: 14px; }
+  .bar .stxt { font-size: 11.5px; opacity: .85; margin-left: 2px; }
+  .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; display: grid; place-items: center; cursor: pointer; }
+  .gear:hover { background: rgba(255,255,255,.25); }
+  .setup .bar .dot, .setup .bar .stxt, .setup .gear { display: none; }
+  .setup .bar { justify-content: center; }
+  .setup .bar .name { margin-left: auto; margin-right: auto; }
+
+  .banner { margin: 10px 14px 0; border-radius: 8px; padding: 8px 10px; font-size: 12px; display: none; }
+  .st-err .banner.e { display: block; background: #fdeceb; border: 1px solid #f6c9c6; color: #b91c1c; }
+  .st-pause .banner.p { display: block; background: #fdf3e3; border: 1px solid #f3ddb0; color: #92600a; }
+
+  /* first run */
+  .setupcard { display: none; flex: 1; flex-direction: column; gap: 10px; padding: 26px 22px 14px; }
+  .setup .setupcard { display: flex; }
+  .setupcard .logo { display: grid; place-items: center; margin: 4px 0 2px; }
+  .setupcard .t { text-align: center; }
+  .setupcard .t b { font-size: 15px; }
+  .setupcard .t p { color: #7a8694; font-size: 12px; margin-top: 4px; }
+  .fld { font-size: 11.5px; color: #5b6672; margin-top: 8px; }
+  .fld input { width: 100%; margin-top: 5px; border: 1px solid #b7cfe0; border-radius: 20px; padding: 10px 13px; font: inherit; outline: none; }
+  .fld input:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
+  .okline { display: none; align-items: center; gap: 7px; background: #e7f6ec; color: #15803d; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+  .step2 .okline { display: flex; }
+  .vaults { display: none; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .step2 .vaults { display: flex; }
+  .vaults label { display: flex; align-items: center; gap: 9px; border: 1px solid #d9e4ec; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+  .vaults label:hover { background: #f3f9fd; }
+  .vaults label input { accent-color: #0082c9; }
+  .vaults .vn { font-weight: 600; }
+  .vaults .vm { color: #7a8694; font-size: 11.5px; }
+  .step1-only { display: block; }
+  .step2 .step1-only { display: none; }
+
+  /* activity */
+  .mid { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 14px 6px; }
+  .setup .mid { display: none; }
+  .mid h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: #7a8694; margin: 0 0 8px; display: flex; align-items: center; }
+  .mid h3 .cnt { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .feed { list-style: none; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .st-locked .feed { opacity: .72; }
+  .feed li { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; font-size: 12.5px; }
+  .feed li:hover { background: #f3f9fd; }
+  .feed .dir { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: 11px; }
+  .dir.up { background: #e7f6ec; color: #16a34a; }
+  .dir.dn { background: #e3eff9; color: #006aa3; }
+  .dir.warn { background: #fdf3e3; color: #d97706; }
+  .dir.fail { background: #fdeceb; color: #dc2626; }
+  .feed .fn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .feed .fn.muted { color: #7a8694; }
+  .feed .tm { margin-left: auto; flex: none; color: #7a8694; font-size: 11px; }
+  .prog { flex: none; width: 90px; height: 4px; border-radius: 2px; background: #e2ecf3; overflow: hidden; }
+  .prog i { display: block; height: 100%; background: #0082c9; width: 0%; transition: width .4s; }
+  .feed .pct { flex: none; width: 34px; text-align: right; color: #006aa3; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  /* bottom */
+  .bottom { flex: none; border-top: 1px solid #e6eef4; padding: 12px 14px 14px; }
+  .setup .bottom .usage, .setup .bottom .vault-btn { display: none; }
+  .usage { display: flex; font-size: 11.5px; color: #7a8694; margin-bottom: 8px; }
+  .usage .r { margin-left: auto; }
+  .vault-btn, .setup-btn { width: 100%; border: 0; border-radius: 24px; padding: 13px; font: 700 13.5px var(--font-sans); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 9px; }
+  .vault-btn.locked, .setup-btn { background: #006aa3; color: #fff; box-shadow: 0 3px 10px rgba(0,80,130,.35); }
+  .vault-btn.locked:hover, .setup-btn:hover { background: #0075b3; }
+  .setup-btn:disabled { opacity: .5; cursor: default; }
+  .setup-btn { display: none; }
+  .setup .setup-btn { display: flex; }
+  .vault-btn.open { background: #f1f6fa; color: #272833; border: 1px solid #d5dee6; }
+  .vault-btn.open:hover { background: #e8f0f6; }
+
+  /* ===== side windows (unlock + settings) ===== */
+  .side { width: 340px; max-width: 100%; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); overflow: hidden; display: flex; flex-direction: column; font-size: 13px; }
+  .side .bar { padding: 10px 12px; }
+  .side .bar .ttl { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .side .body { padding: 16px 16px 14px; }
+  .side .hint { font-size: 12px; color: #7a8694; margin-bottom: 10px; }
+  .side input[type=password] { width: 100%; border: 1px solid #b7cfe0; border-radius: 20px; padding: 11px 13px; font: inherit; outline: none; margin-bottom: 12px; }
+  .side input[type=password]:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
+  .btns { display: flex; gap: 8px; }
+  .btns .b { flex: 1; border: 0; border-radius: 20px; padding: 11px; font: 700 13px var(--font-sans); cursor: pointer; }
+  .btns .pri { background: #006aa3; color: #fff; }
+  .btns .pri:hover { background: #0075b3; }
+  .btns .gh { background: #fff; border: 1px solid #d5dee6; color: #272833; }
+  .btns .gh:hover { background: #f3f9fd; }
+  .fine { font-size: 10.5px; color: #97a3af; margin-top: 10px; text-align: center; }
+  .srow { display: flex; align-items: center; gap: 8px; padding: 9px 2px; font-size: 12.5px; }
+  .srow + .srow { border-top: 1px solid #edf2f6; }
+  .srow .k { color: #5b6672; }
+  .srow .v { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 11.5px; color: #272833; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+  .sw { width: 30px; height: 18px; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; transition: background .15s; border: 0; flex: none; margin-left: auto; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+  .sw.on { background: #16a34a; }
+  .sw.on::after { left: 14px; }
+  .mini { border: 1px solid #0082c9; color: #006aa3; background: #fff; border-radius: 999px; padding: 4px 10px; font: 600 11.5px var(--font-sans); cursor: pointer; flex: none; }
+  .mini:hover { background: #e8f3fb; }
+
+  /* legend + refs */
+  .legend { width: 240px; }
+  .legend .bub { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; color: var(--muted-foreground); }
+  .legend .bub .d { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .refs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px,100%), 1fr)); gap: 14px; }
+  .ref { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: .8rem; }
+  .ref img { width: 100%; height: 150px; object-fit: contain; background: #fff; display: block; border-bottom: 1px solid var(--border); }
+  .ref img.cover { object-fit: cover; }
+  .ref .b { padding: 10px 12px; }
+  .ref b { display: block; margin-bottom: 3px; }
+  .ref p { color: var(--muted-foreground); }
+  .ref a { color: var(--info); text-decoration: none; }
+  .note { margin-top: 16px; font-size: .8rem; color: var(--muted-foreground); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Syncbox agent client — reference UI</h1>
+  <p class="sub">Unlock and Settings are separate top-level windows shown next to the main one — real Tauri windows, not overlays. Red dot closes them; the gear brings Settings back, <i>Unlock vault</i> brings the unlock window back.</p>
+
+  <div class="demo" id="demo">
+    <span class="lbl">demo:</span>
+    <button data-s="setup" class="on">First run</button>
+    <button data-s="idle">Idle</button>
+    <button data-s="sync">Syncing</button>
+    <button data-s="err">Error</button>
+    <button data-s="pause">Paused</button>
+    <button data-s="locked">Locked</button>
+  </div>
+
+  <div class="stage">
+    <!-- ===== main window ===== -->
+    <div class="win setup st-locked" id="win">
+      <div class="chrome"><span class="tl r" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Syncbox</span></div>
+      <div class="bar">
+        <span class="dot"></span>
+        <span class="name" id="barName">Syncbox</span>
+        <span class="stxt" id="stxt"></span>
+        <button class="gear" id="gear" title="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg></button>
+      </div>
+
+      <div class="banner e">Connection refused: sync.example.org — retrying in 30&nbsp;s.</div>
+      <div class="banner p">Syncing is paused. Changes are saved and will upload on resume.</div>
+
+      <!-- first run -->
+      <div class="setupcard step1" id="setupCard">
+        <span class="logo"><svg width="52" height="34" viewBox="0 0 40 24" fill="none" stroke="#0082c9" stroke-width="2.4"><circle cx="12" cy="14" r="6.5"/><circle cx="27" cy="14" r="6.5"/><circle cx="20" cy="4" r="2.2" fill="#0082c9" stroke="none"/></svg></span>
+        <div class="t"><b>Welcome to Syncbox</b><p>Zero-knowledge sync. Connect to your server to choose the vault you want on this machine.</p></div>
+        <div class="okline"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg><span id="okTxt">Connected to sync.example.org</span></div>
+        <label class="fld">Server address
+          <input id="server" type="text" value="https://sync.example.org" spellcheck="false">
+        </label>
+        <div class="step1-only" style="font-size:11.5px;color:#7a8694;">The address your Syncbox server is reachable at — e.g. the https origin you gave the deploy.</div>
+        <div class="fld" style="display:none;" id="vaultFld">Choose a vault
+          <div class="vaults">
+            <label><input type="radio" name="v" checked><span><span class="vn">Files synced</span><span class="vm"> · 412 files, 1.8 GB</span></span></label>
+            <label><input type="radio" name="v"><span><span class="vn">Photos</span><span class="vm"> · 12.4k files, 64 GB</span></span></label>
+          </div>
+        </div>
+        <label class="fld vaultFld2" style="display:none;">Sync folder on this computer
+          <input id="folder" type="text" value="/home/you/Syncbox/Files synced" spellcheck="false">
+        </label>
+      </div>
+
+      <div class="mid">
+        <h3><span id="actHead">Activity</span> <span class="cnt" id="passCnt"></span></h3>
+        <ul class="feed" id="feed">
+          <li><span class="dir up">↑</span><span class="fn">sunrise.jpg</span><span class="tm">2 min ago</span></li>
+          <li><span class="dir dn">↓</span><span class="fn">budget-2026.xlsx</span><span class="tm">2 min ago</span></li>
+          <li><span class="dir warn">!</span><span class="fn">notes.md — conflict, both copies kept</span><span class="tm">yesterday</span></li>
+          <li><span class="dir dn">↓</span><span class="fn muted">12 files — initial sync</span><span class="tm">Mon 09:12</span></li>
+        </ul>
+      </div>
+
+      <div class="bottom">
+        <div class="usage"><span>1.8 GB · 412 files</span><span class="r">pass 57</span></div>
+        <button class="setup-btn" id="setupBtn">Connect</button>
+        <button class="vault-btn locked" id="vaultBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <span id="vaultLbl">Unlock vault</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ===== unlock window ===== -->
+    <div class="side hidden" id="winUnlock">
+      <div class="chrome"><span class="tl r" data-close="winUnlock" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Unlock</span></div>
+      <div class="bar">
+        <span class="ttl"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Unlock “Files synced”</span>
+      </div>
+      <div class="body">
+        <p class="hint">Enter the vault password. It is used now, to derive the keys — never written down.</p>
+        <input type="password" id="pw" placeholder="Vault password">
+        <div class="btns">
+          <button class="b gh" data-close="winUnlock">Cancel</button>
+          <button class="b pri" id="dlgUnlock">Unlock &amp; sync</button>
+        </div>
+        <p class="fine">own top-level window · own webview · password never reaches the main window</p>
+      </div>
+    </div>
+
+    <!-- ===== settings window ===== -->
+    <div class="side hidden" id="winSettings">
+      <div class="chrome"><span class="tl r" data-close="winSettings" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Settings</span></div>
+      <div class="bar">
+        <span class="ttl"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>Settings</span>
+      </div>
+      <div class="body">
+        <div class="srow"><span class="k">Server</span><span class="v" id="popServer">sync.example.org</span></div>
+        <div class="srow"><span class="k">Folder</span><span class="v">~/Syncbox/Files synced</span><button class="mini">Open</button></div>
+        <div class="srow"><span class="k">Start on login</span><button class="sw on" id="swAuto" aria-label="autostart"></button></div>
+        <div class="srow"><span class="k">Pause syncing</span><button class="sw" id="swPause" aria-label="pause"></button></div>
+        <div class="srow"><span class="k">Vault</span><span class="v">Files synced · change in setup</span><button class="mini" id="reconfigure">Switch…</button></div>
+        <p class="fine">own top-level window · values come from the agent, edits go straight back</p>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="bub"><span class="d" style="background:#16a34a"></span>idle / up to date</div>
+      <div class="bub"><span class="d" style="background:#ffd280"></span>syncing (pulsing)</div>
+      <div class="bub"><span class="d" style="background:#ffb3ad"></span>error — banner + retry</div>
+      <div class="bub"><span class="d" style="background:#d97706"></span>paused</div>
+      <div class="bub"><span class="d" style="background:#cbd5e1"></span>locked — files stay listed</div>
+      <div class="bub"><span class="d" style="background:#fff;box-shadow:0 0 0 2px #cbd5e1"></span>first run — name only</div>
+      <div class="bub" style="padding-top:14px;color:var(--muted-foreground)">Main, Unlock and Settings are three separate windows; the main window never sees a password.</div>
+    </div>
+  </div>
+
+  <h2>Design sources (verified, hotlinkable)</h2>
+  <div class="refs">
+    <div class="ref"><img loading="lazy" class="cover" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Syncthing-screenshot-dark.png/640px-Syncthing-screenshot-dark.png" alt=""><div class="b"><b>Syncthing</b><p>Honest status header + per-folder live rows. Borrowed: state-first header, per-item activity rows.<br><a href="https://commons.wikimedia.org/wiki/File:Syncthing-screenshot-dark.png" target="_blank" rel="noopener">Commons · MPL-2.0</a></p></div></div>
+    <div class="ref"><img loading="lazy" src="https://doc.owncloud.com/desktop/7.1/_images/using/oc-windows-account-settings.png" alt=""><div class="b"><b>ownCloud 7.1</b><p>Account settings is its own window, setup starts with the server URL. Borrowed: settings-as-window, server-first wizard.<br><a href="https://doc.owncloud.com/desktop/7.1/using.html" target="_blank" rel="noopener">doc.owncloud.com</a></p></div></div>
+    <div class="ref"><img loading="lazy" src="https://support.microsoft.com/en-us/onedrive/media/onedrive-settings-ui-new.png" alt=""><div class="b"><b>OneDrive (new sync app)</b><p>A settings window of its own; report lines, pause/resume, usage footer.<br><a href="https://support.microsoft.com/en-us/onedrive/how-to-access-onedrive-settings" target="_blank" rel="noopener">Microsoft Support</a></p></div></div>
+  </div>
+
+  <div class="note">Three Tauri windows: main (status + activity), unlock (its own webview, so the password goes straight from that window to <code>unlock</code> and never touches the main window), settings (reads agent status/Config, writes through existing commands: <code>set_autostart</code>, pause, open-folder; <i>Switch…</i> reopens the first-run picker). First run: <i>Connect</i> → <code>list_vaults</code>, rows ← <code>VaultChoice</code>. Everyday states: <code>SyncState</code> → dot, <code>AgentStatus</code> → lines, <code>history()</code> → activity, <code>Index</code> → usage/passes. Pause remains the one new agent concept.</div>
+</div>
+
+<script>
+var win = document.getElementById('win');
+var phase = 'setup', step = 1;
+var state = 'locked', timer = null;
+var QUEUE = [
+  { dir: 'up', name: 'sunset-lake.jpg', pct: 0 },
+  { dir: 'dn', name: 'archive-2025.zip', pct: 0 },
+  { dir: 'up', name: 'quarterly.pdf', pct: 0 },
+  { dir: 'up', name: 'notes.md', pct: 0 }
+];
+var HIST = [
+  '<li><span class="dir up">↑</span><span class="fn">sunrise.jpg</span><span class="tm">2 min ago</span></li>',
+  '<li><span class="dir dn">↓</span><span class="fn">budget-2026.xlsx</span><span class="tm">2 min ago</span></li>',
+  '<li><span class="dir warn">!</span><span class="fn">notes.md — conflict, both copies kept</span><span class="tm">yesterday</span></li>',
+  '<li><span class="dir dn">↓</span><span class="fn muted">12 files — initial sync</span><span class="tm">Mon 09:12</span></li>'
+];
+var TXT = { idle: 'up to date', sync: 'syncing…', err: 'sync error', pause: 'paused', locked: 'locked' };
+
+function liveFeed() {
+  var out = [];
+  QUEUE.forEach(function(q) {
+    if (q.done) return;
+    out.push('<li><span class="dir ' + q.dir + '">' + (q.dir === 'up' ? '↑' : '↓') + '</span><span class="fn">' + q.name + '</span><span class="prog"><i style="width:' + q.pct + '%"></i></span><span class="pct">' + q.pct + '%</span></li>');
+  });
+  return out.concat(HIST);
+}
+function baseFeed() { return HIST.slice(); }
+function showWin(id) { document.getElementById(id).classList.remove('hidden'); if (id === 'winUnlock') { document.getElementById('pw').value = ''; setTimeout(function(){ document.getElementById('pw').focus(); }, 30); } }
+function hideWin(id) { document.getElementById(id).classList.add('hidden'); }
+function paint() {
+  document.getElementById('feed').innerHTML = (state === 'sync' && phase === 'main') ? liveFeed().join('') : baseFeed().join('');
+  document.getElementById('barName').textContent = phase === 'setup' ? 'Syncbox' : 'Files synced';
+  document.getElementById('stxt').textContent = phase === 'setup' ? '' : TXT[state];
+  document.getElementById('actHead').textContent = (phase === 'main' && state === 'locked') ? 'Last synced' : 'Activity';
+  document.getElementById('vaultBtn').className = 'vault-btn ' + (state === 'locked' ? 'locked' : 'open');
+  document.getElementById('vaultLbl').textContent = state === 'locked' ? 'Unlock vault' : 'Files synced — Lock';
+  document.getElementById('passCnt').textContent = state === 'sync' ? 'pass 58' : (state === 'idle' ? 'pass 57' : '');
+  document.getElementById('swPause').classList.toggle('on', state === 'pause');
+  var b = document.getElementById('setupBtn');
+  b.textContent = step === 1 ? 'Connect' : 'Save & unlock';
+  b.disabled = step === 1 && !document.getElementById('server').value.trim();
+}
+function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
+function startPass() {
+  stopTimer();
+  QUEUE.forEach(function(q) { q.pct = 0; q.done = false; });
+  timer = setInterval(function() {
+    var open = QUEUE.filter(function(q) { return !q.done; });
+    if (!open.length) { stopTimer(); setState('idle'); document.getElementById('feed').insertAdjacentHTML('afterbegin', '<li><span class="dir up">↑</span><span class="fn muted">4 files — pass finished</span><span class="tm">just now</span></li>'); return; }
+    open[0].pct = Math.min(100, open[0].pct + 18 + Math.floor(Math.random() * 10));
+    if (open[0].pct >= 100) open[0].done = true;
+    paint();
+  }, 550);
+}
+function setState(s) {
+  if (s === 'setup') {
+    phase = 'setup'; step = 1; stopTimer();
+    win.classList.add('setup');
+    document.getElementById('setupCard').classList.remove('step2');
+    hideWin('winUnlock'); hideWin('winSettings');
+  } else {
+    phase = 'main'; win.classList.remove('setup'); state = s;
+    if (s !== 'locked') hideWin('winUnlock');
+    showWin('winSettings');
+  }
+  ['idle','sync','err','pause','locked'].forEach(function(x) { win.classList.toggle('st-' + x, phase === 'main' && x === state); });
+  document.querySelectorAll('#demo button').forEach(function(b) { b.classList.toggle('on', b.dataset.s === (phase === 'setup' ? 'setup' : state)); });
+  if (phase === 'main' && state === 'sync') startPass(); else stopTimer();
+  paint();
+}
+document.getElementById('demo').addEventListener('click', function(e) {
+  var b = e.target.closest('button'); if (!b) return; setState(b.dataset.s);
+});
+document.getElementById('server').addEventListener('input', paint);
+document.getElementById('setupBtn').addEventListener('click', function() {
+  if (step === 1) {
+    step = 2;
+    var host = document.getElementById('server').value.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    document.getElementById('okTxt').textContent = 'Connected to ' + host;
+    document.getElementById('popServer').textContent = host;
+    document.getElementById('setupCard').classList.add('step2');
+    document.getElementById('vaultFld').style.display = '';
+    var f2 = document.querySelector('.vaultFld2'); if (f2) f2.style.display = '';
+  } else {
+    setState('locked');
+    showWin('winUnlock');
+  }
+  paint();
+});
+document.getElementById('vaultBtn').addEventListener('click', function() {
+  if (state === 'locked' && phase === 'main') showWin('winUnlock'); else setState('locked');
+});
+document.getElementById('dlgUnlock').addEventListener('click', function() { hideWin('winUnlock'); setState('sync'); });
+document.getElementById('gear').addEventListener('click', function() { showWin('winSettings'); });
+document.getElementById('swAuto').addEventListener('click', function() { this.classList.toggle('on'); });
+document.getElementById('swPause').addEventListener('click', function() {
+  if (state === 'pause') { state = 'idle'; } else { state = 'pause'; }
+  ['idle','sync','err','pause','locked'].forEach(function(x) { win.classList.toggle('st-' + x, x === state); });
+  document.querySelectorAll('#demo button').forEach(function(b) { b.classList.toggle('on', b.dataset.s === state); });
+  stopTimer(); paint();
+});
+document.getElementById('reconfigure').addEventListener('click', function() { setState('setup'); });
+document.querySelectorAll('[data-close]').forEach(function(b) {
+  b.addEventListener('click', function() { hideWin(b.dataset.close); paint(); });
+});
+setState('setup');
+</script>
+</body>
+</html>
