@@ -8,7 +8,7 @@
 //! runs in `cargo test` with no daemon. The Go server's own tests cover its side of
 //! the same contract.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
@@ -393,6 +393,146 @@ fn a_both_sides_edit_becomes_a_conflicted_copy() {
     );
 }
 
+// ---- a head that moves between pull and push (409 recovery) -------------------
+
+/// The shared fake behind a switch that answers the *first* revision read as if
+/// the log were still empty. That reproduces the race a vault kept in several
+/// folders hits on first setup: this client pulls while alone, a peer lands a
+/// commit, and this client's commit then carries a parent that is already stale.
+#[derive(Clone)]
+struct BlindFirstPull {
+    server: Shared,
+    blind: Rc<Cell<bool>>,
+}
+
+impl Http for BlindFirstPull {
+    fn send(&mut self, request: Request) -> TResult<Response> {
+        let is_revision_read =
+            request.method.as_str() == "GET" && request.path.contains("/revisions");
+        if is_revision_read && self.blind.get() {
+            self.blind.set(false);
+            return Ok(Response {
+                status: 200,
+                body: serde_json::to_vec(&json!({ "revisions": [], "upto": 0 }))
+                    .expect("serialisable"),
+            });
+        }
+        self.server.0.borrow_mut().handle(request)
+    }
+}
+
+/// A client on the shared fake whose first revision read is blind.
+fn blind_client(shared: &Shared) -> (Client<BlindFirstPull>, Rc<Cell<bool>>) {
+    let blind = Rc::new(Cell::new(true));
+    let mut client = Client::new(
+        "http://fake.test",
+        BlindFirstPull {
+            server: shared.clone(),
+            blind: blind.clone(),
+        },
+    );
+    client.token("password").expect("token");
+    (client, blind)
+}
+
+#[test]
+fn a_peer_committing_the_same_bytes_converges_without_a_conflict() {
+    // A vault kept in two folders whose bytes already match: the second folder's
+    // first pass races the first folder's, and its commit lands against a head
+    // that moved. Identical bytes are not a conflict.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "hello.txt", b"same bytes");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    assert_eq!(shared.0.borrow().head(), 1);
+
+    let mut b = engine(b_root.path());
+    write_client(b_root.path(), "hello.txt", b"same bytes");
+    let (mut b_client, blind) = blind_client(&shared);
+
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(!blind.get(), "the blind read was consumed");
+    assert_eq!(report.conflicts, 0, "identical bytes are not a conflict");
+    assert_eq!(report.uploaded, 1, "B adopts A's revision as its own");
+    assert!(
+        read_client(b_root.path(), "hello (conflicted copy 2026-10-16).txt").is_none(),
+        "no stray conflicted copy on disk"
+    );
+
+    // Converged: nothing left to do, and the server still holds one revision.
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert!(report.is_quiet(), "settled after adopting: {report:?}");
+    assert_eq!(
+        shared.0.borrow().head(),
+        1,
+        "no duplicate revision was added"
+    );
+}
+
+#[test]
+fn a_peer_committing_another_file_is_retried_not_conflicted() {
+    // The head moved because a peer committed a *different* file. Ours is still
+    // news: it should be committed against the new head, not turned into a copy.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "other.txt", b"a's file");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    write_client(b_root.path(), "hello.txt", b"b's file");
+    let (mut b_client, _blind) = blind_client(&shared);
+
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 0, "a different file is not a conflict");
+    assert_eq!(report.uploaded, 1, "B commits its own file after the retry");
+    assert_eq!(
+        read_client(b_root.path(), "hello.txt").as_deref(),
+        Some(&b"b's file"[..]),
+        "B's file is untouched"
+    );
+
+    // Both files are on the server, and a fresh peer sees both.
+    let c_root = tempfile::tempdir().unwrap();
+    let mut c = engine(c_root.path());
+    let mut c_client = client(&shared);
+    let report = c.sync_once(&mut c_client, "2026-10-16").unwrap();
+    assert_eq!(report.downloaded, 2, "both files are in the vault");
+}
+
+#[test]
+fn a_peer_committing_different_bytes_keeps_a_conflicted_copy() {
+    // The head moved because a peer committed a different version of *this* file.
+    // Ours must survive under a conflicted name.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+
+    let mut a = engine(a_root.path());
+    let mut a_client = client(&shared);
+    write_client(a_root.path(), "notes.txt", b"a's version");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let mut b = engine(b_root.path());
+    write_client(b_root.path(), "notes.txt", b"b's version");
+    let (mut b_client, _blind) = blind_client(&shared);
+
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 1, "different bytes for one file conflict");
+    assert_eq!(
+        read_client(b_root.path(), "notes (conflicted copy 2026-10-16).txt").as_deref(),
+        Some(&b"b's version"[..]),
+        "B's bytes survive under a conflicted name"
+    );
+}
+
 #[test]
 fn a_local_delete_propagates_as_a_tombstone() {
     let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
@@ -462,7 +602,6 @@ fn pseudorandom(len: usize) -> Vec<u8> {
 }
 
 // ---- the pull→store tee ------------------------------------------------------
-
 /// A [`PullStore`] that records what a pull downloaded, behind a shared handle so the
 /// test can inspect it after the engine (which owns the store) has synced. This stands
 /// in for the local ciphertext store a mounted vault reads from. `Arc<Mutex<..>>` so it

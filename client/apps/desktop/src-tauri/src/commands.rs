@@ -2,58 +2,68 @@
 //! cheap lock) or, for anything that blocks — unlocking (Argon2id), the network —
 //! hand the work to a blocking thread so the webview never stalls.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::{command, AppHandle, State};
 
 use tauri_plugin_autostart::ManagerExt as _;
 
+use syncbox_agent::SyncEvent;
 use syncbox_transport::{Client, UreqHttp};
 
-use crate::dto::{self, Activity, Status, VaultChoice, VaultSettings};
-use crate::state::Shared;
+use crate::dto::{self, Activity, FolderSnapshot, Status, VaultChoice, VaultSettings};
+use crate::state::{AppState, Shared};
 
-/// The current sync status (state, last pass, any error).
+/// The current sync status (state, last pass, any error), aggregated across the
+/// folder workers.
 #[command]
 pub fn status(shared: State<'_, Shared>) -> Result<Status, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
-    Ok(match state.worker() {
-        Some(worker) => dto::status(&worker.status(), Some(worker.vault_id().to_owned())),
-        None => dto::locked(),
-    })
+    Ok(current_status(&state))
 }
 
-/// The recent sync activity feed, oldest first.
+/// The recent sync activity feed across folders, oldest first.
 #[command]
 pub fn activity(shared: State<'_, Shared>) -> Result<Vec<Activity>, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
-    Ok(match state.worker() {
-        Some(worker) => dto::activity(&worker.history()),
-        None => Vec::new(),
-    })
+    let mut entries: Vec<(String, SyncEvent)> = Vec::new();
+    for worker in state.workers() {
+        let folder = worker.folder().display().to_string();
+        for event in worker.history() {
+            entries.push((folder.clone(), event));
+        }
+    }
+    // One feed for the vault: merge the folders' histories by time, newest last,
+    // and cap so a long-running app does not grow an unbounded list.
+    entries.sort_by_key(|(_, event)| match event {
+        SyncEvent::Done { at_unix, .. } | SyncEvent::Failed { at_unix, .. } => *at_unix,
+    });
+    if entries.len() > HISTORY_LIMIT {
+        entries.drain(..entries.len() - HISTORY_LIMIT);
+    }
+    Ok(dto::activity(&entries))
 }
 
-/// Unlocks the vault and starts the background loop. Blocks on key derivation, so
-/// it runs off the main thread.
+/// How many activity rows the merged feed keeps.
+const HISTORY_LIMIT: usize = 50;
+
+/// Unlocks the vault and starts a background loop per folder. Blocks on key
+/// derivation, so it runs off the main thread.
 #[command]
 pub async fn unlock(shared: State<'_, Shared>, settings: VaultSettings) -> Result<Status, String> {
     let shared = Arc::clone(shared.inner());
-    let (config, password) = settings.into_parts();
+    let (session, password) = settings.into_parts();
     tauri::async_runtime::spawn_blocking(move || {
         let mut state = shared.lock().map_err(|e| e.to_string())?;
-        state.unlock_vault(config, password)?;
-        let worker = state.worker().ok_or("the vault did not start syncing")?;
-        Ok(dto::status(
-            &worker.status(),
-            Some(worker.vault_id().to_owned()),
-        ))
+        state.unlock_vault(session, password)?;
+        Ok(current_status(&state))
     })
     .await
     .map_err(|e| format!("unlock task failed: {e}"))?
 }
 
-/// Locks the vault: stops the loop and drops the keys.
+/// Locks the vault: stops the loops and drops the keys.
 #[command]
 pub fn lock(shared: State<'_, Shared>) -> Result<Status, String> {
     let mut state = shared.lock().map_err(|e| e.to_string())?;
@@ -61,18 +71,34 @@ pub fn lock(shared: State<'_, Shared>) -> Result<Status, String> {
     Ok(dto::locked())
 }
 
-/// Asks the loop to run a pass now (non-blocking) and returns the current status.
+/// Asks every loop to run a pass now (non-blocking) and returns the current
+/// status.
 #[command]
 pub fn sync_now(shared: State<'_, Shared>) -> Result<Status, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
-    let worker = state
-        .worker()
-        .ok_or("the vault is locked — unlock it first")?;
-    worker.request_sync();
-    Ok(dto::status(
-        &worker.status(),
-        Some(worker.vault_id().to_owned()),
-    ))
+    if state.workers().is_empty() {
+        return Err("the vault is locked — unlock it first".into());
+    }
+    for worker in state.workers() {
+        worker.request_sync();
+    }
+    Ok(current_status(&state))
+}
+
+/// The aggregated status of a state's workers, or the locked shape when none run.
+fn current_status(state: &AppState) -> Status {
+    let workers = state.workers();
+    let Some(first) = workers.first() else {
+        return dto::locked();
+    };
+    let folders: Vec<FolderSnapshot> = workers
+        .iter()
+        .map(|worker| FolderSnapshot {
+            folder: worker.folder().display().to_string(),
+            status: worker.status(),
+        })
+        .collect();
+    dto::status(Some(first.vault_id().to_owned()), &folders)
 }
 
 /// Creates a vault header at `dir` and returns its root directory id. Runs off the
@@ -107,12 +133,17 @@ pub async fn list_vaults(server: String, password: String) -> Result<Vec<VaultCh
             .token(&password)
             .and_then(|_| client.vaults())
             .map_err(|e| format!("could not read the server's vaults: {e}"))?;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let home = home.as_deref();
         Ok(listing
             .vaults
             .iter()
             .map(|vault| VaultChoice {
                 id: vault.id.clone(),
                 name: vault.name.clone(),
+                location: vault.location.clone(),
+                default_folder: dto::resolve_location(&vault.location, home)
+                    .map(|path| path.display().to_string()),
                 archived: vault.archived,
             })
             .collect())

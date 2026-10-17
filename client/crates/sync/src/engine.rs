@@ -14,6 +14,10 @@
 //! * The log carries tombstones too: a `deleted` revision is how a deletion
 //!   propagates. The newest revision for a file key — by revision number, since
 //!   the log is ordered — is that file's current state.
+//! * A `409` is not automatically a conflict: the head can move because a peer
+//!   committed the same bytes (adopt them), or a different file (commit ours
+//!   again against the new head). Only a peer's different bytes for *this* file
+//!   are kept as a conflicted copy.
 //!
 //! That means the index needs only one number per file (`FileEntry::revision`, the
 //! log position the file's local copy matches) to know whether it is ahead, behind,
@@ -570,37 +574,102 @@ impl<I: Index> Engine<I> {
                     deleted: false,
                 },
             };
+            // What the commit settled at, when it settled: the peer's revision
+            // we adopted, or the one the server assigned. `None` with
+            // `conflicted` set means ours was kept under a conflicted name.
+            let mut landed: Option<u64> = None;
+            let mut conflicted = false;
             match client.commit(vault_id, &request) {
-                Ok(response) => {
-                    head = response.revision;
-                    self.index.put_file(FileEntry {
-                        path,
-                        dir_id,
-                        cipher_name,
-                        size: plan.plaintext_size,
-                        modified_unix: mtime,
-                        revision: response.revision,
-                        chunk_ids: plan.chunk_ids,
-                        local_dirty: false,
-                        remote_dirty: false,
-                    });
-                    report.uploaded += 1;
-                }
+                Ok(response) => landed = Some(response.revision),
                 Err(TransportError::Refused { ref code, .. }) if code == "conflict" => {
-                    // Another client advanced the head first. Keep our bytes under a
-                    // conflicted name rather than lose them; leave the index record
-                    // untouched so a later pass reconciles the canonical copy.
-                    // The copy streams through the OS — a conflicted 4 GiB file
-                    // should not need 4 GiB of RAM to be kept.
-                    let copy = conflict_path(&path, now);
-                    copy_local(self.vault.plaintext_root(), &path, &copy)?;
-                    report.conflicts += 1;
+                    // Another client advanced the head first. What that means
+                    // depends on what landed, which the log tells us: this very
+                    // content (adopt it — the vault already holds it), something
+                    // else entirely, such as another file (commit ours again
+                    // against the new head), or different bytes for this file
+                    // (keep ours as a conflicted copy rather than lose them).
+                    // The head is refreshed in every case, so one collision does
+                    // not make the rest of this pass 409 too. The conflicted copy
+                    // streams through the OS — a conflicted 4 GiB file should not
+                    // need 4 GiB of RAM to be kept.
+                    let (newest, fresh_head) =
+                        self.newest_for_key(client, vault_id, head, &dir_id, &cipher_name)?;
+                    head = head.max(fresh_head);
+                    match newest {
+                        Some(revision)
+                            if revision.size == plan.plaintext_size
+                                && revision.manifest == BASE64.encode(&plan.manifest) =>
+                        {
+                            landed = Some(revision.revision);
+                        }
+                        None => {
+                            let retry = CommitRequest {
+                                parent: head,
+                                revision: Revision {
+                                    parent: head,
+                                    ..request.revision.clone()
+                                },
+                            };
+                            landed = Some(client.commit(vault_id, &retry)?.revision);
+                        }
+                        Some(_) => {
+                            let copy = conflict_path(&path, now);
+                            copy_local(self.vault.plaintext_root(), &path, &copy)?;
+                            conflicted = true;
+                        }
+                    }
                 }
                 Err(other) => return Err(SyncError::from(other)),
+            }
+
+            if conflicted {
+                report.conflicts += 1;
+            } else {
+                let revision = landed.expect("a settled commit records a revision");
+                head = head.max(revision);
+                self.index.put_file(FileEntry {
+                    path,
+                    dir_id,
+                    cipher_name,
+                    size: plan.plaintext_size,
+                    modified_unix: mtime,
+                    revision,
+                    chunk_ids: plan.chunk_ids,
+                    local_dirty: false,
+                    remote_dirty: false,
+                });
+                report.uploaded += 1;
             }
         }
 
         Ok(())
+    }
+
+    /// Re-reads the vault's log past `since` and reports the newest revision for one
+    /// file key, plus the head that log has reached. This is what a `409` needs to
+    /// tell "a peer committed the same bytes" (adopt them) from "a peer committed
+    /// different bytes for this file" (keep a conflicted copy), and to stop the rest
+    /// of a pass from committing against a head that already moved.
+    fn newest_for_key<H: Http>(
+        &self,
+        client: &mut Client<H>,
+        vault_id: &str,
+        since: u64,
+        dir_id: &DirId,
+        cipher_name: &str,
+    ) -> Result<(Option<Revision>, u64)> {
+        let page = client.revisions(vault_id, since)?;
+        let head = page.upto;
+        let mut newest: Option<Revision> = None;
+        for revision in page.revisions {
+            if revision.dir_id == dir_id.as_str() && revision.cipher_name == cipher_name {
+                match &newest {
+                    Some(current) if current.revision >= revision.revision => {}
+                    _ => newest = Some(revision),
+                }
+            }
+        }
+        Ok((newest, head))
     }
 
     /// Uploads every dirty index record as a verbatim ciphertext relay: with no

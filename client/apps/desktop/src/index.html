@@ -103,7 +103,7 @@
       table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
       th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
       th { color: var(--muted); font-weight: 500; font-size: 12px; }
-      td.id { font-family: ui-monospace, monospace; font-size: 12px; }
+      td.id, span.id { font-family: ui-monospace, monospace; font-size: 12px; }
       .msg { font-size: 13px; }
       .msg.err { color: var(--err); }
       .msg.ok { color: var(--ok); }
@@ -130,8 +130,16 @@
                 </select>
               </label>
               <label>Vault folder<input id="vaultDir" placeholder="~/.syncbox/vault" /></label>
-              <label>Sync folder<input id="folder" placeholder="~/Syncbox" /></label>
               <label>Password<input id="password" type="password" /></label>
+            </div>
+            <div id="folders-block" style="margin-top: 10px">
+              <div class="muted" style="font-size: 12px">
+                Folders to keep in sync — the vault can live in as many as you want
+              </div>
+              <div id="folderRows"></div>
+              <button id="addFolder" class="secondary" type="button" style="margin-top: 6px">
+                Add folder
+              </button>
             </div>
             <div class="row" id="pairing" style="margin-top: 10px; align-items: center">
               <button id="find" class="secondary">Find vaults</button>
@@ -149,9 +157,11 @@
           <div id="unlocked-view" class="hidden">
             <div class="kv">
               <span>Vault</span><b id="u-vault">—</b>
+              <span>Folders</span><b id="u-folders" class="stat">0</b>
               <span>Last synced</span><b id="u-last" class="stat">—</b>
               <span>Passes</span><b id="u-passes" class="stat">0</b>
             </div>
+            <ul class="feed" id="u-folder-list"></ul>
             <p class="msg err hidden" id="u-error" style="margin: 8px 0 0"></p>
             <div class="row" style="margin-top: 12px">
               <button id="sync">Sync now</button>
@@ -183,6 +193,10 @@
       // prints the operator's name instead, and the id itself only where this
       // session never learned one (an id typed by hand).
       const vaultNames = new Map();
+      // The folder the operator set for each vault, resolved against this
+      // machine's home. It prefills the folders editor; a vault can still be
+      // kept in more folders than that one.
+      const vaultDefaults = new Map();
 
       const fmtTime = (unix) =>
         unix ? new Date(unix * 1000).toLocaleString() : "never";
@@ -194,8 +208,22 @@
         $("locked-view").classList.toggle("hidden", s.unlocked);
         $("unlocked-view").classList.toggle("hidden", !s.unlocked);
         if (s.vaultId) $("u-vault").textContent = vaultNames.get(s.vaultId) || s.vaultId;
+        const folders = s.folders || [];
+        $("u-folders").textContent = String(folders.length);
         $("u-last").textContent = fmtTime(s.lastSyncUnix);
         $("u-passes").textContent = String(s.passes);
+        // One row per folder: with a vault in several folders, which one is
+        // behind (or failed) is the thing worth showing.
+        $("u-folder-list").innerHTML = folders
+          .map((f) => {
+            const note = f.lastError
+              ? `failed: ${escapeHtml(f.lastError)}`
+              : `${f.state} · ${fmtTime(f.lastSyncUnix)}`;
+            return `<li><span class="dot ${f.state === "error" ? "failed" : "done"}"></span>
+              <span class="id">${escapeHtml(f.folder)}</span>
+              <span class="muted" style="margin-left:auto">${note}</span></li>`;
+          })
+          .join("");
         // The one thing the removed "Last pass" panel said that the feed
         // cannot: whether the state right now is a failed one, and why.
         const problem = $("u-error");
@@ -219,11 +247,18 @@
                   ? `synced (+${e.report.uploaded}/-${e.report.downloaded})`
                   : "in sync"
                 : `failed: ${escapeHtml(e.error || "")}`;
+            const folder = e.folder ? basename(e.folder) : "";
             return `<li><span class="dot ${e.kind}"></span>
+              <span class="id">${escapeHtml(folder)}</span>
               <span>${label}</span>
               <span class="muted" style="margin-left:auto">${fmtTime(e.atUnix)}</span></li>`;
           })
           .join("");
+      }
+
+      function basename(path) {
+        const parts = String(path).split("/");
+        return parts[parts.length - 1] || path;
       }
 
       async function refresh() {
@@ -244,15 +279,54 @@
         return $("manualId").checked ? $("vaultId").value.trim() : $("vaultPick").value;
       }
 
+      function folderInputs() {
+        return [...document.querySelectorAll("#folderRows .folderInput")];
+      }
+
+      // A folder row is a path and a Remove button. Removing the last one grows
+      // a fresh empty row, so the editor is never a dead end.
+      function addFolderRow(value = "") {
+        const row = document.createElement("div");
+        row.className = "row";
+        row.style.marginTop = "6px";
+        const input = document.createElement("input");
+        input.className = "folderInput";
+        input.placeholder = "~/Syncbox";
+        input.value = value;
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "secondary";
+        remove.textContent = "Remove";
+        remove.addEventListener("click", () => {
+          row.remove();
+          if (folderInputs().length === 0) addFolderRow();
+        });
+        row.append(input, remove);
+        $("folderRows").appendChild(row);
+      }
+
+      // The operator set a folder for this vault; put it in the first row. A
+      // vault with no server location leaves whatever the human typed alone.
+      function applyDefaultFolder() {
+        const def = vaultDefaults.get($("vaultPick").value);
+        if (!def) return;
+        const inputs = folderInputs();
+        if (inputs.length === 0) addFolderRow(def);
+        else inputs[0].value = def;
+      }
+
       function settings() {
         return {
           server: $("server").value.trim(),
           vaultId: chosenVaultId(),
           vaultDir: $("vaultDir").value.trim(),
-          folder: $("folder").value.trim(),
+          folders: folderInputs().map((i) => i.value.trim()).filter(Boolean),
           password: $("password").value,
         };
       }
+
+      $("addFolder").addEventListener("click", () => addFolderRow());
+      $("vaultPick").addEventListener("change", applyDefaultFolder);
 
       // Pairing: the operator named the vault on the server, so the human
       // finds and picks the name; the id rides along unseen. One vault means
@@ -269,6 +343,7 @@
           });
           const live = vaults.filter((v) => !v.archived);
           vaultNames.clear();
+          vaultDefaults.clear();
           pick.innerHTML = "";
           for (const v of live) {
             const option = document.createElement("option");
@@ -279,6 +354,7 @@
             // then the id is all there is to show.
             option.textContent = v.name || v.id;
             vaultNames.set(v.id, v.name || v.id);
+            if (v.defaultFolder) vaultDefaults.set(v.id, v.defaultFolder);
             pick.appendChild(option);
           }
           pick.disabled = live.length === 0 || $("manualId").checked;
@@ -290,6 +366,7 @@
           } else {
             msg.textContent = live.length + " vaults on this server — pick one.";
           }
+          applyDefaultFolder();
         } catch (err) {
           msg.className = "msg err";
           msg.textContent = String(err);
@@ -310,6 +387,11 @@
         if (!chosenVaultId()) {
           msg.className = "msg err";
           msg.textContent = "Pick a vault first — Find vaults, or tick “enter vault id by hand”.";
+          return;
+        }
+        if (settings().folders.length === 0) {
+          msg.className = "msg err";
+          msg.textContent = "Add at least one folder to keep in sync.";
           return;
         }
         msg.textContent = "Unlocking…";
@@ -376,6 +458,10 @@
           $("autostart-msg").textContent = String(err);
         }
       });
+
+      // One folder row to start, so the editor is ready before Find vaults
+      // prefills it with the vault's server-side location.
+      addFolderRow();
 
       refresh();
       setInterval(refresh, 2000);
