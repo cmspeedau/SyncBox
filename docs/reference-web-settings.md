@@ -24,7 +24,7 @@ Shared shell, one scrollable column (660 px centred):
 
 | Block | Content |
 |---|---|
-| About server | server name as the card title; version + **check for updates**; storage backend + data dir; agent installer links (macOS / Windows / Linux) |
+| About server | server name as the card title; version; **storage — live** stat block: four counters (chunks, chunk bytes, revisions, largest chunk) re-read from `/healthz` every 5 s under a green *live* dot — a poll, not a page-load snapshot; storage backend + data dir; agent installer links (macOS / Windows / Linux). **No `check for updates`** — there is no endpoint and no release feed behind it; it must not ship dead, and re-adding it is the PR that designs the feed |
 | Change password | the vault password; changing it re-wraps the vault key on the server — zero-knowledge, so no one can reset it for you |
 | Snapshots | **Take a snapshot** button; schedule select + inline *Apply* (every 15 min … once a day, plus *Off*); sealed-snapshot list (stamp, short hash, size, age) with per-row **Verify** |
 
@@ -70,6 +70,12 @@ Design tokens are unchanged from the Files UI
 22 px pills, sidebar gradient, 12–13 px type — the settings page must read
 as the same app. Implementation: same web frontend, route `/settings`;
 the blocks map to server API calls (about, password rewrap, backups).
+
+Pass 2: the About-server stats block inherits today's console strip —
+`/healthz` polled every 5 s, kept live (the rewrite must not downgrade it
+to a page-load snapshot). The theme override lives in the shared shell's
+sidebar footer ([`reference-web-ui.md`](reference-web-ui.md)), not on this
+page — including the **drafted dark palette** recorded there.
 
 The two references share one sidebar shell; the Files UI side is documented
 in [`reference-web-ui.md`](reference-web-ui.md).

@@ -19,7 +19,18 @@ button in the main window. Three regions:
 |---|---|
 | Rail (200 px) | vault card (lock + name, storage bar, "1.8 GB of 50 GB · 412 files") over the page list |
 | Page area | Sync Files · Account · Notifications · About |
-| Footer bar | *Run at login* toggle, right-aligned (app-wide, so not a page item) |
+| Footer bar | *Run at login* and **Show hidden features** toggles, right-aligned (app-wide, so not page items) |
+
+### Show hidden features
+
+App-wide toggle in the footer bar. **Off (default):** the out-of-the-box
+flow — the client picks vaults from the server, the sync folder is the
+server-derived one, ids are never typed, no vault is created from here.
+**On:** reveals the three advanced controls designed in
+[`reference-agent-ui.md`](reference-agent-ui.md) — the `+ New vault` row in
+the picker, the *Enter id by hand* segment, and extra sync folders. It
+gates controls that exist, so unlike the `new`-badged controls below it is
+honest from its first ship.
 
 ## Pages
 
@@ -64,6 +75,7 @@ Device ID (support handle), agent version, server version, `Open logs…`,
 |---|---|
 | Rail storage card | `Index::files()`, `referenced_bytes()` (+ quota when the server reports one) |
 | Run at login | `get_autostart` / `set_autostart` |
+| Show hidden features | new agent pref; gates UI only, stores nothing else |
 | Sync folder Open | open-folder command |
 | Change… (server), vault re-pick | first-run flow + `list_vaults` |
 | Choose folders | folder set from `Index::files()` paths; selection = new per-device rule the agent applies when downloading (server untouched) |
@@ -79,6 +91,8 @@ Device ID (support handle), agent version, server version, `Open logs…`,
 3. Vault auto-lock after inactivity.
 4. Notification preferences.
 5. Update checker.
+6. Hidden-tier pref (`Show hidden`) gating client-side vault creation,
+   by-hand vault id, and extra sync folders.
 
 ## Dropped from the OneDrive baseline on purpose
 

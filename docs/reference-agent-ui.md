@@ -80,10 +80,31 @@ equivalents.)
    ([`reference-web-login.md`](reference-web-login.md)) — distinct from the
    *vault* password, which only ever appears in the unlock window.
 2. **Vault picker** — rows from `list_vaults` (`VaultChoice`: name, size,
-   file count; archived hidden).
-3. **Sync folder** — defaults to `~/Syncbox/<vault>`.
+   file count; archived hidden). By default this is the **only** way a
+   client gets a vault: the out-of-the-box client never creates one, never
+   types an id, never picks a folder.
+3. **Sync folder — automatic, read-only** — the server's location for the
+   space: its **name** under the client's sync root (`~/Syncbox/<vault>`),
+   derived by the server at registration and shown as a locked line, nothing
+   to type or pick. Renaming the space does not move it.
 4. **Save & unlock** → the main window shows the vault list, and the unlock
    window opens for the chosen vault.
+
+### Hidden tier — `Show hidden` in settings
+
+Three advanced behaviours belong to this design but are **absent from every
+default screen** until the *Show hidden features* switch is on in the
+settings window ([`reference-agent-settings.md`](reference-agent-settings.md)):
+
+| Revealed control | Behaviour |
+|---|---|
+| `+ New vault` row under the picker rows | creates the space on the server — **name only**, the location derives from the name (same rule as the console) |
+| `Enter id by hand` segment on the picker | escape hatch when `list_vaults` cannot reach the server or list what the user knows exists |
+| Folder list with *Add another folder* | extra sync folders beside the automatic one; each folder is a copy of the space, changes in any sync to all |
+
+The switch gates controls that really exist, so it is never decorative in
+either state. Out of the box the flow draws none of these: *sign in → pick
+from server → auto folder → unlock*.
 
 Unlock window: padlock title naming the vault, password field, *Cancel* /
 *Unlock & sync* → `unlock` command; the window closes, the row flips to
@@ -133,6 +154,10 @@ text, locked `#EEF1F4` on `#66727E` text.
 Geometry: window radius 12 px (OS title bar sits above — the design has no
 chrome), pills 22 px, vault rows 8 px radius; state dot 9 px with a 3 px
 white halo; locked row icon dim 0.55.
+
+Dark mode follows the **drafted dark palette** in
+[`reference-web-ui.md`](reference-web-ui.md) — drafted, not shippable until
+a build renders it.
 
 ## Design sources
 

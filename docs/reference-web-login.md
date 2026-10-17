@@ -66,6 +66,10 @@ Deliberately absent: username field (v1 has one server password, not users),
    mismatch → "Passwords don't match" with the error border on the second
    field. A successful Confirm stores the password and the page becomes the
    normal sign-in.
+6. Session expiry is this page's problem too: a `401` from any later API
+   call returns here with **"The session ended. Sign in again."** in the
+   reserved error slot. The wording is part of the design — the shipped
+   console says it, and the rewrite must keep saying it.
 
 ## Implementation notes
 

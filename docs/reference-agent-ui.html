@@ -100,6 +100,17 @@
   .usage .r { margin-left: auto; }
   .setup-btn { width: 100%; border: 0; border-radius: 22px; padding: 13px; font: 700 13.5px var(--font-sans); cursor: pointer; display: none; align-items: center; justify-content: center; gap: 9px; background: #006aa3; color: #fff; box-shadow: 0 3px 10px rgba(0,80,130,.35); }
   .setup-btn:hover { background: #0075b3; }
+  .hgroup { display: none; border: 1px dashed #7db4d8; border-radius: 10px; padding: 9px 8px 8px; position: relative; }
+  .hgroup.show { display: block; }
+  .hgroup .rtag { position: absolute; top: -7px; left: 10px; background: #fff; color: #006aa3; font-size: 8.5px; font-weight: 700; padding: 0 5px; letter-spacing: .04em; }
+  .seg { display: flex; background: #fff; border: 1px solid #b7cfe0; border-radius: 20px; padding: 3px; gap: 3px; }
+  .seg button { flex: 1; border: 0; background: none; font: inherit; font-size: 11.5px; padding: 5px 0; border-radius: 17px; color: #7a8694; cursor: pointer; }
+  .seg button.on { background: #006aa3; color: #fff; font-weight: 700; }
+  .newrow { border: 1px dashed #7db4d8; border-radius: 14px; color: #006aa3; font-weight: 700; font-size: 11.5px; text-align: center; padding: 7px; cursor: pointer; background: #fff; }
+  .autof { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: #f3f9fd; border: 1px solid #dbe7f0; border-radius: 14px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; color: #272833; }
+  .autof .auto { margin-left: auto; background: #e8f3fb; color: #006aa3; border-radius: 20px; padding: 1px 8px; font-size: 9px; font-weight: 700; flex: none; font-family: var(--font-sans); }
+  .autof .auto.byhand { background: #eef1f4; color: #66727e; }
+  .addf { border: 1px dashed #7db4d8; color: #006aa3; font-weight: 700; font-size: 11px; border-radius: 16px; padding: 6px; text-align: center; margin-top: 6px; cursor: pointer; }
   .setup-btn:disabled { opacity: .5; cursor: default; }
   .setup .setup-btn { display: flex; }
 
@@ -184,14 +195,26 @@
         </label>
         <div class="step1-only" style="font-size:11.5px;color:#7a8694;">The address your Syncbox server is reachable at, and its password — the same one the web login asks for.</div>
         <div class="fld" style="display:none;" id="vaultFld">Choose a vault
+          <div class="hgroup" id="gSeg" style="margin-bottom:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="seg"><button class="on" type="button">Choose from server</button><button type="button">Enter id by hand</button></div>
+          </div>
           <div class="vaults">
             <label><input type="radio" name="v" value="0" checked><span><span class="vn">Files synced</span><span class="vm"> · 412 files, 1.8 GB</span></span></label>
             <label><input type="radio" name="v" value="1"><span><span class="vn">Photos</span><span class="vm"> · 12.4k files, 64 GB</span></span></label>
           </div>
+          <div class="hgroup" id="gNew" style="margin-top:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="newrow" role="button">＋ New vault <span style="font-weight:400;color:#7a8694;">· name only</span></div>
+          </div>
         </div>
-        <label class="fld vaultFld2" style="display:none;">Sync folder on this computer
-          <input id="folder" type="text" value="/home/you/Syncbox/Files synced" spellcheck="false">
-        </label>
+        <div class="fld vaultFld2" style="display:none;">Sync folder — set automatically
+          <div class="autof">⌂ /home/you/Syncbox/Files synced <span class="auto">AUTO</span></div>
+          <div style="font-size:10.5px;color:#7a8694;margin-top:4px;">Chosen by the server — the vault's name under your sync folder. Nothing to pick; renaming the vault does not move it.</div>
+          <div class="hgroup" id="gFolders" style="margin-top:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="autof">⌂ /home/you/LaptopMirror/Files synced <span class="auto byhand">BY HAND</span></div>
+            <div class="addf" role="button">＋ Add another folder</div>
+          </div>
+        </div>
+        <label style="display:flex;gap:7px;align-items:center;font-size:10.5px;color:#7a8694;"><input type="checkbox" id="hiddenDemo"> demo — Show hidden features is on (the real switch lives in the settings window footer)</label>
       </div>
 
       <div class="mid">
@@ -239,7 +262,7 @@
     <div class="ref"><img loading="lazy" src="https://support.microsoft.com/en-us/onedrive/media/onedrive-settings-ui-new.png" alt=""><div class="b"><b>OneDrive (new sync app)</b><p>A settings window of its own; report lines, pause/resume, usage footer.<br><a href="https://support.microsoft.com/en-us/onedrive/how-to-access-onedrive-settings" target="_blank" rel="noopener">Microsoft Support</a></p></div></div>
   </div>
 
-  <div class="note">Two windows in this mock: <b>main</b> (status + vault list) and <b>unlock</b> (its own webview, so the password goes straight to the <code>unlock</code> command and never touches the main window). The <b>gear</b> opens a click menu — <i>Settings…</i> (a window of its own, designed in <code>reference-agent-settings.html</code>), <i>Pause syncing</i> / <i>Resume syncing</i>, and <i>Quit</i> (red, under a divider). First run: <i>Connect</i> (address + server password → token) → <code>list_vaults</code> → picker rows ← <code>VaultChoice</code>; <i>Save &amp; unlock</i> lands on the vault list with the unlock window up for the chosen vault. Locking is per-vault: a locked row dims its icon and carries a grey chip + <i>Unlock</i>. States: <code>SyncState</code> → dot, <code>AgentStatus</code> → banners/passes. Pause remains the one new agent concept.</div>
+  <div class="note">Two windows in this mock: <b>main</b> (status + vault list) and <b>unlock</b> (its own webview, so the password goes straight to the <code>unlock</code> command and never touches the main window). The <b>gear</b> opens a click menu — <i>Settings…</i> (a window of its own, designed in <code>reference-agent-settings.html</code>), <i>Pause syncing</i> / <i>Resume syncing</i>, and <i>Quit</i> (red, under a divider). First run: <i>Connect</i> (address + server password → token) → <code>list_vaults</code> → picker rows ← <code>VaultChoice</code>; <i>Save &amp; unlock</i> lands on the vault list with the unlock window up for the chosen vault. Locking is per-vault: a locked row dims its icon and carries a grey chip + <i>Unlock</i>. States: <code>SyncState</code> → dot, <code>AgentStatus</code> → banners/passes. Pause remains the one new agent concept. <b>Pass 2:</b> the default flow is <i>sign in → pick from server → auto folder → unlock</i> — the sync folder is the server-derived one, shown read-only, and the advanced controls (<i>＋ New vault</i> name-only, <i>Enter id by hand</i>, extra sync folders) appear only when <i>Show hidden features</i> is on in settings — tick the demo checkbox to see them revealed.</div>
 </div>
 
 <script>
@@ -253,6 +276,10 @@ var win = document.getElementById('win');
 var phase = 'setup', step = 1;
 var state = 'idle', timer = null, pct = 0, syncingVault = 0, unlockingVault = null, folderFlash = null;
 var TXT = { idle: 'up to date', sync: 'syncing…', err: 'sync error', pause: 'paused' };
+document.getElementById('hiddenDemo').addEventListener('change', function() {
+  var on = this.checked;
+  ['gSeg', 'gNew', 'gFolders'].forEach(function(id) { document.getElementById(id).classList.toggle('show', on); });
+});
 
 function renderVaults() {
   document.getElementById('vlist').innerHTML = VAULTS.map(function(v, i) {
