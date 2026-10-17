@@ -53,6 +53,10 @@ type Config struct {
 	// BackupSchedule is how often the server snapshots itself, e.g. "1h". Zero
 	// disables the timer; backups remain available on demand.
 	BackupSchedule time.Duration
+	// BackupPost is a shell command run after every sealed snapshot — the seam
+	// where restic, rsync, or borg carry the sealed bundle offsite. The
+	// snapshot's name and path arrive in the environment; see docs/backup.md.
+	BackupPost string
 	// MaxChunkBytes bounds one uploaded chunk.
 	MaxChunkBytes int64
 	// RatePerSecond sustains requests per second per caller IP; zero (the
@@ -103,6 +107,7 @@ func FromEnv() (Config, error) {
 	cfg.TokenSecret = strings.TrimSpace(os.Getenv("SYNCBOX_TOKEN_SECRET"))
 	cfg.DataDir = valueOr(os.Getenv("SYNCBOX_DATA_DIR"), cfg.DataDir)
 	cfg.BackupTarget = strings.TrimSpace(os.Getenv("SYNCBOX_BACKUP_TARGET"))
+	cfg.BackupPost = strings.TrimSpace(os.Getenv("SYNCBOX_BACKUP_POST"))
 	cfg.S3Endpoint = strings.TrimSpace(os.Getenv("SYNCBOX_S3_ENDPOINT"))
 	cfg.S3Region = firstSet(os.Getenv("SYNCBOX_S3_REGION"), os.Getenv("AWS_REGION"), "us-east-1")
 	cfg.S3AccessKey = firstSet(os.Getenv("SYNCBOX_S3_ACCESS_KEY"), os.Getenv("AWS_ACCESS_KEY_ID"))

@@ -22,7 +22,8 @@ services:
       # supplied (.env); SYNCBOX_S3_ENDPOINT points at MinIO/R2/Wasabi, omit it
       # for AWS. The bucket needs object lock enabled at creation; sealing then
       # means COMPLIANCE retention the service enforces, not a permission bit.
-      # See docs/backup.md.
+      # And SYNCBOX_BACKUP_POST names a command run after every sealed snapshot
+      # (restic/rsync/borg carry it offsite). See docs/backup.md.
       SYNCBOX_BACKUP_SCHEDULE: ${SYNCBOX_BACKUP_SCHEDULE:-1h}
       # No defaults here on purpose. Compose refuses to start rather than bringing
       # up a server with a generated credential that vanishes on the next restart.

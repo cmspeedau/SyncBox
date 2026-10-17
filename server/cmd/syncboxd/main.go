@@ -115,6 +115,10 @@ func serve(args []string, stdout io.Writer) error {
 		}
 		backups = backup.NewManager(tgt, st, version)
 		log.Printf("snapshots go to %s", tgt.Location())
+		if cfg.BackupPost != "" {
+			backups.SetPostHook(backup.PostCommand(tgt, cfg.BackupPost, backupPostTimeout))
+			log.Printf("after sealing, each snapshot runs: %s", cfg.BackupPost)
+		}
 	}
 
 	issuer := auth.NewIssuer(cfg.TokenSecret, cfg.TokenTTL)
@@ -257,6 +261,10 @@ func backupCommand(args []string, stdout io.Writer) error {
 	fmt.Fprintf(stdout, "%s\n", encoded)
 	return nil
 }
+
+// backupPostTimeout bounds one run of the SYNCBOX_BACKUP_POST command. Generous
+// because it is sized for restic over a home uplink, not for a local copy.
+const backupPostTimeout = 30 * time.Minute
 
 // openBackupTarget builds the target the backup location names: an
 // "s3://bucket[/prefix]" URL selects object storage — endpoint, region and

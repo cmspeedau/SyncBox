@@ -33,6 +33,7 @@ func TestFromEnvReadsTheDocumentedNames(t *testing.T) {
 	t.Setenv("SYNCBOX_BACKUP_TARGET", "/mnt/nas/snapshots")
 	t.Setenv("SYNCBOX_TOKEN_TTL", "90s")
 	t.Setenv("SYNCBOX_BACKUP_SCHEDULE", "6h")
+	t.Setenv("SYNCBOX_BACKUP_POST", "restic -r s3://backup/restic backup $SYNCBOX_SNAPSHOT_PATH")
 
 	cfg, err := FromEnv()
 	if err != nil {
@@ -59,6 +60,9 @@ func TestFromEnvReadsTheDocumentedNames(t *testing.T) {
 	}
 	if cfg.BackupSchedule != 6*time.Hour {
 		t.Errorf("BackupSchedule = %s", cfg.BackupSchedule)
+	}
+	if cfg.BackupPost != "restic -r s3://backup/restic backup $SYNCBOX_SNAPSHOT_PATH" {
+		t.Errorf("BackupPost = %q", cfg.BackupPost)
 	}
 }
 
