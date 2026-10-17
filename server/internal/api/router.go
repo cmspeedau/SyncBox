@@ -120,6 +120,8 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /admin/backups/{id}/verify", s.requireToken(http.HandlerFunc(s.handleBackupVerify)))
 	mux.Handle("POST /admin/backups/{id}/restore", s.requireToken(http.HandlerFunc(s.handleBackupRestore)))
 
+	mux.Handle("GET /vaults", s.requireToken(http.HandlerFunc(s.handleVaultsListClient)))
+
 	mux.Handle("GET /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsList)))
 	mux.Handle("POST /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsCreate)))
 	mux.Handle("PATCH /admin/vaults/{id}", s.requireToken(http.HandlerFunc(s.handleAdminVaultsRename)))

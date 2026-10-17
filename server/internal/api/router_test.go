@@ -748,6 +748,59 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	}
 }
 
+// TestClientsSeeVaultsWithoutBookkeeping pins the client-facing read: names
+// and retirement for resolution, and none of the operator's numbers.
+func TestClientsSeeVaultsWithoutBookkeeping(t *testing.T) {
+	c := newClient(t, false)
+
+	response := c.raw(http.MethodGet, "/vaults", nil, "")
+	code, _ := c.errorBodyOf(response)
+	response.Body.Close()
+	if code != "unauthorized" {
+		t.Fatalf("GET /vaults unauthenticated = %q, want unauthorized", code)
+	}
+
+	body, _ := json.Marshal(map[string]string{"name": "Photos"})
+	response = c.do(http.MethodPost, "/admin/vaults", body)
+	var created store.VaultInfo
+	c.mustDecode(response, &created)
+
+	retireBody, _ := json.Marshal(map[string]string{"name": "Old Jobs"})
+	response = c.do(http.MethodPost, "/admin/vaults", retireBody)
+	var retiring store.VaultInfo
+	c.mustDecode(response, &retiring)
+	archiveBody, _ := json.Marshal(map[string]bool{"archived": true})
+	c.do(http.MethodPost, "/admin/vaults/"+retiring.ID+"/archive", archiveBody).Body.Close()
+
+	list := c.do(http.MethodGet, "/vaults", nil)
+	var decoded struct {
+		Vaults []map[string]any `json:"vaults"`
+	}
+	c.mustDecode(list, &decoded)
+
+	byID := map[string]map[string]any{}
+	for _, vault := range decoded.Vaults {
+		byID[vault["id"].(string)] = vault
+	}
+	if len(byID) != 2 {
+		t.Fatalf("client list = %+v, want the two registered vaults", decoded.Vaults)
+	}
+	if photos := byID[created.ID]; photos["name"] != "Photos" || photos["archived"] != false {
+		t.Errorf("Photos reads %+v", photos)
+	}
+	if retired := byID[retiring.ID]; retired["archived"] != true {
+		t.Errorf("retired vault reads %+v, want archived true", retired)
+	}
+	// The fields a client must not receive: the operator's bookkeeping.
+	for _, vault := range decoded.Vaults {
+		for _, forbidden := range []string{"revisions", "live_files", "bytes", "created_at", "last_write_at"} {
+			if _, present := vault[forbidden]; present {
+				t.Errorf("client vault list leaked %q: %+v", forbidden, vault)
+			}
+		}
+	}
+}
+
 func TestConsoleServedToBrowsers(t *testing.T) {
 	c := newClient(t, false)
 

@@ -70,6 +70,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"revisions":      "GET|POST /api/v1/vaults/{vaultID}/revisions",
 			"events":         "GET /api/v1/vaults/{vaultID}/events",
 			"chunks":         "GET|PUT /api/v1/vaults/{vaultID}/chunks/{chunkID}",
+			"vaults":         "GET /vaults (bearer token)",
 			"vault_registry": "GET|POST /admin/vaults, PATCH /admin/vaults/{id} (bearer token)",
 			"backups":        "GET|POST /admin/backups (bearer token)",
 		},
@@ -83,6 +84,33 @@ func (s *Server) handleAsset(name string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ui.Serve(w, r, name)
 	}
+}
+
+// clientVault is the registry as a sync client needs it: which vaults exist,
+// what they are called, and which are retired. No bookkeeping — a client
+// resolves a name or auto-selects the sole vault; it has no business auditing
+// the server, and every extra field is one more thing to keep stable.
+type clientVault struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Archived bool   `json:"archived"`
+}
+
+// handleVaultsListClient is the client-facing registry read behind
+// `--vault-name` and sole-vault auto-select (S3). Archived vaults are listed
+// so a client can answer "that vault is retired" rather than "no such
+// vault" — and refuses either way to sync into one by name.
+func (s *Server) handleVaultsListClient(w http.ResponseWriter, r *http.Request) {
+	vaults, err := s.store.ListVaults(r.Context())
+	if err != nil {
+		writeErrorFrom(w, err)
+		return
+	}
+	out := make([]clientVault, 0, len(vaults))
+	for _, vault := range vaults {
+		out = append(out, clientVault{ID: vault.ID, Name: vault.Name, Archived: vault.Archived})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"vaults": out})
 }
 
 func (s *Server) handleAdminVaultsList(w http.ResponseWriter, r *http.Request) {
