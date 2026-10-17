@@ -229,6 +229,52 @@ live, the service's refusal is the system working: `RemoveAll` surfaces it as
 `ErrRetained`, `Prune` counts that snapshot as kept (the report says what is true, not
 what was attempted), and a later pass retires it once the retention date has passed.
 
+## Carrying snapshots offsite: restic as consumer, not backend
+
+The question arrives with every backup story: do we back up *through* restic? **No —
+the verdict is restic (or rsync, or borg) consumes our snapshots; it does not store
+them.** `Target` is a key-value contract (`Write`/`Read` a relative path); a restic
+repository is a content-addressed store with its own snapshots, pack format, dedup, and
+repo locks. Wrapping it turns every `Verify` into a subprocess per file, duplicates GFS
+bookkeeping over restic's own, and points `RemoveAll` at an append-only design built to
+refuse it — all fragility, no property we lacked. The properties people actually buy
+from restic — offsite, dedup, encryption at rest, restore tooling that exists
+independently of us — arrive by having restic **back up the sealed snapshot
+directories**, which works because a snapshot is a finished, checksummed, immutable
+artifact by construction.
+
+The seam is `SYNCBOX_BACKUP_POST`, a shell command the server runs after every sealed
+snapshot — on demand and on schedule alike:
+
+```sh
+SYNCBOX_BACKUP_POST='restic -r s3:offsite.example/snapshots backup $SYNCBOX_SNAPSHOT_PATH'
+```
+
+The command inherits the environment plus `SYNCBOX_SNAPSHOT_ID`,
+`SYNCBOX_SNAPSHOT_REL` (its path inside the target), `SYNCBOX_SNAPSHOT_CREATED_AT`, and
+`SYNCBOX_BACKUP_TARGET`; on a local target it also gets `SYNCBOX_SNAPSHOT_PATH`, the
+absolute directory restic or rsync can read directly. It runs detached from whoever
+asked for the backup — hanging up an admin request must not kill a mid-flight copy —
+with a 30-minute budget, and its output is logged. A tripping hook never fails a
+backup: the snapshot exists and sealed cleanly; hiding that fact because one copy step
+stumbled would be its own lie, so the failure is the hook's news to report, in the log.
+
+The drill ran the whole consumer story with the real restic (0.19.1, static binary):
+`backup now` sealed a bundle, the hook handed it to restic (a 506 KiB, `syncbox`-tagged
+snapshot in the repo), the snapshots directory was then **deleted outright**, restic
+restored the bundle, `syncboxd restore` read the restored bundle into a fresh data
+directory, a fresh server booted from it, and a fresh client synced byte-identical
+files. The chain survives its own disaster.
+
+Two honest edges from the same drill. First, a local target's seal is a permission
+bit: the drill could delete its own sealed bundles after `chmod u+w`, exactly as the
+immutability section promises — only the object-lock target refuses the person with
+the bucket keys. Second, a fresh client folder needs a fresh index: copying a vault
+directory *with* its `index.db` into an empty folder tells the sync engine those
+vanished files were user deletes, and it will faithfully propagate the loss. That is
+the engine working, and it is why the restore drill always starts from `vault.json`
+alone.
+
 ## Limits of the current implementation
 
 - **Snapshots are full, not incremental — on purpose.** A snapshot has to be

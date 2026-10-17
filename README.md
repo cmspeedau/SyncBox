@@ -104,6 +104,9 @@ automatic GC policy (`--gc 1d` on every sync pass — and a GC never runs in
 front of a live mount). Backups now reach object storage: an `s3://` snapshot
 target seals every object version under COMPLIANCE object lock, and the drill
 watched the service itself refuse root's attempt to destroy a sealed version.
+`SYNCBOX_BACKUP_POST` hands each sealed snapshot to restic, rsync, or borg as
+a consumer; the drill carried a bundle through restic, lost the target
+directory entirely, and came back byte-identical.
 
 | Milestone | Scope | Done |
 | --- | --- | --- |
@@ -115,7 +118,7 @@ watched the service itself refuse root's attempt to destroy a sealed version.
 | M5 | Mount: FUSE (macFUSE / WinFsp deferred) | ✅ |
 | M6 | Packaging: Linux ✅; mac/win + signing deferred | 🟡 |
 | M7 | Hardening: conflicts, GC + auto policy, verification, restore drills, resume, rate limits, streaming | ✅ |
-| M8 | Backup targets: S3 object-lock ✅; restic consumer story pending | 🟡 |
+| M8 | Backup targets: S3 object-lock + restic/rsync/borg consumer hook | ✅ |
 
 ## License
 

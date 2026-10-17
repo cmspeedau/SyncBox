@@ -107,15 +107,25 @@ type Source interface {
 
 // Manager creates, lists, verifies, prunes, and restores snapshots.
 type Manager struct {
-	tgt     target.Target
-	src     Source
-	now     func() time.Time
-	version string
+	tgt      target.Target
+	src      Source
+	now      func() time.Time
+	version  string
+	postHook func(context.Context, Snapshot)
 }
 
 // NewManager returns a manager writing into tgt and reading from src.
 func NewManager(tgt target.Target, src Source, serverVersion string) *Manager {
 	return &Manager{tgt: tgt, src: src, now: time.Now, version: serverVersion}
+}
+
+// SetPostHook installs a function that runs after every snapshot this manager
+// seals. A snapshot is committed the moment its seal lands, so the hook is a
+// notification, not a step: its outcome never changes the result of Create,
+// and reporting a failure is the hook's own job (PostCommand logs its shells).
+// Hooks must not block the caller; PostCommand returns at once.
+func (m *Manager) SetPostHook(hook func(context.Context, Snapshot)) {
+	m.postHook = hook
 }
 
 // Create takes a snapshot and seals it, returning what was written.
@@ -184,7 +194,11 @@ func (m *Manager) Create(ctx context.Context, policy Policy) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("sealing snapshot %s: %w", id, err)
 	}
 
-	return Snapshot{ID: id, CreatedAt: manifest.CreatedAt, Manifest: manifest}, nil
+	snapshot := Snapshot{ID: id, CreatedAt: manifest.CreatedAt, Manifest: manifest}
+	if m.postHook != nil {
+		m.postHook(ctx, snapshot)
+	}
+	return snapshot, nil
 }
 
 // copyChunk streams one chunk into the snapshot, checksumming it in passing.
