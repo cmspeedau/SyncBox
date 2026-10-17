@@ -9,9 +9,9 @@ use tauri::{command, AppHandle, State};
 
 use tauri_plugin_autostart::ManagerExt as _;
 
-use syncbox_transport::{Client, TransportError, UreqHttp};
+use syncbox_transport::{Client, UreqHttp};
 
-use crate::dto::{self, Activity, BackupAction, BackupResult, Status, VaultChoice, VaultSettings};
+use crate::dto::{self, Activity, Status, VaultChoice, VaultSettings};
 use crate::state::Shared;
 
 /// The current sync status (state, last pass, any error).
@@ -121,65 +121,13 @@ pub async fn list_vaults(server: String, password: String) -> Result<Vec<VaultCh
     .map_err(|e| format!("vault-list task failed: {e}"))?
 }
 
-/// Lists the server's snapshots for the Backups panel. Rides the admin route with
-/// its own authenticated client — backups are independent of the sync session.
-#[command]
-pub async fn backups(shared: State<'_, Shared>) -> Result<BackupResult, String> {
-    let shared = Arc::clone(shared.inner());
-    tauri::async_runtime::spawn_blocking(move || {
-        let (server, password) = shared
-            .lock()
-            .map_err(|e| e.to_string())?
-            .credentials()
-            .ok_or("the vault is locked — unlock it first")?;
-
-        let mut client = dial(&server, &password);
-        match client.token(&password).and_then(|_| client.backups()) {
-            Ok(snapshots) => Ok(BackupResult::Listed(
-                snapshots.iter().map(dto::backup).collect(),
-            )),
-            Err(error) if is_not_configured(&error) => Ok(BackupResult::NotConfigured),
-            Err(error) => Ok(BackupResult::Error(error.to_string())),
-        }
-    })
-    .await
-    .map_err(|e| format!("backups task failed: {e}"))?
-}
-
-/// Asks the server to take a snapshot now and returns it.
-#[command]
-pub async fn back_up_now(shared: State<'_, Shared>) -> Result<BackupAction, String> {
-    let shared = Arc::clone(shared.inner());
-    tauri::async_runtime::spawn_blocking(move || {
-        let (server, password) = shared
-            .lock()
-            .map_err(|e| e.to_string())?
-            .credentials()
-            .ok_or("the vault is locked — unlock it first")?;
-
-        let mut client = dial(&server, &password);
-        match client.token(&password).and_then(|_| client.create_backup()) {
-            Ok(snapshot) => Ok(BackupAction::Taken(dto::backup(&snapshot))),
-            Err(error) if is_not_configured(&error) => Ok(BackupAction::NotConfigured),
-            Err(error) => Ok(BackupAction::Error(error.to_string())),
-        }
-    })
-    .await
-    .map_err(|e| format!("backup task failed: {e}"))?
-}
-
 /// An authenticated client aimed at `server` (password already exchanged).
 fn dial(server: &str, password: &str) -> Client<UreqHttp> {
     let mut client = Client::new(server, UreqHttp::new(server));
     // The call below re-checks the token result; authenticating here means the
-    // backups request itself carries the bearer token.
+    // request itself carries the bearer token.
     let _ = client.token(password);
     client
-}
-
-/// Whether a transport error is the server's "no backup target configured" answer.
-fn is_not_configured(error: &TransportError) -> bool {
-    matches!(error, TransportError::Refused { code, .. } if code == "not_configured")
 }
 
 /// Whether the app registers itself when the desktop session starts.

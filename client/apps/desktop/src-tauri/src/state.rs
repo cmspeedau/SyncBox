@@ -1,7 +1,7 @@
 //! The window's shared state: the background [`SyncWorker`] and what it takes to
 //! (re)start it. Everything expensive — the unlocked agent, its index, the HTTP
 //! client — lives on the worker thread; this holds only the handle plus the
-//! credentials needed to authenticate a pass or a backups call.
+//! credentials a pass needs.
 //!
 //! Locking the vault drops the worker (its `Drop` stops the loop), which drops the
 //! agent and the master keys with it — nothing sensitive survives a lock.
@@ -72,14 +72,6 @@ impl AppState {
     #[must_use]
     pub fn worker(&self) -> Option<&SyncWorker> {
         self.worker.as_ref()
-    }
-
-    /// `(server, password)` for a backups call, when unlocked.
-    #[must_use]
-    pub fn credentials(&self) -> Option<(String, String)> {
-        self.worker
-            .as_ref()
-            .map(|_| (self.server.clone(), self.password.clone()))
     }
 
     fn stop_worker(&mut self) {

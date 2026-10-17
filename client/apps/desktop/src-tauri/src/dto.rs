@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use syncbox_agent::{AgentStatus, Snapshot, SyncEvent, SyncState};
+use syncbox_agent::{AgentStatus, SyncEvent, SyncState};
 use syncbox_sync::SyncReport;
 
 /// Vault settings as the frontend submits them (`camelCase`), turned into the
@@ -71,8 +71,6 @@ pub struct Status {
     pub last_error: Option<String>,
     /// How many passes have run (liveness).
     pub passes: u32,
-    /// What the last pass did.
-    pub last_report: Option<Report>,
 }
 
 /// A [`SyncReport`] as JSON (also embedded in activity rows).
@@ -111,45 +109,6 @@ pub struct Activity {
     pub report: Option<Report>,
 }
 
-/// A snapshot row for the Backups panel.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Backup {
-    /// Snapshot id.
-    pub id: String,
-    /// Creation time (RFC 3339 as the server writes it).
-    pub created_at: String,
-    /// Chunks the snapshot captured.
-    pub chunk_count: usize,
-    /// Total bytes across those chunks.
-    pub chunk_bytes: i64,
-}
-
-/// Result of listing backups, distinguishing "the server has none configured"
-/// (a `501`) from a real failure — the panel renders them differently.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BackupResult {
-    /// The server listed its snapshots.
-    Listed(Vec<Backup>),
-    /// No backup target is configured (HTTP 501).
-    NotConfigured,
-    /// Some other error, with its message.
-    Error(String),
-}
-
-/// Result of asking for a snapshot now.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
-pub enum BackupAction {
-    /// A snapshot was taken; here it is.
-    Taken(Backup),
-    /// No backup target is configured (HTTP 501).
-    NotConfigured,
-    /// Some other error, with its message.
-    Error(String),
-}
-
 /// The locked state, shown when no session exists yet.
 #[must_use]
 pub fn locked() -> Status {
@@ -160,7 +119,6 @@ pub fn locked() -> Status {
         last_sync_unix: None,
         last_error: None,
         passes: 0,
-        last_report: None,
     }
 }
 
@@ -174,7 +132,6 @@ pub fn status(snapshot: &AgentStatus, vault_id: Option<String>) -> Status {
         last_sync_unix: snapshot.last_sync_unix,
         last_error: snapshot.last_error.clone(),
         passes: snapshot.passes,
-        last_report: snapshot.last_report.as_ref().map(map_report),
     }
 }
 
@@ -198,17 +155,6 @@ pub fn activity(events: &[SyncEvent]) -> Vec<Activity> {
             },
         })
         .collect()
-}
-
-/// Maps one server snapshot to a row.
-#[must_use]
-pub fn backup(snapshot: &Snapshot) -> Backup {
-    Backup {
-        id: snapshot.id.clone(),
-        created_at: snapshot.created_at.clone(),
-        chunk_count: snapshot.manifest.chunk_count(),
-        chunk_bytes: snapshot.manifest.chunk_bytes,
-    }
 }
 
 fn map_report(report: &SyncReport) -> Report {
@@ -266,8 +212,9 @@ mod tests {
         assert_eq!(json["unlocked"], true);
         assert_eq!(json["vaultId"], "vault-1");
         assert_eq!(json["passes"], 4);
-        assert_eq!(json["lastReport"]["uploaded"], 2);
-        assert_eq!(json["lastReport"]["quiet"], false);
+        // The IPC status deliberately stops at liveness — what the last pass
+        // did belongs to the activity feed, not to a panel of its own.
+        assert!(json.get("lastReport").is_none());
     }
 
     #[test]
@@ -309,14 +256,5 @@ mod tests {
         let (config, password) = settings.into_parts();
         assert_eq!(config.index_path(), PathBuf::from("/vault/index.db"));
         assert_eq!(password, "pw");
-    }
-
-    #[test]
-    fn backup_result_distinguishes_not_configured() {
-        let json = serde_json::to_value(BackupResult::NotConfigured).unwrap();
-        assert_eq!(json["kind"], "notConfigured");
-        let json = serde_json::to_value(BackupResult::Error("nope".into())).unwrap();
-        assert_eq!(json["kind"], "error");
-        assert_eq!(json["data"], "nope");
     }
 }

@@ -152,6 +152,7 @@
               <span>Last synced</span><b id="u-last" class="stat">—</b>
               <span>Passes</span><b id="u-passes" class="stat">0</b>
             </div>
+            <p class="msg err hidden" id="u-error" style="margin: 8px 0 0"></p>
             <div class="row" style="margin-top: 12px">
               <button id="sync">Sync now</button>
               <button id="lock" class="secondary">Lock</button>
@@ -163,24 +164,6 @@
             </label>
             <span class="msg muted" id="autostart-msg"></span>
           </div>
-        </div>
-      </section>
-
-      <!-- Last pass -->
-      <section>
-        <h2>Last pass</h2>
-        <div class="card" id="report"><span class="muted">No pass yet.</span></div>
-      </section>
-
-      <!-- Backups -->
-      <section>
-        <h2>Backups</h2>
-        <div class="card">
-          <div class="row" style="justify-content: space-between; align-items: center">
-            <span class="muted" id="backup-note">Server snapshots.</span>
-            <button id="backup-now" class="secondary">Back up now</button>
-          </div>
-          <div id="backups" style="margin-top: 10px"><span class="muted">Not loaded.</span></div>
         </div>
       </section>
 
@@ -213,32 +196,11 @@
         if (s.vaultId) $("u-vault").textContent = vaultNames.get(s.vaultId) || s.vaultId;
         $("u-last").textContent = fmtTime(s.lastSyncUnix);
         $("u-passes").textContent = String(s.passes);
-        renderReport(s);
-      }
-
-      function renderReport(s) {
-        const el = $("report");
-        if (s.lastError) {
-          el.innerHTML = `<span class="msg err">Last pass failed: ${escapeHtml(s.lastError)}</span>`;
-          return;
-        }
-        const r = s.lastReport;
-        if (!r) {
-          el.innerHTML = `<span class="muted">No pass yet.</span>`;
-          return;
-        }
-        if (r.quiet) {
-          el.innerHTML = `<span class="msg ok">Up to date.</span>`;
-          return;
-        }
-        el.innerHTML = `<div class="kv">
-          <span>Uploaded</span><b class="stat">${r.uploaded}</b>
-          <span>Downloaded</span><b class="stat">${r.downloaded}</b>
-          <span>Conflicts</span><b class="stat">${r.conflicts}</b>
-          <span>Deleted</span><b class="stat">${r.deleted}</b>
-          ${r.skipped ? `<span>Skipped</span><b class="stat">${r.skipped}</b>` : ""}
-          <span>New chunks</span><b class="stat">${r.chunksUploaded} (${r.bytesUploaded} B)</b>
-        </div>`;
+        // The one thing the removed "Last pass" panel said that the feed
+        // cannot: whether the state right now is a failed one, and why.
+        const problem = $("u-error");
+        problem.classList.toggle("hidden", !s.lastError);
+        problem.textContent = s.lastError ? "Last pass failed: " + s.lastError : "";
       }
 
       function renderFeed(events) {
@@ -262,34 +224,6 @@
               <span class="muted" style="margin-left:auto">${fmtTime(e.atUnix)}</span></li>`;
           })
           .join("");
-      }
-
-      function renderBackups(res) {
-        const el = $("backups");
-        if (res.kind === "notConfigured") {
-          el.innerHTML = `<span class="muted">This server has no backups configured.</span>`;
-          return;
-        }
-        if (res.kind === "error") {
-          el.innerHTML = `<span class="msg err">${escapeHtml(res.data)}</span>`;
-          return;
-        }
-        const rows = res.data;
-        if (!rows.length) {
-          el.innerHTML = `<span class="muted">No snapshots yet.</span>`;
-          return;
-        }
-        el.innerHTML = `<table>
-          <tr><th>Snapshot</th><th>When</th><th>Chunks</th><th>Bytes</th></tr>
-          ${rows
-            .map(
-              (b) =>
-                `<tr><td class="id">${escapeHtml(b.id)}</td><td>${escapeHtml(
-                  b.createdAt
-                )}</td><td class="stat">${b.chunkCount}</td><td class="stat">${b.chunkBytes}</td></tr>`
-            )
-            .join("")}
-        </table>`;
       }
 
       async function refresh() {
@@ -383,7 +317,6 @@
           const s = await invoke("unlock", { settings: settings() });
           msg.textContent = "";
           renderStatus(s);
-          loadBackups();
         } catch (err) {
           msg.className = "msg err";
           msg.textContent = String(err);
@@ -409,7 +342,6 @@
 
       $("lock").addEventListener("click", async () => {
         await invoke("lock");
-        $("backups").innerHTML = `<span class="muted">Not loaded.</span>`;
         refresh();
       });
 
@@ -418,29 +350,6 @@
           renderStatus(await invoke("sync_now"));
         } catch (err) {
           console.error(err);
-        }
-      });
-
-      async function loadBackups() {
-        $("backups").innerHTML = `<span class="muted">Loading…</span>`;
-        try {
-          renderBackups(await invoke("backups"));
-        } catch (err) {
-          renderBackups({ kind: "error", data: String(err) });
-        }
-      }
-
-      $("backup-now").addEventListener("click", async () => {
-        const btn = $("backup-now");
-        btn.disabled = true;
-        try {
-          const res = await invoke("back_up_now");
-          if (res.kind === "taken") {
-            $("backup-note").textContent = "Snapshot taken.";
-          }
-          loadBackups();
-        } finally {
-          btn.disabled = false;
         }
       });
 
