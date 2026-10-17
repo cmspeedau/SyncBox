@@ -89,6 +89,80 @@ jobs:
       - name: Build
         run: docker build -f deploy/Dockerfile -t syncbox/server:ci .
 
+      # `docker build` proves the compiler is happy; a scratch image can still
+      # die on boot (wrong user, unwritable volume, broken ENTRYPOINT) and show
+      # none of it in the build output. This step runs the very tag built above,
+      # probes it over loopback, and asserts two facts: it answers /healthz, and
+      # it refuses strangers. No credentials are needed — syncboxd generates a
+      # password when SYNCBOX_PASSWORD is unset, which is exactly what a
+      # throwaway container wants. The assertions on the auth paths are the
+      # point of the exercise: a regression that ships an open server fails
+      # HERE, not in someone's deployment.
+      - name: Runtime check
+        run: |
+          set -euo pipefail
+          name="syncbox-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker stop "$name" >/dev/null 2>&1 || true' EXIT
+          # --rm plus the trap means no corpse survives this step, failed or
+          # cancelled, and the run-id name keeps two builds on this runner
+          # from stepping on each other.
+          docker run -d --rm --name "$name" -p 127.0.0.1::8080 syncbox/server:ci >/dev/null
+
+          # Random loopback host port (the `::8080` syntax): collision-free on
+          # a shared runner, and bound to loopback so the probe never goes out
+          # over a real interface. The mapping exists once the container runs.
+          port=""
+          for _ in $(seq 1 10); do
+            port=$(docker inspect \
+              --format '{{(index .NetworkSettings.Ports "8080/tcp" 0).HostPort}}' \
+              "$name" 2>/dev/null | head -1) || port=""
+            [ -n "$port" ] && break
+            sleep 1
+          done
+          if [ -z "$port" ]; then
+            echo "::error::container never published its port"
+            docker logs "$name" 2>&1 | tail -40 || true
+            exit 1
+          fi
+
+          body=""
+          for _ in $(seq 1 30); do
+            body=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/healthz" 2>/dev/null) && break
+            body=""
+            sleep 1
+          done
+          if [ -z "$body" ]; then
+            echo "::error::/healthz never answered 200 within 30s"
+            docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
+          echo "healthz answered: $body"
+          if ! echo "$body" | grep -q '"status":"ok"'; then
+            echo "::error::/healthz answered but not status ok"
+            exit 1
+          fi
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            "http://127.0.0.1:${port}/api/v1/vaults/probe/chunks/deadbeef")
+          if [ "$code" != 401 ]; then
+            echo "::error::unauthenticated chunk read got $code, expected 401"
+            docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -X POST -d '{"password":"wrong"}' "http://127.0.0.1:${port}/api/v1/auth/token")
+          if [ "$code" != 401 ]; then
+            echo "::error::wrong password got $code, expected 401"
+            docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
+
+          # The boot log is the closing evidence: the generated-password and
+          # listen-everywhere warnings should be visible — proof the config
+          # layer spoke, and that the scratch image ran long enough to speak.
+          docker logs "$name" 2>&1 | head -20
+          echo "runtime check passed: served /healthz, refused strangers"
+
   package:
     name: Package (Linux desktop)
     # Self-hosted: both Linux runners carry the webkit2gtk/gtk development
