@@ -174,15 +174,26 @@ enum VaultCommand {
 }
 
 #[derive(Subcommand)]
+// A clap subcommand's shape is a CLI surface: exactly one variant is ever
+// live, exactly once per process, right before it is destructured. Boxing its
+// fields to shave the discriminant would tax the parser for no running cost.
+#[allow(clippy::large_enum_variant)]
 enum SyncCommand {
     /// Sync once, then exit.
     Once {
         /// Server origin, e.g. `https://sync.example`.
         #[arg(long)]
         server: String,
-        /// The server's id for the vault to sync into.
+        /// The server's id for the vault to sync into. Omit it to let the
+        /// server decide: with exactly one vault, that one; with several,
+        /// name the one you mean. Cannot be combined with `--vault-name`.
+        #[arg(long, conflicts_with = "vault_name")]
+        vault_id: Option<String>,
+        /// The operator's name for the vault, resolved against the server's
+        /// registry — the pairing story: set a vault up on the server, point
+        /// this client at `--server` and `--vault-name`.
         #[arg(long)]
-        vault_id: String,
+        vault_name: Option<String>,
         /// Directory holding `vault.json` (the encrypted keys).
         #[arg(long)]
         vault: PathBuf,
@@ -226,6 +237,7 @@ fn main() -> Result<()> {
                 SyncCommand::Once {
                     server,
                     vault_id,
+                    vault_name,
                     vault,
                     folder,
                     index,
@@ -235,7 +247,8 @@ fn main() -> Result<()> {
                 },
         } => sync_once(
             &server,
-            &vault_id,
+            vault_id.as_deref(),
+            vault_name.as_deref(),
             &vault,
             folder.as_deref(),
             index,
@@ -302,10 +315,90 @@ fn unlock(path: &Path, password: &str) -> Result<()> {
     Ok(())
 }
 
+/// Which vault on the server does this client mean?
+///
+/// Three doors, deliberately. `--vault-id` is the expert's door and needs no
+/// lookup, so an old server keeps working. `--vault-name` is the pairing
+/// story: whatever the operator called the vault in the console is what the
+/// human types here. And with neither, a server holding exactly one vault
+/// picks it — the home-server case, where "point the client at the URL" is
+/// the whole configuration. A multi-vault server refuses to guess and prints
+/// the menu instead.
+fn resolve_vault_id(
+    client: &mut Client<UreqHttp>,
+    server: &str,
+    vault_id: Option<&str>,
+    vault_name: Option<&str>,
+) -> Result<String> {
+    if let Some(id) = vault_id {
+        return Ok(id.to_owned());
+    }
+
+    let listing = match client.vaults() {
+        Ok(listing) => listing,
+        Err(TransportError::Refused { code, .. }) if code == "not_found" => {
+            bail!("{server} does not offer a vault registry; name the vault with --vault-id")
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "asking {server} for its vaults failed: {e}"
+            ))
+        }
+    };
+
+    // The label a human recognises: name when it has one, id always.
+    let label = |v: &syncbox_transport::dto::ServerVault| {
+        if v.name.is_empty() {
+            v.id.clone()
+        } else {
+            format!("{} ({})", v.name, v.id)
+        }
+    };
+
+    if let Some(wanted) = vault_name {
+        let matching: Vec<_> = listing.vaults.iter().filter(|v| v.name == wanted).collect();
+        return match matching.len() {
+            0 => {
+                let known: Vec<String> = listing.vaults.iter().map(label).collect();
+                bail!(
+                    "no vault named {wanted:?} on {server}; it knows: {}",
+                    if known.is_empty() {
+                        "none yet".to_owned()
+                    } else {
+                        known.join(", ")
+                    }
+                );
+            }
+            1 if matching[0].archived => {
+                bail!("vault {wanted:?} is archived on {server}; un-archive it there first");
+            }
+            1 => Ok(matching[0].id.clone()),
+            n => bail!("{server} has {n} vaults named {wanted:?}; say which by --vault-id"),
+        };
+    }
+
+    let live: Vec<_> = listing.vaults.iter().filter(|v| !v.archived).collect();
+    match live.len() {
+        0 => bail!("{server} has no vaults to sync yet; set one up on the server first"),
+        1 => {
+            println!("using the server's only vault: {}", label(live[0]));
+            Ok(live[0].id.clone())
+        }
+        n => {
+            let menu: Vec<String> = live.iter().map(|v| label(v)).collect();
+            bail!(
+                "{server} has {n} vaults — say which you mean with --vault-name or --vault-id: {}",
+                menu.join(", ")
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn sync_once(
     server: &str,
-    vault_id: &str,
+    vault_id: Option<&str>,
+    vault_name: Option<&str>,
     vault_dir: &Path,
     folder: Option<&Path>,
     index: Option<PathBuf>,
@@ -313,6 +406,16 @@ fn sync_once(
     gc_spec: &str,
     password: &str,
 ) -> Result<()> {
+    // Resolve which vault the server holds before anything local: the
+    // exchange is two round trips, and a wrong pairing should fail on the
+    // server's answer, not after an Argon2 unlock of keys that turn out to
+    // be for the wrong vault.
+    let mut client = Client::new(server, UreqHttp::new(server));
+    client
+        .token(password)
+        .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
+    let vault_id = resolve_vault_id(&mut client, server, vault_id, vault_name)?;
+
     let keys =
         syncbox_vault::unlock(vault_dir, password).context("could not unlock the vault to sync")?;
     // Parse the gc spec before anything expensive: a typo should fail the
@@ -325,11 +428,7 @@ fn sync_once(
     // No folder means folderless: the vault directory stands in for the plaintext
     // root, which the engine then never reads or writes.
     let plaintext_root = folder.unwrap_or(vault_dir);
-    let vault = Vault::new(keys, vault_id.to_owned(), plaintext_root.to_path_buf())?;
-    let mut client = Client::new(server, UreqHttp::new(server));
-    client
-        .token(password)
-        .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
+    let vault = Vault::new(keys, vault_id, plaintext_root.to_path_buf())?;
 
     // Folderless always has a store — it is the only content — defaulting to
     // `<vault>/blobs` exactly where `syncbox mount` looks. With a folder, a store is

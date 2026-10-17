@@ -18,7 +18,7 @@ use syncbox_crypto::ChunkId;
 
 use crate::dto::{
     ChunkCheckRequest, ChunkCheckResponse, CommitRequest, CommitResponse, ErrorResponse,
-    RestoreReport, RevisionPage, Snapshot, TokenRequest, TokenResponse, VerifyReport,
+    RestoreReport, RevisionPage, Snapshot, TokenRequest, TokenResponse, VaultListing, VerifyReport,
 };
 use crate::error::{error_from_status, Result, TransportError};
 
@@ -241,6 +241,21 @@ impl<H: Http> Client<H> {
         Ok(issued)
     }
 
+    /// The server's vault registry, in the client-facing shape.
+    ///
+    /// A server older than the registry answers 404, surfaced as
+    /// [`TransportError::Refused`] with code `not_found` like any other
+    /// refusal — callers fall back to an explicit vault id.
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decoding errors.
+    pub fn vaults(&mut self) -> Result<VaultListing> {
+        let response = self.call(Method::Get, "/vaults".to_owned(), Vec::new(), true)?;
+        ensure_ok(&response)?;
+        parse(&response.body)
+    }
+
     /// Revisions newer than `since`, oldest first.
     ///
     /// # Errors
@@ -417,7 +432,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    use crate::dto::Revision;
+    use crate::dto::{Revision, ServerVault, VaultListing};
 
     /// Records each request and answers from a queued list, so a test can pin both
     /// what the client sent and how it read the reply.
@@ -489,6 +504,36 @@ mod tests {
         );
         let req: TokenRequest = serde_json::from_slice(&sent.body).unwrap();
         assert_eq!(req.password, "hunter2");
+    }
+
+    #[test]
+    fn vaults_reads_the_registry_authenticated_and_whole() {
+        let listing = VaultListing {
+            vaults: vec![
+                ServerVault {
+                    id: "ABCDEFGH".into(),
+                    name: "Photos".into(),
+                    archived: false,
+                },
+                ServerVault {
+                    id: "QRSTUVWX".into(),
+                    name: String::new(),
+                    archived: true,
+                },
+            ],
+        };
+        let mut client = Client::new(
+            "https://sync.example",
+            Scripted::new(vec![Scripted::body(200, &listing)]),
+        );
+        client.token = "tok123".into();
+        let got = client.vaults().expect("listing");
+        assert_eq!(got, listing);
+
+        let sent = &client.http.calls[0];
+        assert_eq!(sent.method, Method::Get);
+        assert_eq!(sent.path, "/vaults");
+        assert_eq!(sent.authorization.as_deref(), Some("Bearer tok123"));
     }
 
     #[test]

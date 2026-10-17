@@ -37,6 +37,28 @@ pub struct TokenResponse {
     pub expires_unix: i64,
 }
 
+/// `GET /vaults` — the server's registry, in the small shape a client needs
+/// to resolve a `--vault-name` or take the sole vault by itself. The
+/// operator's bookkeeping lives on `/admin/vaults` and is deliberately absent
+/// here: a client points at vaults, it does not audit them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VaultListing {
+    /// Every vault the server knows, registered or committed-into.
+    pub vaults: Vec<ServerVault>,
+}
+
+/// One entry of a [`VaultListing`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerVault {
+    /// The id clients sync into.
+    pub id: String,
+    /// The operator's label; empty while the vault is unnamed.
+    pub name: String,
+    /// Retired on the server. Its history remains readable, but nothing new
+    /// should be pointed at it, so name-based selection refuses these.
+    pub archived: bool,
+}
+
 /// One committed file revision, as the server stores it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Revision {

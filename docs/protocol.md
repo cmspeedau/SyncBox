@@ -197,6 +197,26 @@ so a dropped or late signal can only cost one `wait` interval — never a missed
 revision. `wait=0` turns the endpoint into a single-shot catch-up read that never
 blocks.
 
+## Vault registry
+
+```
+GET /vaults → 200 { "vaults": [ { "id", "name", "archived" } ] }
+```
+
+Every vault the server knows, in the small shape a sync client needs: to
+resolve a `--vault-name` against the operator's label, or to take the sole
+vault by itself when a home server holds exactly one and `--vault-id` was
+omitted. Archived vaults are listed so a client can say "retired" instead of
+"no such vault" — and name-based selection refuses them either way. An
+explicit `--vault-id` needs no lookup at all, which is also why a client
+keeps working against a server too old to answer this route.
+
+The operator's console reads and writes a richer view under `/admin/vaults`
+(create, rename, archive, bookkeeping); clients never need it. Both share the
+one bearer token — until per-vault credentials exist there is no separate
+admin role to divide them by. A commit into an unregistered vault still
+registers it nameless rather than failing, until enforcement lands.
+
 ## Backups
 
 ```
