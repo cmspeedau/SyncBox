@@ -1,0 +1,142 @@
+/* One page, three panels, no framework. Light and dark come from the
+   operator's own system setting — the server has no business deciding that. */
+
+:root {
+  color-scheme: light dark;
+  --ink: #1c1c1e;
+  --muted: #6c6c72;
+  --paper: #fafaf8;
+  --card: #ffffff;
+  --line: #e2e2dd;
+  --accent: #2f6f4f;
+  --danger: #a33;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6e4e0;
+    --muted: #9a978f;
+    --paper: #17181a;
+    --card: #1f2124;
+    --line: #33363b;
+    --accent: #6fbf94;
+    --danger: #e08585;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+  max-width: 56rem;
+  background: var(--paper);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, sans-serif;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+header h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.01em; }
+
+header .tagline { margin: 0; color: var(--muted); font-size: 0.85rem; flex: 1 1 auto; }
+
+#session button { margin-left: auto; }
+
+main section { margin-bottom: 2.25rem; }
+
+h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+
+.hint { color: var(--muted); font-size: 0.87rem; max-width: 46rem; }
+
+.error { color: var(--danger); font-size: 0.9rem; min-height: 1.2em; margin: 0.5rem 0 0; }
+
+form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0 0; }
+
+input {
+  flex: 1 1 16rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+}
+
+button {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--accent); }
+
+#login { max-width: 26rem; }
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 1rem;
+  margin: 0.5rem 0;
+}
+
+dt { color: var(--muted); font-size: 0.85rem; }
+
+dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+#vault-list { display: grid; gap: 1rem; margin-top: 1rem; }
+
+.vault-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+}
+
+.vault-card.archived { opacity: 0.6; }
+
+.vault-card h3 { margin: 0 0 0.5rem; font-size: 1rem; display: flex; align-items: center; gap: 0.6rem; }
+
+.badge {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+}
+
+pre {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.7rem 0.8rem;
+  overflow-x: auto;
+  font: 0.8rem/1.5 ui-monospace, monospace;
+  margin: 0.5rem 0;
+}
+
+.actions { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 2rem;
+  padding-top: 0.75rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+footer a { color: inherit; }

@@ -97,11 +97,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/token", s.handleToken)
 
-	// The root answers instead of 404-ing: a name-card for scripts today,
-	// the console's front door as M10 grows it. {$} pins it to exactly "/":
-	// a bare "/" pattern is the mux's catch-all and would hand this card —
-	// or a 405 — to every unmatched path on the server.
+	// The root answers instead of 404-ing: the embedded console for browsers,
+	// a JSON name-card for scripts (see handleIndex). {$} pins it to exactly
+	// "/": a bare "/" pattern is the mux's catch-all and would hand the card
+	// — or a 405 — to every unmatched path on the server.
 	mux.HandleFunc("GET /{$}", s.handleIndex)
+	mux.HandleFunc("GET /app.js", s.handleAsset("app.js"))
+	mux.HandleFunc("GET /style.css", s.handleAsset("style.css"))
 
 	// Everything below the vault prefix is authenticated.
 	mux.Handle("GET /api/v1/vaults/{vaultID}/revisions", s.requireToken(http.HandlerFunc(s.handleListRevisions)))
