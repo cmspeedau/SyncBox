@@ -421,6 +421,139 @@ func (d *Durable) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
+// CreateVault mints a fresh id and registers it under name. The retry loop is
+// form against luck: eight base32 characters is 32^5 ids, and a PRIMARY KEY
+// collision just means minting again.
+func (d *Durable) CreateVault(ctx context.Context, name string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("creating vault: %w", err)
+	}
+
+	for attempt := 0; attempt < 5; attempt++ {
+		id, err := newVaultID()
+		if err != nil {
+			return "", err
+		}
+		res, err := d.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO vault (id, name, created_at) VALUES (?, ?, ?)`,
+			id, name, d.now().Unix())
+		if err != nil {
+			return "", fmt.Errorf("registering vault %s: %w", id, err)
+		}
+		created, err := res.RowsAffected()
+		if err != nil {
+			return "", fmt.Errorf("confirming vault %s: %w", id, err)
+		}
+		if created == 1 {
+			return id, nil
+		}
+	}
+	return "", errors.New("registering vault: five minted ids in a row already existed")
+}
+
+// listVaultsQuery assembles the registry view: one row per vault, whether the
+// console registered it or a commit merely implied it, plus bookkeeping counted
+// from revisions. "Live" means each file's newest revision when that revision
+// is not a tombstone, which is what a window function over (dir, name) says.
+const listVaultsQuery = `
+WITH latest AS (
+    SELECT vault_id, dir_id, cipher_name, deleted, size,
+           ROW_NUMBER() OVER (PARTITION BY vault_id, dir_id, cipher_name ORDER BY revision DESC) AS rn
+    FROM revision
+),
+tally AS (
+    SELECT vault_id,
+           SUM(CASE WHEN deleted = 0 THEN 1 ELSE 0 END) AS live_files,
+           SUM(CASE WHEN deleted = 0 THEN size ELSE 0 END) AS live_bytes
+    FROM latest
+    WHERE rn = 1
+    GROUP BY vault_id
+)
+SELECT v.id, v.name, v.created_at,
+       CASE WHEN v.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
+       COUNT(r.id) AS revisions,
+       COALESCE(MAX(r.stored_at), 0) AS last_write,
+       COALESCE(t.live_files, 0) AS live_files,
+       COALESCE(t.live_bytes, 0) AS live_bytes
+FROM vault v
+LEFT JOIN revision r ON r.vault_id = v.id
+LEFT JOIN tally t ON t.vault_id = v.id
+GROUP BY v.id
+ORDER BY v.created_at, v.id`
+
+// ListVaults returns every vault with its bookkeeping.
+func (d *Durable) ListVaults(ctx context.Context) ([]VaultInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing vaults: %w", err)
+	}
+
+	rows, err := d.db.QueryContext(ctx, listVaultsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("reading vault registry: %w", err)
+	}
+	defer rows.Close()
+
+	var out []VaultInfo
+	for rows.Next() {
+		var info VaultInfo
+		var archived int
+		if err := rows.Scan(&info.ID, &info.Name, &info.CreatedAt, &archived,
+			&info.Revisions, &info.LastWriteAt, &info.LiveFiles, &info.Bytes); err != nil {
+			return nil, fmt.Errorf("reading vault registry: %w", err)
+		}
+		info.Archived = archived == 1
+		out = append(out, info)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading vault registry: %w", err)
+	}
+	return out, nil
+}
+
+// RenameVault sets an operator's name.
+func (d *Durable) RenameVault(ctx context.Context, id, name string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("renaming vault %s: %w", id, err)
+	}
+
+	res, err := d.db.ExecContext(ctx, `UPDATE vault SET name = ? WHERE id = ?`, name, id)
+	if err != nil {
+		return fmt.Errorf("renaming vault %s: %w", id, err)
+	}
+	return requireVaultRow(res, id, "renaming")
+}
+
+// SetVaultArchived flags a vault as retired.
+func (d *Durable) SetVaultArchived(ctx context.Context, id string, archived bool) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("archiving vault %s: %w", id, err)
+	}
+
+	// The column records when, and reads back as whether; unarchiving clears it.
+	var stamp any
+	if archived {
+		stamp = d.now().Unix()
+	}
+	res, err := d.db.ExecContext(ctx, `UPDATE vault SET archived_at = ? WHERE id = ?`, stamp, id)
+	if err != nil {
+		return fmt.Errorf("archiving vault %s: %w", id, err)
+	}
+	return requireVaultRow(res, id, "archiving")
+}
+
+// requireVaultRow turns "the UPDATE matched no row" into the sentinel the API
+// maps onto 404, rather than reporting a silent success.
+func requireVaultRow(res sql.Result, id, verb string) error {
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("confirming %s vault %s: %w", verb, id, err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	return nil
+}
+
 // ChunkIDs lists stored chunk ids, sorted.
 func (d *Durable) ChunkIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
@@ -484,6 +617,21 @@ func (d *Durable) ImportMetadata(ctx context.Context, doc Metadata) (chunks, rev
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO vault (id, created_at) VALUES (?, ?)`, vault, d.now().Unix()); err != nil {
 			return 0, 0, fmt.Errorf("importing vault %s: %w", vault, err)
+		}
+	}
+	// The registry arrives after the bare ids so an operator's name, minting
+	// time and retired flag win over the placeholder. Old documents carry no
+	// registry, and their vaults stay nameless — what they were when written.
+	for _, record := range doc.VaultRegistry {
+		var archivedAt any
+		if record.Archived {
+			archivedAt = d.now().Unix()
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO vault (id, name, created_at, archived_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at, archived_at = excluded.archived_at`,
+			record.ID, record.Name, record.CreatedAt, archivedAt); err != nil {
+			return 0, 0, fmt.Errorf("importing vault registry entry %s: %w", record.ID, err)
 		}
 	}
 	for _, chunk := range doc.Chunks {
@@ -580,17 +728,29 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 		return Metadata{}, fmt.Errorf("reading chunks for dump: %w", err)
 	}
 
-	vaultRows, err := tx.QueryContext(ctx, `SELECT id FROM vault ORDER BY id`)
+	vaultRows, err := tx.QueryContext(ctx,
+		`SELECT id, name, created_at, archived_at FROM vault ORDER BY id`)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 	}
 	defer vaultRows.Close()
 	for vaultRows.Next() {
-		var id string
-		if err := vaultRows.Scan(&id); err != nil {
+		var (
+			id            string
+			name          string
+			createdAt     int64
+			archivedAtSql sql.NullInt64
+		)
+		if err := vaultRows.Scan(&id, &name, &createdAt, &archivedAtSql); err != nil {
 			return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 		}
 		doc.Vaults = append(doc.Vaults, id)
+		doc.VaultRegistry = append(doc.VaultRegistry, VaultRecord{
+			ID:        id,
+			Name:      name,
+			CreatedAt: createdAt,
+			Archived:  archivedAtSql.Valid,
+		})
 	}
 	if err := vaultRows.Err(); err != nil {
 		return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)

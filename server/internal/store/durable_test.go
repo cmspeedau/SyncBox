@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func openDurable(t *testing.T, dir string, maxChunk int64) *Durable {
@@ -76,6 +77,19 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 			t.Fatalf("Commit: %v", err)
 		}
 	}
+	// Operator facts the import must carry across: a minted name, an empty
+	// vault that no client has touched yet, and a retired flag.
+	photosID, err := src.CreateVault(ctx, "Photos")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	retiredID, err := src.CreateVault(ctx, "Retired")
+	if err != nil {
+		t.Fatalf("CreateVault: %v", err)
+	}
+	if err := src.SetVaultArchived(ctx, retiredID, true); err != nil {
+		t.Fatalf("SetVaultArchived: %v", err)
+	}
 	dump, err := src.DumpMetadata(ctx)
 	if err != nil {
 		t.Fatalf("DumpMetadata: %v", err)
@@ -106,12 +120,94 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 		t.Errorf("imported revision lost fields: %+v", page[0])
 	}
 
+	// The registry crossed intact: minted ids unchanged, names kept, the
+	// untouched vault imported as the empty vault it is, retirement honoured,
+	// and the revision-born vault still nameless.
+	imported, err := dst.ListVaults(ctx)
+	if err != nil {
+		t.Fatalf("ListVaults after import: %v", err)
+	}
+	byID := map[string]VaultInfo{}
+	for _, info := range imported {
+		byID[info.ID] = info
+	}
+	if len(byID) != 3 {
+		t.Fatalf("imported %d vaults, want 3: %+v", len(byID), imported)
+	}
+	if photos := byID[photosID]; photos.Name != "Photos" || photos.ID != photosID || photos.Revisions != 0 {
+		t.Errorf("imported Photos vault = %+v, want name Photos at id %s with no revisions", photos, photosID)
+	}
+	retired := byID[retiredID]
+	if !retired.Archived || retired.Name != "Retired" {
+		t.Errorf("imported retired vault = %+v", retired)
+	}
+	if commitBorn := byID["vault"]; commitBorn.Name != "" || commitBorn.Revisions != 3 {
+		t.Errorf("imported commit-born vault = %+v, want nameless with 3 revisions", commitBorn)
+	}
+
 	// Importing the same document again is idempotent: nothing doubles.
 	if _, _, err := dst.ImportMetadata(ctx, doc); err != nil {
 		t.Fatalf("second ImportMetadata: %v", err)
 	}
 	if again, _ := dst.ChunkIDs(ctx); len(again) != 3 {
 		t.Errorf("re-import duplicated chunks: %v", again)
+	}
+	reimported, err := dst.ListVaults(ctx)
+	if err != nil {
+		t.Fatalf("ListVaults after re-import: %v", err)
+	}
+	if len(reimported) != 3 {
+		t.Errorf("re-import duplicated vaults: %+v", reimported)
+	}
+	for _, info := range reimported {
+		if info.ID == photosID && (info.Name != "Photos" || info.Archived) {
+			t.Errorf("re-import damaged the registry: %+v", info)
+		}
+	}
+}
+
+// TestDurableImportsPreRegistryDocument is the compatibility promise the NUC
+// runs on: a metadata.json written before the registry — bare id list, no
+// vault_registry key at all — must restore into a registry-era server, with
+// its vaults nameless exactly as they were when written.
+func TestDurableImportsPreRegistryDocument(t *testing.T) {
+	ctx := context.Background()
+
+	doc := Metadata{
+		Chunks: []Chunk{{ID: "AAAAAAAA1111", Size: 5, StoredAt: time.Unix(1000, 0).UTC()}},
+		Vaults: []string{"OLDVAULT"},
+		Revisions: map[string][]Revision{
+			"OLDVAULT": {{VaultID: "OLDVAULT", Revision: 1, Parent: 0,
+				DirID: "D", CipherName: "C", Manifest: []byte("mm"), Size: 5,
+				StoredAt: time.Unix(1000, 0).UTC()}},
+		},
+	}
+	data, err := encodeMetadata(doc)
+	if err != nil {
+		t.Fatalf("encodeMetadata: %v", err)
+	}
+	if strings.Contains(string(data), "vault_registry") {
+		t.Fatal("pre-registry document should carry no registry key (omitempty failed)")
+	}
+
+	parsed, err := DecodeMetadata(data)
+	if err != nil {
+		t.Fatalf("DecodeMetadata: %v", err)
+	}
+	dst := openDurable(t, t.TempDir(), 1<<20)
+	if _, _, err := dst.ImportMetadata(ctx, parsed); err != nil {
+		t.Fatalf("ImportMetadata: %v", err)
+	}
+
+	vaults, err := dst.ListVaults(ctx)
+	if err != nil {
+		t.Fatalf("ListVaults: %v", err)
+	}
+	if len(vaults) != 1 || vaults[0].ID != "OLDVAULT" || vaults[0].Name != "" || vaults[0].Archived {
+		t.Fatalf("imported pre-registry vaults = %+v, want one nameless OLDVAULT", vaults)
+	}
+	if vaults[0].Revisions != 1 || vaults[0].LiveFiles != 1 || vaults[0].Bytes != 5 {
+		t.Errorf("bookkeeping after legacy import = %+v", vaults[0])
 	}
 }
 

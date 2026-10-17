@@ -269,3 +269,112 @@ func TestConformCancelledContext(t *testing.T) {
 		}
 	})
 }
+
+func TestConformVaultRegistry(t *testing.T) {
+	runPerStore(t, func(t *testing.T, st Store) {
+		ctx := context.Background()
+
+		id, err := st.CreateVault(ctx, "Photos")
+		if err != nil {
+			t.Fatalf("CreateVault: %v", err)
+		}
+		if len(id) != 8 {
+			t.Errorf("minted id %q, want eight base32 characters", id)
+		}
+		second, err := st.CreateVault(ctx, "Work")
+		if err != nil || second == id {
+			t.Errorf("second CreateVault = %q, %v; want a different id", second, err)
+		}
+
+		vaults, err := st.ListVaults(ctx)
+		if err != nil {
+			t.Fatalf("ListVaults: %v", err)
+		}
+		if len(vaults) != 2 {
+			t.Fatalf("ListVaults returned %d vaults, want 2", len(vaults))
+		}
+		for _, info := range vaults {
+			if info.Revisions != 0 || info.LiveFiles != 0 || info.Bytes != 0 {
+				t.Errorf("vault %s reports bookkeeping for a vault nothing touched: %+v", info.ID, info)
+			}
+		}
+
+		// A commit into an unregistered vault enters the registry nameless,
+		// exactly as it did before the registry existed. The tally counts
+		// each file's newest revision: A was written then deleted, B lives.
+		const legacy = "LEGACYV1"
+		head, err := st.Commit(ctx, Revision{VaultID: legacy, Parent: 0,
+			DirID: "dir", CipherName: "A", Manifest: []byte{1}, Size: 7})
+		if err != nil {
+			t.Fatalf("Commit A: %v", err)
+		}
+		head, err = st.Commit(ctx, Revision{VaultID: legacy, Parent: head,
+			DirID: "dir", CipherName: "B", Manifest: []byte{2}, Size: 10})
+		if err != nil {
+			t.Fatalf("Commit B: %v", err)
+		}
+		if _, err := st.Commit(ctx, Revision{VaultID: legacy, Parent: head,
+			DirID: "dir", CipherName: "A", Deleted: true}); err != nil {
+			t.Fatalf("Commit tombstone: %v", err)
+		}
+
+		vaults, err = st.ListVaults(ctx)
+		if err != nil {
+			t.Fatalf("ListVaults after commits: %v", err)
+		}
+		if len(vaults) != 3 {
+			t.Fatalf("ListVaults returned %d vaults, want 3 (the commit must register its vault)", len(vaults))
+		}
+		var found *VaultInfo
+		for i := range vaults {
+			if vaults[i].ID == legacy {
+				found = &vaults[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("committed vault %s absent from ListVaults", legacy)
+		}
+		if found.Name != "" || found.Archived {
+			t.Errorf("commit-born vault should be nameless and unarchived, got %+v", found)
+		}
+		if found.Revisions != 3 || found.LiveFiles != 1 || found.Bytes != 10 {
+			t.Errorf("tally = %+v, want 3 revisions, 1 live file, 10 bytes", found)
+		}
+		if found.LastWriteAt == 0 {
+			t.Error("LastWriteAt is zero after commits")
+		}
+
+		// Operator facts are set on either kind of vault, and unknown ids
+		// answer with the sentinel the API maps onto a 404.
+		if err := st.RenameVault(ctx, legacy, "Grandma's"); err != nil {
+			t.Fatalf("RenameVault on a commit-born vault: %v", err)
+		}
+		if err := st.SetVaultArchived(ctx, id, true); err != nil {
+			t.Fatalf("SetVaultArchived: %v", err)
+		}
+		if err := st.RenameVault(ctx, "NOSUCHVAULT", "x"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("renaming an unknown vault = %v, want ErrNotFound", err)
+		}
+		if err := st.SetVaultArchived(ctx, "NOSUCHVAULT", true); !errors.Is(err, ErrNotFound) {
+			t.Errorf("archiving an unknown vault = %v, want ErrNotFound", err)
+		}
+
+		vaults, err = st.ListVaults(ctx)
+		if err != nil {
+			t.Fatalf("ListVaults after edits: %v", err)
+		}
+		names := map[string]VaultInfo{}
+		for _, info := range vaults {
+			names[info.ID] = info
+		}
+		if names[legacy].Name != "Grandma's" {
+			t.Errorf("rename did not stick: %+v", names[legacy])
+		}
+		if !names[id].Archived {
+			t.Errorf("vault %s should read as archived", id)
+		}
+		if names[second].Name != "Work" {
+			t.Errorf("vault %s lost its created name: %+v", second, names[second])
+		}
+	})
+}
