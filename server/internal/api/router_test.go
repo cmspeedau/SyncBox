@@ -58,6 +58,23 @@ func newClient(t *testing.T, withBackups bool) *client {
 	return testClient
 }
 
+// newEnforcingClient is newClient with vault enforcement on: the server refuses
+// a commit to a vault its registry does not know (S5).
+func newEnforcingClient(t *testing.T) *client {
+	t.Helper()
+
+	stored := store.NewMemory(MaxChunkBytes)
+	issuer := auth.NewIssuer("test-secret", time.Hour)
+	server := New(stored, nil, issuer, testPassword)
+	server.SetRequireRegisteredVaults(true)
+	httpServer := httptest.NewServer(server.Routes())
+	t.Cleanup(httpServer.Close)
+
+	testClient := &client{t: t, server: httpServer}
+	testClient.token = testClient.login()
+	return testClient
+}
+
 // login exchanges the configured password for a token, failing the test if the
 // server refuses its own credentials.
 func (c *client) login() string {
@@ -842,6 +859,61 @@ func TestClientsSeeVaultsWithoutBookkeeping(t *testing.T) {
 	}
 }
 
+// TestEnforcementRefusesUnknownVaults covers S5: with the toggle on, a commit
+// to a vault the registry does not know is refused with a stable code instead
+// of silently birthing a namespace — while a vault created the normal way
+// commits exactly as before. That contrast is what makes the toggle safe to
+// turn on late: it closes a door without changing the room.
+func TestEnforcementRefusesUnknownVaults(t *testing.T) {
+	c := newEnforcingClient(t)
+
+	commit := func(vaultID string) *http.Response {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"parent": 0,
+			"revision": map[string]any{
+				"parent":        0,
+				"dir_id":        "DIRID",
+				"cipher_name":   "AAAA",
+				"manifest":      "ZW5jcnlwdGVk",
+				"size":          12,
+				"modified_unix": 1_700_000_000,
+				"deleted":       false,
+			},
+		})
+		if err != nil {
+			t.Fatalf("marshalling commit: %v", err)
+		}
+		return c.do(http.MethodPost, "/api/v1/vaults/"+vaultID+"/revisions", body)
+	}
+
+	refused := commit("STRANGER")
+	if refused.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(refused.Body)
+		t.Fatalf("commit to an unregistered vault = %s, want 403: %s", refused.Status, body)
+	}
+	if code, _ := c.errorBodyOf(refused); code != "unknown_vault" {
+		t.Errorf("refusal code = %q, want unknown_vault", code)
+	}
+
+	// A vault created the way the console creates one is registered, so the
+	// very same commit lands — enforcement gates entry, not the vault itself.
+	created := c.do(http.MethodPost, "/admin/vaults", []byte(`{"name":"Photos"}`))
+	if created.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(created.Body)
+		t.Fatalf("creating a vault = %s: %s", created.Status, body)
+	}
+	var vault store.VaultInfo
+	c.mustDecode(created, &vault)
+
+	accepted := commit(vault.ID)
+	defer accepted.Body.Close()
+	if accepted.StatusCode != http.StatusCreated {
+		body, _ := io.ReadAll(accepted.Body)
+		t.Fatalf("commit to a registered vault = %s, want 201: %s", accepted.Status, body)
+	}
+}
+
 func TestConsoleServedToBrowsers(t *testing.T) {
 	c := newClient(t, false)
 
@@ -874,7 +946,7 @@ func TestConsoleServedToBrowsers(t *testing.T) {
 		t.Fatalf("reading page: %v", err)
 	}
 	body := string(page)
-	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files", "id=\"snapshots\"", "Take snapshot"} {
+	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files", "id=\"snapshots\"", "Take snapshot", "id=\"theme\""} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page is missing %q", want)
 		}

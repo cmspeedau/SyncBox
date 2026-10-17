@@ -1,28 +1,22 @@
-/* One page, a handful of panels, no framework. Light and dark come from the
-   operator's own system setting — the server has no business deciding that. */
+/* One page, a handful of panels, no framework. The palette follows the
+   operator's system light/dark setting, and the header's theme button can pin
+   it either way — the server has no business deciding that. */
 
 :root {
   color-scheme: light dark;
-  --ink: #1c1c1e;
-  --muted: #6c6c72;
-  --paper: #fafaf8;
-  --card: #ffffff;
-  --line: #e2e2dd;
-  --accent: #2f6f4f;
-  --danger: #a33;
+  --ink: light-dark(#1c1c1e, #e6e4e0);
+  --muted: light-dark(#6c6c72, #9a978f);
+  --paper: light-dark(#fafaf8, #17181a);
+  --card: light-dark(#ffffff, #1f2124);
+  --line: light-dark(#e2e2dd, #33363b);
+  --accent: light-dark(#2f6f4f, #6fbf94);
+  --danger: light-dark(#a33, #e08585);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #e6e4e0;
-    --muted: #9a978f;
-    --paper: #17181a;
-    --card: #1f2124;
-    --line: #33363b;
-    --accent: #6fbf94;
-    --danger: #e08585;
-  }
-}
+/* An explicit choice beats the system's; "system" drops the attribute and lets
+   `color-scheme: light dark` decide again. */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 * { box-sizing: border-box; }
 
@@ -48,6 +42,8 @@ header {
 header h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.01em; }
 
 header .tagline { margin: 0; color: var(--muted); font-size: 0.85rem; flex: 1 1 auto; }
+
+#theme { font-size: 0.8rem; }
 
 #session button { margin-left: auto; }
 

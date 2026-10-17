@@ -224,7 +224,10 @@ another live vault already claims (`409 location_taken`), because two vaults
 writing one folder would shred each other's index. Both views share the one
 bearer token — until per-vault credentials exist there is no separate admin
 role to divide them by. A commit into an unregistered vault still registers
-it nameless rather than failing, until enforcement lands.
+it nameless rather than failing; set `SYNCBOX_REQUIRE_REGISTERED_VAULTS` to
+turn that into a refusal — `403 unknown_vault` — which is the right move once
+every client has been pointed at a registered vault, and safe to leave off
+until then.
 
 ## Backups
 

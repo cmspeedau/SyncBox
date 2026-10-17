@@ -65,6 +65,13 @@ type Config struct {
 	// RateBurst is how many requests a caller may spend at once before the
 	// sustained rate takes over.
 	RateBurst int
+	// RequireRegisteredVaults turns the vault registry from a report into a
+	// gate: with it on, a commit to a vault id the registry does not know is
+	// refused instead of birthing a vault nameless. Off by default, because
+	// the right moment to turn it on is after every client has been pointed
+	// at a registered vault — so no old client breaks the moment the registry
+	// lands.
+	RequireRegisteredVaults bool
 }
 
 // Defaults returns the settings a server runs with when the environment says
@@ -164,6 +171,12 @@ func FromEnv() (Config, error) {
 		cfg.RateBurst = burst
 	}
 
+	requireRegistered, err := parseSwitch("SYNCBOX_REQUIRE_REGISTERED_VAULTS", os.Getenv("SYNCBOX_REQUIRE_REGISTERED_VAULTS"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RequireRegisteredVaults = requireRegistered
+
 	if generated != "" {
 		fmt.Printf("config: SYNCBOX_PASSWORD is unset, using the generated password %s\n", generated)
 		fmt.Printf("config: set SYNCBOX_PASSWORD before exposing this server on a network\n")
@@ -208,6 +221,21 @@ func firstSet(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// parseSwitch reads a boolean-ish environment switch. Unset or empty is false;
+// the usual spellings of yes and no are accepted in any case; anything else is
+// a configuration mistake worth failing on rather than silently reading as
+// false.
+func parseSwitch(name, value string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "false", "no", "off":
+		return false, nil
+	case "1", "true", "yes", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s %q is not a yes/no switch (use 1/0, true/false, yes/no or on/off)", name, value)
+	}
 }
 
 // randomHex returns n random bytes as hex.

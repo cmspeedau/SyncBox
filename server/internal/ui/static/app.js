@@ -44,12 +44,14 @@ function showLogin(message) {
   $("login").hidden = false;
   $("login-error").textContent = message || "";
   $("session").textContent = "";
+  stopLiveStats();
 }
 
 function showConsole() {
   $("login").hidden = true;
   $("console").hidden = false;
   $("session").textContent = "";
+  startLiveStats();
   const signOut = document.createElement("button");
   signOut.type = "button";
   signOut.textContent = "Sign out";
@@ -424,6 +426,56 @@ $("create-form").addEventListener("submit", async (event) => {
   $("vault-location").value = "";
   refresh();
 });
+
+// The console follows the operator's own light/dark setting; this button pins
+// it either way for this browser, and "system" hands the decision back. The
+// palette itself lives in `color-scheme` plus `light-dark()` in the stylesheet.
+const THEME_KEY = "syncbox-theme";
+const THEMES = ["system", "light", "dark"];
+
+function storedTheme() {
+  const stored = localStorage.getItem(THEME_KEY);
+  return THEMES.includes(stored) ? stored : "system";
+}
+
+function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === "light" || mode === "dark") {
+    root.dataset.theme = mode;
+  } else {
+    delete root.dataset.theme;
+  }
+  $("theme").textContent = "Theme: " + mode;
+}
+
+$("theme").addEventListener("click", () => {
+  const next = THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length];
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
+});
+
+applyTheme(storedTheme());
+
+// The overview strip is the one panel with a "now" to it, so it re-reads the
+// health endpoint while the console is open: an active client or a backup in
+// flight shows up as the counts move, without a reload.
+let liveStats = null;
+
+function startLiveStats() {
+  stopLiveStats();
+  liveStats = setInterval(async () => {
+    if (document.hidden) return;
+    const response = await fetch("/healthz");
+    if (response.ok) renderStats(await response.json());
+  }, 5000);
+}
+
+function stopLiveStats() {
+  if (liveStats !== null) {
+    clearInterval(liveStats);
+    liveStats = null;
+  }
+}
 
 // Boot: a stored token gets the console and the first 401 returns to the
 // door; no token means the login form is the front page, honestly labelled.

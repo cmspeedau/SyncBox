@@ -286,6 +286,15 @@ func TestConformVaultRegistry(t *testing.T) {
 			t.Errorf("second CreateVault = %q, %v; want a different id", second, err)
 		}
 
+		// Enforcement (S5) reads this: a registered vault answers true, and an
+		// id nothing ever registered answers false.
+		if ok, err := st.VaultRegistered(ctx, id); err != nil || !ok {
+			t.Errorf("VaultRegistered(%s) = %v, %v; want true", id, ok, err)
+		}
+		if ok, err := st.VaultRegistered(ctx, "NOSUCHVAULT"); err != nil || ok {
+			t.Errorf("VaultRegistered(unknown) = %v, %v; want false", ok, err)
+		}
+
 		vaults, err := st.ListVaults(ctx)
 		if err != nil {
 			t.Fatalf("ListVaults: %v", err)
@@ -326,6 +335,9 @@ func TestConformVaultRegistry(t *testing.T) {
 		if _, err := st.Commit(ctx, Revision{VaultID: legacy, Parent: head,
 			DirID: "dir", CipherName: "A", Deleted: true}); err != nil {
 			t.Fatalf("Commit tombstone: %v", err)
+		}
+		if ok, err := st.VaultRegistered(ctx, legacy); err != nil || !ok {
+			t.Errorf("a commit must register its vault: VaultRegistered(%s) = %v, %v", legacy, ok, err)
 		}
 
 		vaults, err = st.ListVaults(ctx)

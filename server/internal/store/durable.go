@@ -598,6 +598,25 @@ func requireVaultRow(res sql.Result, id, verb string) error {
 	return nil
 }
 
+// VaultRegistered reports whether the registry knows this vault. Commits upsert
+// a row, CreateVault mints one, and a restore imports one for every vault a
+// snapshot carried — so every vault holding revisions has a row, and the table
+// is authoritative for enforcement.
+func (d *Durable) VaultRegistered(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("checking vault %s: %w", id, err)
+	}
+	var one int
+	err := d.db.QueryRowContext(ctx, `SELECT 1 FROM vault WHERE id = ?`, id).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking vault %s: %w", id, err)
+	}
+	return true, nil
+}
+
 // ChunkIDs lists stored chunk ids, sorted.
 func (d *Durable) ChunkIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
