@@ -8,9 +8,8 @@ the demo buttons switch states, the gear and *Unlock vault* open their
 windows.
 
 Status: design reference only. Nothing in `client/` implements it yet. The
-settings window shown here is a placeholder — it is being redesigned against
-the new OneDrive sync app settings as a separate reference
-(`reference-agent-settings.html`, pending).
+settings window shown here is a placeholder — its real design lives in
+[`reference-agent-settings.md`](reference-agent-settings.md).
 
 ## Windows
 
@@ -21,7 +20,7 @@ overlays:
 |---|---|---|
 | Main | 420 × 600 | status bar, activity feed, vault button |
 | Unlock | 340 auto | password entry; the only webview that ever sees the password |
-| Settings | 340 auto | server/folder/autostart/pause (→ OneDrive-based redesign) |
+| Settings | 340 auto | server/folder/autostart/pause — superseded by [`reference-agent-settings.md`](reference-agent-settings.md) |
 
 ### Main window anatomy
 

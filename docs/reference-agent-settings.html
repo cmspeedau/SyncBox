@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncbox settings window — OneDrive-based reference</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: var(--font-sans); color: var(--foreground); }
+  .wrap { width: 100%; padding: 8px 16px 28px; }
+  h1 { font-size: 1.1rem; }
+  p.sub { color: var(--muted-foreground); font-size: .83rem; margin: 2px 0 14px; }
+  h2 { font-size: .85rem; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 10px; }
+
+  .stage { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* OS-style title bar */
+  .chrome { display: flex; align-items: center; gap: 6px; height: 30px; background: #e9eef3; border-bottom: 1px solid #d8e0e8; position: relative; flex: none; border-radius: 12px 12px 0 0; }
+  .chrome .tl { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-left: 4px; }
+  .chrome .tl.r { background: #ff5f57; } .chrome .tl.y { background: #febc2e; } .chrome .tl.g { background: #28c840; }
+  .chrome .ct { position: absolute; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 600; color: #5b6672; pointer-events: none; }
+
+  /* ===== settings window ===== */
+  .setwin { width: 640px; max-width: 100%; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); overflow: hidden; font-size: 13px; }
+  .setbody { display: flex; min-height: 480px; }
+
+  /* left rail (OneDrive: account+storage header over page list) */
+  .rail { flex: none; width: 200px; background: linear-gradient(160deg, #f1f8fd, #dcebfa); border-right: 1px solid #d9e7f1; padding: 14px 10px; display: flex; flex-direction: column; }
+  .vault { padding: 4px 6px 10px; }
+  .vault .vh { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 13px; }
+  .vault .vh svg { flex: none; }
+  .sbar { height: 5px; border-radius: 3px; background: rgba(0,106,163,.18); margin: 8px 0 5px; overflow: hidden; }
+  .sbar i { display: block; height: 100%; width: 4%; background: #0082c9; border-radius: 3px; }
+  .vusage { font-size: 11px; color: #5b6672; }
+  .rail nav { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; border-top: 1px solid rgba(0,106,163,.15); padding-top: 10px; }
+  .rail nav button { display: flex; align-items: center; gap: 9px; text-align: left; border: 0; background: none; border-radius: 999px; padding: 9px 12px; font: 600 12.5px var(--font-sans); color: #272833; cursor: pointer; }
+  .rail nav button:hover { background: rgba(255,255,255,.6); }
+  .rail nav button.on { background: #006aa3; color: #fff; }
+  .rail nav .ic { width: 16px; display: grid; place-items: center; flex: none; }
+
+  /* pages */
+  .pages { flex: 1; min-width: 0; padding: 16px 18px 18px; overflow-y: auto; max-height: 540px; }
+  .page { display: none; }
+  .page.on { display: block; }
+  .page h3 { font-size: 15px; margin-bottom: 12px; }
+  .card { border: 1px solid #e2ecf3; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+  .card > b { display: block; font-size: 12.5px; margin-bottom: 4px; }
+  .card .cd { font-size: 11.5px; color: #7a8694; margin-bottom: 8px; }
+  .crow { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 12.5px; }
+  .crow + .crow { border-top: 1px solid #edf2f6; }
+  .crow .lbl { min-width: 0; }
+  .crow .lbl small { display: block; color: #7a8694; font-size: 11px; }
+  .crow .sp { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+  .mono { font-family: var(--font-mono, monospace); font-size: 11.5px; }
+
+  /* badges: does the backend have this today? */
+  .bg { font: 700 9.5px var(--font-sans); letter-spacing: .03em; border-radius: 999px; padding: 2px 7px; flex: none; }
+  .bg.today { background: #e7f6ec; color: #15803d; border: 1px solid #bfe5cc; }
+  .bg.new { background: #fdf3e3; color: #92600a; border: 1px solid #f3ddb0; }
+
+  /* controls */
+  .sw { width: 30px; height: 18px; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; transition: background .15s; border: 0; flex: none; }
+  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+  .sw.on { background: #16a34a; }
+  .sw.on::after { left: 14px; }
+  .mini { border: 1px solid #0082c9; color: #006aa3; background: #fff; border-radius: 999px; padding: 5px 11px; font: 600 11.5px var(--font-sans); cursor: pointer; }
+  .mini:hover { background: #e8f3fb; }
+  .danger { border: 1px solid #f6c9c6; color: #b91c1c; background: #fff; border-radius: 999px; padding: 6px 12px; font: 700 12px var(--font-sans); cursor: pointer; }
+  .danger:hover { background: #fdeceb; }
+  select { border: 1px solid #b7cfe0; border-radius: 999px; padding: 6px 10px; font: 600 11.5px var(--font-sans); background: #fff; color: #272833; outline: none; }
+  select:focus { border-color: #0082c9; }
+  .seg { display: flex; gap: 4px; flex-wrap: wrap; }
+  .seg button { border: 1px solid #d5dee6; background: #fff; color: #272833; border-radius: 999px; padding: 6px 11px; font: 600 11.5px var(--font-sans); cursor: pointer; }
+  .seg button:hover { background: #f3f9fd; }
+  .seg button.on { background: #006aa3; color: #fff; border-color: #006aa3; }
+  .pstate { display: none; align-items: center; gap: 10px; margin-top: 9px; background: #fdf3e3; border: 1px solid #f3ddb0; color: #92600a; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+  .pstate.show { display: flex; }
+  .pstate .mini { margin-left: auto; }
+  .fbar { flex: none; display: flex; align-items: center; justify-content: flex-end; gap: 9px; border-top: 1px solid #e6eef4; background: #f6fafd; padding: 9px 14px; font-size: 12px; color: #5b6672; }
+
+  /* choose-folders tree */
+  .chk { width: 15px; height: 15px; accent-color: #0082c9; flex: none; cursor: pointer; }
+  .tree { list-style: none; margin: 4px 0 2px; font-size: 12.5px; transition: opacity .15s; }
+  .tree ul { list-style: none; padding-left: 22px; }
+  .tree.dim { opacity: .5; pointer-events: none; }
+  .trow { display: flex; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 6px; }
+  .trow:hover { background: #f3f9fd; }
+  .caret { width: 16px; height: 16px; border: 0; background: none; cursor: pointer; color: #7a8694; display: grid; place-items: center; flex: none; font-size: 10px; padding: 0; transition: transform .15s; }
+  li.closed > .trow .caret { transform: rotate(-90deg); }
+  li.closed > ul { display: none; }
+  .tree .fs { margin-left: auto; color: #7a8694; font-size: 11px; }
+  .primary { background: #006aa3; color: #fff; border: 0; border-radius: 999px; padding: 10px 18px; font: 700 12.5px var(--font-sans); cursor: pointer; box-shadow: 0 3px 10px rgba(0,80,130,.35); }
+  .primary:hover { background: #0075b3; }
+  .primary:disabled { opacity: .5; cursor: default; box-shadow: none; }
+
+  /* legend + refs */
+  .legend { width: 230px; }
+  .legend .bub { display: flex; gap: 10px; align-items: flex-start; padding: 7px 10px; font-size: 12.5px; color: var(--muted-foreground); }
+  .refs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px,100%), 1fr)); gap: 14px; }
+  .ref { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: .8rem; }
+  .ref img { width: 100%; height: 170px; object-fit: contain; background: #fff; display: block; border-bottom: 1px solid var(--border); }
+  .ref .b { padding: 10px 12px; }
+  .ref b { display: block; margin-bottom: 3px; }
+  .ref p { color: var(--muted-foreground); }
+  .ref a { color: var(--info); text-decoration: none; }
+  .note { margin-top: 16px; font-size: .8rem; color: var(--muted-foreground); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .note code { background: var(--code-background); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: .95em; }
+
+  @media (max-width: 560px) {
+    .setbody { flex-direction: column; }
+    .rail { width: 100%; border-right: 0; border-bottom: 1px solid #d9e7f1; }
+    .rail nav { flex-direction: row; overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Syncbox settings window — OneDrive-based reference</h1>
+  <p class="sub">The settings popout, redesigned against the <b>new OneDrive sync app</b> settings: a left rail with the storage card over four pages — Sync Files, Account, Notifications, About. Badges mark what the agent supports <span class="bg today">today</span> vs. what needs a <span class="bg new">new</span> backend concept.</p>
+
+  <div class="stage">
+    <div class="setwin">
+      <div class="chrome"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Syncbox — Settings</span></div>
+      <div class="setbody">
+        <aside class="rail">
+          <div class="vault">
+            <div class="vh"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#006aa3" stroke-width="2.2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Files synced</div>
+            <div class="sbar"><i></i></div>
+            <div class="vusage">1.8 GB of 50 GB · 412 files</div>
+          </div>
+          <nav id="nav">
+            <button class="on" data-p="sync"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2"/><path d="M3 7v5h5M21 17v-5h-5"/></svg></span>Sync Files</button>
+            <button data-p="account"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="3.6"/><path d="M5 20c1.2-3.4 4-5 7-5s5.8 1.6 7 5"/></svg></span>Account</button>
+            <button data-p="notif"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></span>Notifications</button>
+            <button data-p="about"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.4"/></svg></span>About</button>
+          </nav>
+        </aside>
+
+        <main class="pages">
+          <!-- ===== Sync Files ===== -->
+          <section class="page on" id="p-sync">
+            <h3>Sync Files</h3>
+
+            <div class="card">
+              <b>Sync folder</b>
+              <div class="crow"><span class="mono" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">/home/you/Syncbox/Files synced</span>
+                <span class="sp"><button class="mini">Open</button><button class="mini">Change…</button></span>
+              </div>
+            </div>
+
+            <div class="card">
+              <b>Choose folders <span class="bg new">new</span></b>
+              <div class="cd">Folder tree derived from the server index. Unchecked folders are never downloaded to this machine.</div>
+              <div class="crow" style="padding-top:2px;"><input type="checkbox" class="chk" id="syncAll" checked><b style="font-size:12.5px;">Sync everything</b></div>
+              <ul class="tree dim" id="tree">
+                <li>
+                  <div class="trow"><button class="caret" title="Collapse">▾</button><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Documents</span><span class="fs">128 files</span></div>
+                  <ul>
+                    <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Work</span><span class="fs">64 files</span></div></li>
+                    <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Invoices 2026</span><span class="fs">21 files</span></div></li>
+                  </ul>
+                </li>
+                <li>
+                  <div class="trow"><button class="caret" title="Collapse">▾</button><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Photos</span><span class="fs">2.1k files</span></div>
+                  <ul>
+                    <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>2025</span><span class="fs">1.4k files</span></div></li>
+                    <li>
+                      <div class="trow"><button class="caret" title="Collapse">▾</button><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Vacations</span><span class="fs">310 files</span></div>
+                      <ul>
+                        <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Greece</span><span class="fs">96 files</span></div></li>
+                        <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Portugal</span><span class="fs">88 files</span></div></li>
+                      </ul>
+                    </li>
+                  </ul>
+                </li>
+                <li><div class="trow"><span class="caret" style="visibility:hidden"></span><input type="checkbox" class="chk" checked><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#8aa0b2" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg><span>Music</span><span class="fs">240 files</span></div></li>
+              </ul>
+            </div>
+
+            <div class="card">
+              <b>Pause syncing</b>
+              <div class="cd">Local edits keep saving; transfers resume automatically.</div>
+              <div class="seg" id="pauseSeg">
+                <button>1 hour</button><button>8 hours</button><button>24 hours</button><button>Until I resume</button>
+              </div>
+              <div class="pstate" id="pstate"><span id="ptxt">Paused.</span><button class="mini" id="resumeBtn">Resume now</button></div>
+              <div class="crow" style="border-top:1px solid #edf2f6; margin-top:10px;"><span class="lbl">Pause syncing <span class="bg new">new</span></span></div>
+            </div>
+
+            <div style="display:flex; align-items:center; gap:10px; justify-content:flex-end; padding:2px 2px 4px;">
+              <span id="applyState" style="font-size:11.5px; color:#7a8694;"></span>
+              <button class="primary" id="applyBtn" disabled>Apply settings</button>
+            </div>
+          </section>
+
+          <!-- ===== Account ===== -->
+          <section class="page" id="p-account">
+            <h3>Account</h3>
+
+            <div class="card">
+              <b>Server</b>
+              <div class="crow"><span class="lbl mono">sync.example.org</span><span class="sp"><span class="bg today">today</span><button class="mini">Change…</button></span></div>
+              <div class="cd" style="margin-top:6px">Change re-runs first run: probe server, list vaults, pick folder.</div>
+            </div>
+
+            <div class="card">
+              <b>Vault</b>
+              <div class="crow"><span class="lbl">Files synced <small>412 files · 1.8 GB on this machine</small></span><span class="sp"><span class="bg today">today</span></span></div>
+              <div class="cd" style="margin-top:6px">One vault per sync root. To sync a different vault, re-run first run — its picker lists vaults from <code>list_vaults</code>. Folder selection lives under Sync Files.</div>
+            </div>
+
+            <div class="card">
+              <b>Vault auto-lock</b>
+              <div class="crow"><span class="lbl">Lock the vault when inactive <small>OneDrive Personal Vault's auto-lock, applied to the whole vault</small></span><span class="sp"><span class="bg new">new</span><select><option>15 minutes</option><option selected>30 minutes</option><option>1 hour</option><option>8 hours</option><option>Never</option></select></span></div>
+            </div>
+
+            <div class="card">
+              <b>Remove vault</b>
+              <div class="cd">Unlink this computer from the vault: the local sync folder and encrypted cache are removed. The server keeps your data; nothing is deleted remotely.</div>
+              <div class="crow"><span class="sp" style="margin-left:0"><button class="danger">Remove vault from this computer</button></span></div>
+            </div>
+          </section>
+
+          <!-- ===== Notifications ===== -->
+          <section class="page" id="p-notif">
+            <h3>Notifications</h3>
+            <div class="card">
+              <div class="crow"><span class="lbl">Sync errors</span><span class="sp"><span class="bg new">new</span><button class="sw on"></button></span></div>
+              <div class="crow"><span class="lbl">Conflicts (both copies kept)</span><span class="sp"><span class="bg new">new</span><button class="sw on"></button></span></div>
+              <div class="crow"><span class="lbl">Pass finished <small>off by default — too chatty</small></span><span class="sp"><span class="bg new">new</span><button class="sw"></button></span></div>
+              <div class="crow"><span class="lbl">Vault locked / unlocked</span><span class="sp"><span class="bg new">new</span><button class="sw"></button></span></div>
+            </div>
+            <div class="cd" style="font-size:11.5px;color:#7a8694">OneDrive lists the same kind of per-event toggles; the events come from <code>SyncEvent</code>, so the feed and the toasts stay a single source.</div>
+          </section>
+
+          <!-- ===== About ===== -->
+          <section class="page" id="p-about">
+            <h3>About</h3>
+            <div class="card">
+              <div class="crow"><span class="lbl">Device ID <small>quote this when asking for help</small></span><span class="sp mono">a3f1-7c02-99de-4b18</span></div>
+              <div class="crow"><span class="lbl">Agent version</span><span class="sp mono">0.4.0</span></div>
+              <div class="crow"><span class="lbl">Server version</span><span class="sp mono">0.6.1</span></div>
+              <div class="crow"><span class="lbl">Logs</span><span class="sp"><button class="mini">Open logs…</button></span></div>
+              <div class="crow"><span class="lbl">Updates <span class="bg new">new</span></span><span class="sp"><button class="mini">Check for updates</button></span></div>
+            </div>
+          </section>
+        </main>
+      </div>
+      <div class="fbar"><span>Run at login</span><button class="sw on" aria-label="autostart" title="get_autostart / set_autostart"></button></div>
+    </div>
+
+    <div class="legend">
+      <div class="bub"><span class="bg today">today</span>&nbsp;works with existing commands (<code style="font-family:var(--font-mono)">status</code>, <code style="font-family:var(--font-mono)">unlock/lock</code>, <code style="font-family:var(--font-mono)">list_vaults</code>, autostart)</div>
+      <div class="bub"><span class="bg new">new</span>&nbsp;needs an agent concept: pause + durations, selective folder sync, auto-lock timer, notification prefs, updates</div>
+      <div class="bub" style="padding-top:10px">Dropped from the OneDrive baseline on purpose: multi-account, Files On Demand (everything syncs), Personal Vault (whole vault locks), Insider ring.</div>
+    </div>
+  </div>
+
+  <h2>Baseline (verified, hotlinkable)</h2>
+  <div class="refs">
+    <div class="ref"><img loading="lazy" src="https://support.microsoft.com/en-us/onedrive/media/onedrive-settings-ui-new.png" alt="OneDrive new sync app settings"><div class="b"><b>OneDrive — new sync app settings</b><p>Borrowed: storage card in the rail, page list, Sync-and-back-up / Account / Notifications / About split, choose-folders tree with "Sync everything" on top, pause durations, auto-lock time, device-ID About.<br><a href="https://support.microsoft.com/en-us/onedrive/how-to-access-onedrive-settings" target="_blank" rel="noopener">Microsoft Support</a></p></div></div>
+    <div class="ref"><img loading="lazy" src="https://doc.owncloud.com/desktop/7.1/_images/using/oc-windows-account-settings.png" alt="ownCloud account settings"><div class="b"><b>ownCloud desktop 7.1</b><p>Cross-check: settings as its own window, server field first. Kept as the reference for how little an agent settings window needs.<br><a href="https://doc.owncloud.com/desktop/7.1/using.html" target="_blank" rel="noopener">doc.owncloud.com</a></p></div></div>
+  </div>
+
+  <div class="note">Mapping: rail storage card ← <code>Index::files()</code> / <code>referenced_bytes()</code> (+ quota when the server reports one); <i>Run at login</i> ← <code>get/set_autostart</code>; <i>Change…</i> (server) ← first-run flow + <code>list_vaults</code>; <i>Choose folders</i> ← folder set derived from <code>Index::files()</code> paths, with a new per-device selection the agent skips downloading (server untouched); <i>Pause syncing</i> ← new paused flag on the agent (the same control appears in the main window); <i>auto-lock</i> ← new inactivity timer driving <code>lock</code>; notifications ← <code>SyncEvent</code> filtered by these prefs; <i>Remove vault</i> = forget local config + cache, server untouched.</div>
+</div>
+
+<script>
+document.getElementById('nav').addEventListener('click', function(e) {
+  var b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#nav button').forEach(function(x) { x.classList.toggle('on', x === b); });
+  document.querySelectorAll('.page').forEach(function(p) { p.classList.toggle('on', p.id === 'p-' + b.dataset.p); });
+});
+document.querySelectorAll('.sw').forEach(function(s) { s.addEventListener('click', function() { s.classList.toggle('on'); }); });
+var seg = document.getElementById('pauseSeg'), pstate = document.getElementById('pstate'), ptxt = document.getElementById('ptxt');
+seg.addEventListener('click', function(e) {
+  var b = e.target.closest('button'); if (!b) return;
+  seg.querySelectorAll('button').forEach(function(x) { x.classList.toggle('on', x === b); });
+  ptxt.textContent = 'Paused — resumes ' + (b.textContent === 'Until I resume' ? 'when you resume.' : 'after ' + b.textContent.toLowerCase() + '.');
+  pstate.classList.add('show');
+});
+document.getElementById('resumeBtn').addEventListener('click', function() {
+  seg.querySelectorAll('button').forEach(function(x) { x.classList.remove('on'); });
+  pstate.classList.remove('show');
+});
+var syncAll = document.getElementById('syncAll'), tree = document.getElementById('tree');
+syncAll.addEventListener('change', function() {
+  tree.classList.toggle('dim', syncAll.checked);
+  if (syncAll.checked) tree.querySelectorAll('.chk').forEach(function(c) { c.checked = true; c.indeterminate = false; });
+});
+tree.addEventListener('click', function(e) {
+  var cr = e.target.closest('button.caret'); if (!cr) return;
+  cr.closest('li').classList.toggle('closed');
+});
+tree.addEventListener('change', function(e) {
+  var c = e.target; if (!c.classList || !c.classList.contains('chk')) return;
+  var li = c.closest('li');
+  li.querySelectorAll('.chk').forEach(function(d) { d.checked = c.checked; d.indeterminate = false; });
+  var p = li.parentElement.closest('li');
+  while (p) {
+    var kids = Array.prototype.slice.call(p.querySelectorAll(':scope > ul > li > .trow > .chk'));
+    var cc = kids.filter(function(k) { return k.checked; }).length;
+    var pc = p.querySelector('.trow > .chk');
+    pc.checked = cc === kids.length;
+    pc.indeterminate = cc > 0 && cc < kids.length;
+    p = p.parentElement.closest('li');
+  }
+});
+var pSync = document.getElementById('p-sync'), applyBtn = document.getElementById('applyBtn'), applyState = document.getElementById('applyState');
+function markDirty() { applyBtn.disabled = false; applyState.textContent = 'Unsaved changes'; applyState.style.color = '#92600a'; }
+pSync.addEventListener('change', markDirty);
+seg.addEventListener('click', markDirty);
+applyBtn.addEventListener('click', function() {
+  applyBtn.disabled = true;
+  applyState.textContent = 'Settings applied';
+  applyState.style.color = '#15803d';
+});
+</script>
+</body>
+</html>
