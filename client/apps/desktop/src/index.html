@@ -332,7 +332,11 @@
           for (const v of live) {
             const option = document.createElement("option");
             option.value = v.id;
-            option.textContent = v.name ? `${v.name} (${v.id})` : v.id;
+            // The human picks a name. The id rides along in the value and
+            // stays out of sight — it is the server's handle, not the
+            // vault's name. A vault nobody registered yet has no name, and
+            // then the id is all there is to show.
+            option.textContent = v.name || v.id;
             pick.appendChild(option);
           }
           pick.disabled = live.length === 0 || $("manualId").checked;
