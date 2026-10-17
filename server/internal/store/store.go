@@ -138,6 +138,11 @@ type Store interface {
 	SetVaultLocation(ctx context.Context, id, location string) error
 	// SetVaultArchived flags a vault as retired, or returns ErrNotFound.
 	SetVaultArchived(ctx context.Context, id string, archived bool) error
+	// VaultRegistered reports whether id is a vault the registry knows —
+	// created in the console, adopted by migration, or born of a commit made
+	// before enforcement. Enforcement refuses a commit to an id this answers
+	// false for, rather than birthing a vault nameless.
+	VaultRegistered(ctx context.Context, id string) (bool, error)
 }
 
 // Memory is an in-RAM Store.
@@ -498,6 +503,20 @@ func (m *Memory) SetVaultArchived(ctx context.Context, id string, archived bool)
 	}
 	registered.archived = archived
 	return nil
+}
+
+// VaultRegistered reports whether the registry knows this vault. Commit births
+// one, CreateVault mints one and a restore imports one, so a vault holding
+// revisions always has a row here too.
+func (m *Memory) VaultRegistered(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("checking vault %s: %w", id, err)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	_, ok := m.vaults[id]
+	return ok, nil
 }
 
 // newVaultID mints a short, typeable vault id: five random bytes as base32,

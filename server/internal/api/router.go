@@ -56,6 +56,10 @@ type Server struct {
 	hub      *hub
 	limiter  *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
 	now      func() time.Time
+	// requireRegisteredVaults makes a commit to a vault the registry does not
+	// know a refusal rather than a nameless birth. Off unless a deployment
+	// turns it on, after its clients have moved to registered vaults.
+	requireRegisteredVaults bool
 }
 
 // New returns a server over a store. backups may be nil, in which case the
@@ -85,6 +89,16 @@ func (s *Server) SetRateLimit(rate float64, burst int) {
 // server is built over.
 func (s *Server) SetVersion(version string) {
 	s.version = version
+}
+
+// SetRequireRegisteredVaults turns the registry into a gate: with it on, a
+// commit to a vault id the registry does not know is refused, instead of
+// birthing a vault nameless. It is a setter for the same reason the limiter
+// is — a deployment posture, chosen per host and turned on only after every
+// client has been pointed at a registered vault, so turning it on breaks no
+// client still in flight.
+func (s *Server) SetRequireRegisteredVaults(require bool) {
+	s.requireRegisteredVaults = require
 }
 
 // Routes builds the handler tree.
@@ -253,6 +267,24 @@ type commitRequest struct {
 
 func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 	vaultID := r.PathValue("vaultID")
+
+	// Enforcement (S5): with the toggle on, the registry is the only way a
+	// vault comes to exist. Refusing here — before the body is even read —
+	// keeps a mistyped or retired vault id from quietly birthing a namespace,
+	// while the default (off) leaves every pre-registry client working.
+	if s.requireRegisteredVaults {
+		registered, err := s.store.VaultRegistered(r.Context(), vaultID)
+		if err != nil {
+			writeErrorFrom(w, err)
+			return
+		}
+		if !registered {
+			writeError(w, http.StatusForbidden, "unknown_vault",
+				"this server accepts commits only to vaults in its registry; create the vault in the console first")
+			return
+		}
+	}
+
 	var request commitRequest
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())

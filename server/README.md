@@ -79,6 +79,7 @@ host can run two servers). `syncboxd serve -h` lists the flags.
 | `SYNCBOX_S3_ACCESS_KEY` / `SYNCBOX_S3_SECRET_KEY` | — | backup signing credentials; `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` are the fallback, and an `s3://` target without either fails at boot |
 | `SYNCBOX_RATE_LIMIT` | off | sustained requests per second per caller IP |
 | `SYNCBOX_RATE_BURST` | `100` | how many requests an IP may spend at once before the sustained rate takes over |
+| `SYNCBOX_REQUIRE_REGISTERED_VAULTS` | off | refuse commits to a vault the registry does not know (`403 unknown_vault`); turn on once every client targets a console-created vault |
 
 One number is fixed rather than configured: a chunk may be at most 8 MiB,
 which is what bounds a single upload.
@@ -152,6 +153,12 @@ an object is never read (docs/backup.md).
 - **Rate limiting is opt-in.** Off is right on LAN; set
   `SYNCBOX_RATE_LIMIT` if the server faces the internet, and still put
   TLS in front of it.
+- **Vault enforcement is opt-in too.** By default a commit may name a vault
+  the registry has never heard of, and the server adopts it nameless — that
+  is what keeps a pre-registry client working against a fresh console. Once
+  every client points at a vault created in the console, set
+  `SYNCBOX_REQUIRE_REGISTERED_VAULTS`: commits to anything else are then
+  refused `403 unknown_vault` instead of quietly minting a namespace.
 - **Backups off means no `/admin` routes.** That is the safe default:
   the endpoint that says "copy everything off this box" should require a
   stated destination.

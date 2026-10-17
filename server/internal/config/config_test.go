@@ -158,6 +158,45 @@ func TestRateLimitParsesAndRejects(t *testing.T) {
 	}
 }
 
+// TestVaultEnforcementSwitch pins S5's toggle: off unless asked, the usual
+// spellings accepted in any case, and a nonsense value reported rather than
+// quietly read as off.
+func TestVaultEnforcementSwitch(t *testing.T) {
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.RequireRegisteredVaults {
+		t.Error("enforcement is on with nothing set, want off")
+	}
+
+	t.Setenv("SYNCBOX_PASSWORD", "a-real-password")
+	for _, spelling := range []string{"1", "true", "yes", "on", "ON", " True "} {
+		t.Setenv("SYNCBOX_REQUIRE_REGISTERED_VAULTS", spelling)
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv(%q): %v", spelling, err)
+		}
+		if !cfg.RequireRegisteredVaults {
+			t.Errorf("%q read as off, want on", spelling)
+		}
+	}
+	for _, spelling := range []string{"0", "false", "no", "off"} {
+		t.Setenv("SYNCBOX_REQUIRE_REGISTERED_VAULTS", spelling)
+		cfg, err := FromEnv()
+		if err != nil {
+			t.Fatalf("FromEnv(%q): %v", spelling, err)
+		}
+		if cfg.RequireRegisteredVaults {
+			t.Errorf("%q read as on, want off", spelling)
+		}
+	}
+	t.Setenv("SYNCBOX_REQUIRE_REGISTERED_VAULTS", "maybe")
+	if _, err := FromEnv(); err == nil {
+		t.Error("a nonsense switch was accepted instead of reported")
+	}
+}
+
 func TestMissingPasswordIsGeneratedNotAbsent(t *testing.T) {
 	t.Setenv("SYNCBOX_PASSWORD", "")
 
