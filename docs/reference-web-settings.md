@@ -71,9 +71,8 @@ Design tokens are unchanged from the Files UI
 as the same app. Implementation: same web frontend, route `/settings`;
 the blocks map to server API calls (about, password rewrap, backups).
 
-Note: `reference-web-ui.md` still documents the older sidebar (search +
-*All files* / *Deleted files*). The shell described above supersedes it;
-aligning that reference is a follow-up.
+The two references share one sidebar shell; the Files UI side is documented
+in [`reference-web-ui.md`](reference-web-ui.md).
 
 ## Design sources
 
