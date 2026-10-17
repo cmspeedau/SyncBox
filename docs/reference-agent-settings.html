@@ -246,7 +246,7 @@
           </section>
         </main>
       </div>
-      <div class="fbar"><span>Run at login</span><button class="sw on" aria-label="autostart" title="get_autostart / set_autostart"></button></div>
+      <div class="fbar"><span>Run at login</span><button class="sw on" aria-label="autostart" title="get_autostart / set_autostart"></button><span style="margin-left:18px;">Show hidden features</span><button class="sw" aria-label="show hidden" title="Reveals: + New vault in the picker · manual vault id · extra sync folders"></button></div>
     </div>
 
     <div class="legend">
@@ -262,7 +262,7 @@
     <div class="ref"><img loading="lazy" src="https://doc.owncloud.com/desktop/7.1/_images/using/oc-windows-account-settings.png" alt="ownCloud account settings"><div class="b"><b>ownCloud desktop 7.1</b><p>Cross-check: settings as its own window, server field first. Kept as the reference for how little an agent settings window needs.<br><a href="https://doc.owncloud.com/desktop/7.1/using.html" target="_blank" rel="noopener">doc.owncloud.com</a></p></div></div>
   </div>
 
-  <div class="note">Mapping: rail storage card ← <code>Index::files()</code> / <code>referenced_bytes()</code> (+ quota when the server reports one); <i>Run at login</i> ← <code>get/set_autostart</code>; <i>Change…</i> (server) ← first-run flow + <code>list_vaults</code>; <i>Choose folders</i> ← folder set derived from <code>Index::files()</code> paths, with a new per-device selection the agent skips downloading (server untouched); <i>Pause syncing</i> ← new paused flag on the agent (the same control appears in the main window); <i>auto-lock</i> ← new inactivity timer driving <code>lock</code>; notifications ← <code>SyncEvent</code> filtered by these prefs; <i>Remove vault</i> = forget local config + cache, server untouched.</div>
+  <div class="note">Mapping: rail storage card ← <code>Index::files()</code> / <code>referenced_bytes()</code> (+ quota when the server reports one); <i>Run at login</i> ← <code>get/set_autostart</code>; <i>Show hidden features</i> ← new agent pref, gates UI only: off, the out-of-box flow picks vaults from the server with the auto folder; on, it reveals the <i>＋ New vault</i> row, the <i>Enter id by hand</i> segment and extra sync folders designed in <code>reference-agent-ui.html</code>; <i>Change…</i> (server) ← first-run flow + <code>list_vaults</code>; <i>Choose folders</i> ← folder set derived from <code>Index::files()</code> paths, with a new per-device selection the agent skips downloading (server untouched); <i>Pause syncing</i> ← new paused flag on the agent (the same control appears in the main window); <i>auto-lock</i> ← new inactivity timer driving <code>lock</code>; notifications ← <code>SyncEvent</code> filtered by these prefs; <i>Remove vault</i> = forget local config + cache, server untouched.</div>
 </div>
 
 <script>

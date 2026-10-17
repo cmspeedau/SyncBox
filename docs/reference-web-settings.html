@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncbox web settings — reference UI (one page)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); color: var(--foreground, #1a1d21); }
+  .wrap { width: 100%; padding: 8px 16px 28px; }
+  h1.top { font-size: 1.05rem; font-weight: 600; }
+  p.sub { color: var(--muted-foreground, #5f6b76); font-size: .83rem; margin: 2px 0 14px; }
+
+  /* ===== mock window ===== */
+  .app { border-radius: 12px; overflow: hidden; box-shadow: 0 12px 40px rgba(0,0,0,.18); border: 1px solid rgba(0,0,0,.15); height: 640px; display: flex; flex-direction: column; background: #fff; color: #272833; font-size: 13px; line-height: 1.4; }
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  /* sidebar — the same shell as the Files UI, Settings active */
+  .side { width: 200px; flex: none; background: linear-gradient(160deg, #f1f8fd 0%, #dcebfa 100%); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+  .vaults { width: 100%; flex: none; display: flex; align-items: center; gap: 8px; border: 1px solid #b7cfe0; background: #fff; font: inherit; font-weight: 600; color: #006aa3; text-align: left; padding: 8px 12px; border-radius: 22px; cursor: pointer; margin: 2px 2px 12px; }
+  .vaults:hover { background: #eaf4fb; border-color: #0082c9; }
+  .vaults .chev { opacity: .65; }
+  .foot-btn { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: none; font: inherit; color: #2c3e4d; text-align: left; padding: 8px 12px; border-radius: 22px; cursor: pointer; }
+  .foot-btn:hover { background: rgba(0,130,201,.10); }
+  .foot-btn.active { background: #006aa3; color: #fff; }
+  .side-foot { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid rgba(0,90,140,.12); }
+  .side-foot .used { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 12px; color: #46586a; }
+  .foot-btn.out { color: #b3413f; }
+  .foot-btn.out:hover { background: #fbeceb; }
+
+  .page { flex: 1; overflow-y: auto; }
+  .col { max-width: 660px; margin: 0 auto; padding: 20px 24px 30px; }
+
+  .head { display: flex; align-items: baseline; gap: 14px; margin: 4px 0 6px; }
+  .head h2 { font-size: 20px; font-weight: 700; }
+  .head .who { color: #7a8694; font-size: 12px; }
+
+  h3.sec { font-size: 14px; font-weight: 700; margin: 24px 0 8px; }
+  .card { border: 1px solid #e6eef4; border-radius: 12px; padding: 14px 16px; margin-bottom: 10px; background: #fff; box-shadow: 0 1px 2px rgba(0,80,130,.04); }
+  .card h4 { font-size: 13px; font-weight: 600; }
+  .card .cd { color: #7a8694; font-size: 12px; margin: 2px 0 10px; }
+
+  input.t, select.t { width: 100%; max-width: 320px; border: 1px solid #b7cfe0; border-radius: 20px; background: #fff; padding: 9px 13px; font: inherit; color: #272833; outline: none; }
+  input.t:focus, select.t:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
+  select.bump { width: auto; max-width: 150px; padding: 5px 10px; font-size: 12px; }
+  .b { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 22px; padding: 9px 16px; font: 600 12.5px var(--font-sans, ui-sans-serif, system-ui, sans-serif); cursor: pointer; margin-top: 12px; }
+  .b.pri { background: #006aa3; color: #fff; box-shadow: 0 2px 6px rgba(0,80,130,.3); }
+  .b.pri:hover { background: #0075b3; }
+
+  .rowline { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid #eef4f9; }
+  .rowline:last-child { border-bottom: 0; }
+  .rowline .nm { font-weight: 600; }
+  .rowline .meta { color: #7a8694; font-size: 12px; }
+  .rowline .r { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: none; }
+  .lk { border: 0; background: none; color: #006aa3; cursor: pointer; font: inherit; font-size: 12px; padding: 0; }
+  .lk:hover { text-decoration: underline; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e8f3fb; color: #006aa3; }
+  .chip.grey { background: #eef1f4; color: #66727e; }
+
+  code.k { font-family: var(--font-mono, ui-monospace, monospace); background: #f1f6fa; border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+
+  /* ===== below the mock ===== */
+  .note { margin-top: 16px; font-size: .8rem; color: var(--muted-foreground, #5f6b76); background: var(--card, #f6f8fa); border: 1px solid var(--border, #e3e8ee); border-radius: var(--radius, 10px); padding: 14px; }
+  .note code { background: var(--code-background, #eef2f7); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono, ui-monospace, monospace); font-size: .95em; }
+  .note b { color: var(--foreground, #1a1d21); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 class="top">Syncbox web settings — reference UI</h1>
+  <p class="sub">One clean page — no rail, no panels. Three blocks: <i>About server</i> (with the server name), <i>Change password</i>, <i>Snapshots</i> (<b>Take a snapshot</b> + schedule). Sidebar: <i>All Vaults</i> (back chevron in the pill), <i>Settings</i> (active) · <i>Sign out</i>. Buttons are clickable.</p>
+
+  <div class="app">
+    <div class="body">
+    <aside class="side">
+      <button class="vaults" id="allvaults"><svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="11" cy="12" r="3.5"/><path d="M11 8.5V6.5M17 8v8"/></svg>All Vaults</button>
+      <div class="side-foot">
+        <span class="used"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg>1.8 MB used</span>
+        <button class="foot-btn active"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>Settings</button>
+        <button class="foot-btn out" id="signout"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>Sign out</button>
+      </div>
+    </aside>
+    <div class="page" id="page">
+      <div class="col">
+        <div class="head">
+          <h2>Settings</h2>
+          <span class="who">ana@example.com</span>
+        </div>
+
+        <!-- ============ About server ============ -->
+        <h3 class="sec">About server</h3>
+        <div class="card">
+          <h4 style="font-size:15px;">homebox</h4>
+          <p class="cd">This Syncbox server.</p>
+          <div class="rowline"><span class="nm" style="min-width:112px;">Version</span><div class="r"><span class="meta">Syncbox 0.4.0</span></div></div>
+          <div class="rowline"><span class="nm" style="min-width:112px;">Storage&nbsp;<span style="color:#16a34a;font-size:9px;vertical-align:1px;">●&nbsp;live</span></span><div class="r" style="gap:8px;flex-wrap:wrap;"><span class="meta" style="background:#f3f9fd;border:1px solid #e6eef4;border-radius:10px;padding:4px 10px;">chunks <b>11,482</b></span><span class="meta" style="background:#f3f9fd;border:1px solid #e6eef4;border-radius:10px;padding:4px 10px;">chunk bytes <b>27.9 GiB</b></span><span class="meta" style="background:#f3f9fd;border:1px solid #e6eef4;border-radius:10px;padding:4px 10px;">revisions <b>287</b></span><span class="meta" style="background:#f3f9fd;border:1px solid #e6eef4;border-radius:10px;padding:4px 10px;">largest chunk <b>4 MiB</b></span><span class="meta">— <code style="font-family:var(--font-mono)">/healthz</code>, re-read every 5 s (a poll, not a page-load snapshot). No <i>check for updates</i>: no endpoint, no release feed — it must not ship dead.</span></div></div>
+          <div class="rowline"><span class="nm" style="min-width:112px;">Storage backend</span><div class="r"><span class="meta">disk · /srv/syncbox</span></div></div>
+          <div class="rowline"><span class="nm" style="min-width:112px;">Agent installers</span><div class="r"><a class="lk save">macOS</a><a class="lk save">Windows</a><a class="lk save">Linux</a></div></div>
+        </div>
+
+        <!-- ============ Change password ============ -->
+        <h3 class="sec">Change password</h3>
+        <div class="card">
+          <p class="cd" style="margin:0 0 2px;">Your vault password. Changing it re-wraps the vault key on the server — zero-knowledge, so no one can reset it for you.</p>
+          <button class="b pri save">Change password</button>
+        </div>
+
+        <!-- ============ Snapshots ============ -->
+        <h3 class="sec">Snapshots</h3>
+        <div class="card">
+          <button class="b pri" id="takesnap">Take a snapshot</button>
+          <div class="rowline" style="margin-top:6px;"><span class="nm">Schedule</span><div class="r"><span class="meta">pruned after each run</span><select class="t bump"><option>Every 15 min</option><option>Every 30 min</option><option selected>Every hour</option><option>Every 6 hours</option><option>Every 12 hours</option><option>Once a day</option><option>Off</option></select><button class="lk save">Apply</button></div></div>
+          <div class="rowline"><div><span class="nm">2026-10-17T030000Z</span><div class="meta">a1b2c3d4 · 12.4 MB · sealed 12 h ago</div></div><div class="r"><button class="lk save">Verify</button></div></div>
+          <div class="rowline"><div><span class="nm">2026-10-16T030000Z</span><div class="meta">9f0e2c11 · 12.1 MB</div></div><div class="r"><span class="chip grey">verified 1 d ago</span><button class="lk save">Verify</button></div></div>
+          <div class="rowline"><div><span class="nm">2026-10-15T030000Z</span><div class="meta">77aa50c2 · 11.9 MB</div></div><div class="r"><button class="lk save">Verify</button></div></div>
+          <p class="cd" style="margin:10px 0 0;">Taken on the schedule above. Restore stages a runnable data directory on the server; swapping it in stays a CLI action (<code class="k">syncbox backup restore</code>). When no S3 connection is configured yet, the list is replaced by a <b>Set up S3 connection</b> card: bucket, optional endpoint, region, keys, lock days → <i>Test connection</i> · <i>Save &amp; enable</i>.</p>
+        </div>
+
+      </div>
+    </div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>One page, slim shell.</b> The whole settings page is three blocks: <i>About server</i> (server name, version, <b>live storage stats</b> — four counters re-read from <code>/healthz</code> every 5 s, the shipped console's strip kept alive — backend &amp; data dir, agent installers; <b>no</b> update check: there is no endpoint or release feed behind it, so it is not drawn), <i>Change password</i> (vault-key rewrap; zero-knowledge — no server-side reset), <i>Snapshots</i> (<b>Take a snapshot</b> → <code>POST /admin/backups</code>, per-snapshot <i>Verify</i> → <code>POST /admin/backups/{id}/verify</code>, and the schedule select — changeable per the earlier decision → <code>PUT /admin/backups/config</code>, applied without restart; <code>SYNCBOX_BACKUP_*</code> env stays as fallback; when unconfigured, the card becomes the <b>Set up S3 connection</b> form). Everything else is deliberately not web UI: profile fields, notifications, 2FA / recovery kit / web sessions, device pairing, user admin, backup target / retention / hooks — those tasks stay CLI (<code>syncbox users</code>, <code>syncbox backup restore</code>) and env config; device-side settings live in the agent Settings window (<code>reference-agent-settings.md</code>). Sidebar: an <i>All Vaults</i> pill on top with a back chevron inside it (back to the vault list — the app root; search lives inside a vault), then the footer (<i>quota · Settings active · Sign out</i>; the theme control lives in the shell, <code>reference-web-ui.md</code>). Tokens unchanged from the Files UI: <code>#0082C9</code> / <code>#006AA3</code>, 22 px pills, 12–13 px type — and the drafted dark palette recorded there applies page-wide.
+  </div>
+</div>
+
+<script>
+document.getElementById('takesnap').addEventListener('click', function() { flash(this, 'Snapshot sealed ✓'); });
+document.getElementById('allvaults').addEventListener('click', function() { flash(this, '← demo: back to All Vaults'); });
+var signout = document.getElementById('signout');
+signout.addEventListener('click', function() { flash(this, 'Signed out (demo)'); });
+document.addEventListener('click', function(e) {
+  var sv = e.target.closest('.save');
+  if (sv) flash(sv, sv.dataset.done);
+});
+document.querySelectorAll('.save').forEach(function(b) {
+  var t = b.textContent;
+  b.dataset.done = t === 'Change password' ? 'Ask for current + new (demo)' : t === 'Verify' ? 'Verified ✓' : t === 'Apply' ? 'Schedule saved ✓' : '✓ done';
+});
+function flash(btn, txt) { var o = btn.textContent; btn.textContent = txt; setTimeout(function(){ btn.textContent = o; }, 1500); }
+</script>
+</body>
+</html>

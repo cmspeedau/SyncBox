@@ -19,29 +19,30 @@
 
   .stage { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
 
-  /* OS-style title bar shared by all windows */
-  .chrome { flex: none; display: flex; align-items: center; gap: 6px; height: 30px; background: #e9eef3; border-bottom: 1px solid #d8e0e8; position: relative; }
-  .chrome .tl { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-  .chrome .tl.r { background: #ff5f57; cursor: pointer; }
-  .chrome .tl.y { background: #febc2e; }
-  .chrome .tl.g { background: #28c840; }
-  .chrome .ct { position: absolute; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 600; color: #5b6672; pointer-events: none; }
   .hidden { display: none !important; }
 
   /* ===== main window ===== */
-  .win { width: 420px; max-width: 100%; height: 600px; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
+  .win { position: relative; width: 420px; max-width: 100%; height: 600px; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); display: flex; flex-direction: column; overflow: hidden; font-size: 13px; }
 
-  .bar { flex: none; display: flex; align-items: center; gap: 9px; padding: 12px 14px; background: linear-gradient(90deg, #006aa3, #0b8bd2); color: #fff; }
-  .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #7bd88f; flex: none; box-shadow: 0 0 0 3px rgba(255,255,255,.25); }
-  .st-sync .bar .dot { background: #ffe08a; animation: pulse 1s infinite; }
-  .st-err .bar .dot { background: #ffb3ad; }
-  .st-pause .bar .dot { background: #ffd280; }
-  .st-locked .bar .dot { background: #cbd5e1; }
+  .bar { flex: none; display: flex; align-items: center; gap: 9px; padding: 12px 14px; background: linear-gradient(160deg, #f1f8fd, #dcebfa); color: #272833; border-bottom: 1px solid rgba(0,90,140,.12); }
+  .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: #16a34a; flex: none; box-shadow: 0 0 0 3px #fff; }
+  .st-sync .bar .dot { background: #f59e0b; animation: pulse 1s infinite; }
+  .st-err .bar .dot { background: #dc2626; }
+  .st-pause .bar .dot { background: #d97706; }
   @keyframes pulse { 50% { opacity: .4; } }
   .bar .name { font-weight: 700; font-size: 14px; }
-  .bar .stxt { font-size: 11.5px; opacity: .85; margin-left: 2px; }
-  .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; display: grid; place-items: center; cursor: pointer; }
-  .gear:hover { background: rgba(255,255,255,.25); }
+  .bar .stxt { font-size: 11.5px; color: #7a8694; margin-left: 2px; }
+  .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: #5a6a77; display: grid; place-items: center; cursor: pointer; }
+  .gear:hover { background: #e3eef7; color: #006aa3; }
+
+  /* gear click menu */
+  .gmenu { position: absolute; right: 10px; top: 48px; background: #fff; border: 1px solid #e6eef4; border-radius: 10px; box-shadow: 0 8px 24px rgba(0,80,130,.18); padding: 4px; display: none; z-index: 5; min-width: 160px; }
+  .gmenu.open { display: block; }
+  .gmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: 12.5px; color: #272833; padding: 8px 12px; border-radius: 7px; cursor: pointer; }
+  .gmenu button:hover { background: #f3f9fd; }
+  .gmenu .sep { height: 1px; background: #e6eef4; margin: 4px 6px; }
+  .gmenu button.quit { color: #b3413f; }
+  .gmenu button.quit:hover { background: #fbeceb; }
   .setup .bar .dot, .setup .bar .stxt, .setup .gear { display: none; }
   .setup .bar { justify-content: center; }
   .setup .bar .name { margin-left: auto; margin-right: auto; }
@@ -58,7 +59,7 @@
   .setupcard .t b { font-size: 15px; }
   .setupcard .t p { color: #7a8694; font-size: 12px; margin-top: 4px; }
   .fld { font-size: 11.5px; color: #5b6672; margin-top: 8px; }
-  .fld input { width: 100%; margin-top: 5px; border: 1px solid #b7cfe0; border-radius: 20px; padding: 10px 13px; font: inherit; outline: none; }
+  .fld input { width: 100%; margin-top: 5px; border: 1px solid #b7cfe0; border-radius: 22px; padding: 10px 13px; font: inherit; outline: none; }
   .fld input:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
   .okline { display: none; align-items: center; gap: 7px; background: #e7f6ec; color: #15803d; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
   .step2 .okline { display: flex; }
@@ -72,64 +73,62 @@
   .step1-only { display: block; }
   .step2 .step1-only { display: none; }
 
-  /* activity */
+  /* vault list (centre box) */
   .mid { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 12px 14px 6px; }
   .setup .mid { display: none; }
   .mid h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: #7a8694; margin: 0 0 8px; display: flex; align-items: center; }
   .mid h3 .cnt { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
-  .feed { list-style: none; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
-  .st-locked .feed { opacity: .72; }
-  .feed li { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; font-size: 12.5px; }
-  .feed li:hover { background: #f3f9fd; }
-  .feed .dir { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; flex: none; font-size: 11px; }
-  .dir.up { background: #e7f6ec; color: #16a34a; }
-  .dir.dn { background: #e3eff9; color: #006aa3; }
-  .dir.warn { background: #fdf3e3; color: #d97706; }
-  .dir.fail { background: #fdeceb; color: #dc2626; }
-  .feed .fn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-  .feed .fn.muted { color: #7a8694; }
-  .feed .tm { margin-left: auto; flex: none; color: #7a8694; font-size: 11px; }
-  .prog { flex: none; width: 90px; height: 4px; border-radius: 2px; background: #e2ecf3; overflow: hidden; }
+  .vlist { list-style: none; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .vrow { display: flex; align-items: center; gap: 9px; padding: 9px 8px; border-radius: 8px; font-size: 12.5px; cursor: pointer; }
+  .vrow:hover { background: #f3f9fd; }
+  .vrow .vic { flex: none; width: 22px; }
+  .vrow .vic svg { width: 22px; height: 22px; display: block; }
+  .vrow.locked .vic { opacity: .55; }
+  .vrow .vname { font-weight: 600; white-space: nowrap; }
+  .vrow .vmeta { color: #7a8694; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .vrow .vr { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e8f3fb; color: #006aa3; flex: none; }
+  .chip.grey { background: #eef1f4; color: #66727e; }
+  .prog { width: 90px; height: 4px; border-radius: 2px; background: #e2ecf3; overflow: hidden; }
   .prog i { display: block; height: 100%; background: #0082c9; width: 0%; transition: width .4s; }
-  .feed .pct { flex: none; width: 34px; text-align: right; color: #006aa3; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .pct { width: 34px; text-align: right; color: #006aa3; font-size: 11px; font-variant-numeric: tabular-nums; }
 
   /* bottom */
   .bottom { flex: none; border-top: 1px solid #e6eef4; padding: 12px 14px 14px; }
-  .setup .bottom .usage, .setup .bottom .vault-btn { display: none; }
   .usage { display: flex; font-size: 11.5px; color: #7a8694; margin-bottom: 8px; }
+  .setup .bottom .usage { display: none; }
   .usage .r { margin-left: auto; }
-  .vault-btn, .setup-btn { width: 100%; border: 0; border-radius: 24px; padding: 13px; font: 700 13.5px var(--font-sans); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 9px; }
-  .vault-btn.locked, .setup-btn { background: #006aa3; color: #fff; box-shadow: 0 3px 10px rgba(0,80,130,.35); }
-  .vault-btn.locked:hover, .setup-btn:hover { background: #0075b3; }
+  .setup-btn { width: 100%; border: 0; border-radius: 22px; padding: 13px; font: 700 13.5px var(--font-sans); cursor: pointer; display: none; align-items: center; justify-content: center; gap: 9px; background: #006aa3; color: #fff; box-shadow: 0 3px 10px rgba(0,80,130,.35); }
+  .setup-btn:hover { background: #0075b3; }
+  .hgroup { display: none; border: 1px dashed #7db4d8; border-radius: 10px; padding: 9px 8px 8px; position: relative; }
+  .hgroup.show { display: block; }
+  .hgroup .rtag { position: absolute; top: -7px; left: 10px; background: #fff; color: #006aa3; font-size: 8.5px; font-weight: 700; padding: 0 5px; letter-spacing: .04em; }
+  .seg { display: flex; background: #fff; border: 1px solid #b7cfe0; border-radius: 20px; padding: 3px; gap: 3px; }
+  .seg button { flex: 1; border: 0; background: none; font: inherit; font-size: 11.5px; padding: 5px 0; border-radius: 17px; color: #7a8694; cursor: pointer; }
+  .seg button.on { background: #006aa3; color: #fff; font-weight: 700; }
+  .newrow { border: 1px dashed #7db4d8; border-radius: 14px; color: #006aa3; font-weight: 700; font-size: 11.5px; text-align: center; padding: 7px; cursor: pointer; background: #fff; }
+  .autof { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: #f3f9fd; border: 1px solid #dbe7f0; border-radius: 14px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; color: #272833; }
+  .autof .auto { margin-left: auto; background: #e8f3fb; color: #006aa3; border-radius: 20px; padding: 1px 8px; font-size: 9px; font-weight: 700; flex: none; font-family: var(--font-sans); }
+  .autof .auto.byhand { background: #eef1f4; color: #66727e; }
+  .addf { border: 1px dashed #7db4d8; color: #006aa3; font-weight: 700; font-size: 11px; border-radius: 16px; padding: 6px; text-align: center; margin-top: 6px; cursor: pointer; }
   .setup-btn:disabled { opacity: .5; cursor: default; }
-  .setup-btn { display: none; }
   .setup .setup-btn { display: flex; }
-  .vault-btn.open { background: #f1f6fa; color: #272833; border: 1px solid #d5dee6; }
-  .vault-btn.open:hover { background: #e8f0f6; }
 
-  /* ===== side windows (unlock + settings) ===== */
+  /* ===== unlock window ===== */
   .side { width: 340px; max-width: 100%; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); overflow: hidden; display: flex; flex-direction: column; font-size: 13px; }
   .side .bar { padding: 10px 12px; }
   .side .bar .ttl { font-weight: 700; font-size: 13px; display: flex; align-items: center; gap: 8px; }
   .side .body { padding: 16px 16px 14px; }
   .side .hint { font-size: 12px; color: #7a8694; margin-bottom: 10px; }
-  .side input[type=password] { width: 100%; border: 1px solid #b7cfe0; border-radius: 20px; padding: 11px 13px; font: inherit; outline: none; margin-bottom: 12px; }
+  .side input[type=password] { width: 100%; border: 1px solid #b7cfe0; border-radius: 22px; padding: 11px 13px; font: inherit; outline: none; margin-bottom: 12px; }
   .side input[type=password]:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
   .btns { display: flex; gap: 8px; }
-  .btns .b { flex: 1; border: 0; border-radius: 20px; padding: 11px; font: 700 13px var(--font-sans); cursor: pointer; }
+  .btns .b { flex: 1; border: 0; border-radius: 22px; padding: 11px; font: 700 13px var(--font-sans); cursor: pointer; }
   .btns .pri { background: #006aa3; color: #fff; }
   .btns .pri:hover { background: #0075b3; }
   .btns .gh { background: #fff; border: 1px solid #d5dee6; color: #272833; }
   .btns .gh:hover { background: #f3f9fd; }
   .fine { font-size: 10.5px; color: #97a3af; margin-top: 10px; text-align: center; }
-  .srow { display: flex; align-items: center; gap: 8px; padding: 9px 2px; font-size: 12.5px; }
-  .srow + .srow { border-top: 1px solid #edf2f6; }
-  .srow .k { color: #5b6672; }
-  .srow .v { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 11.5px; color: #272833; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
-  .sw { width: 30px; height: 18px; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; transition: background .15s; border: 0; flex: none; margin-left: auto; }
-  .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
-  .sw.on { background: #16a34a; }
-  .sw.on::after { left: 14px; }
   .mini { border: 1px solid #0082c9; color: #006aa3; background: #fff; border-radius: 999px; padding: 4px 10px; font: 600 11.5px var(--font-sans); cursor: pointer; flex: none; }
   .mini:hover { background: #e8f3fb; }
 
@@ -137,6 +136,7 @@
   .legend { width: 240px; }
   .legend .bub { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; font-size: 12.5px; color: var(--muted-foreground); }
   .legend .bub .d { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .legend .bub .d.halo { background: #fff; box-shadow: 0 0 0 2px #94a3b8; }
   .refs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px,100%), 1fr)); gap: 14px; }
   .ref { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: .8rem; }
   .ref img { width: 100%; height: 150px; object-fit: contain; background: #fff; display: block; border-bottom: 1px solid var(--border); }
@@ -151,7 +151,7 @@
 <body>
 <div class="wrap">
   <h1>Syncbox agent client — reference UI</h1>
-  <p class="sub">Unlock and Settings are separate top-level windows shown next to the main one — real Tauri windows, not overlays. Red dot closes them; the gear brings Settings back, <i>Unlock vault</i> brings the unlock window back.</p>
+  <p class="sub">Same design language as the web UI: no drawn chrome, light tinted headers, 22 px pills. The centre box lists <b>all vaults</b> (like the web main page) — locked rows carry <i>Unlock</i> and open the unlock window. The gear opens a click menu: <i>Settings…</i> (window designed in <i>reference-agent-settings.html</i>) · <i>Pause syncing</i> · <i>Quit</i>.</p>
 
   <div class="demo" id="demo">
     <span class="lbl">demo:</span>
@@ -160,18 +160,23 @@
     <button data-s="sync">Syncing</button>
     <button data-s="err">Error</button>
     <button data-s="pause">Paused</button>
-    <button data-s="locked">Locked</button>
   </div>
 
   <div class="stage">
     <!-- ===== main window ===== -->
-    <div class="win setup st-locked" id="win">
-      <div class="chrome"><span class="tl r" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Syncbox</span></div>
+    <div class="win setup" id="win">
       <div class="bar">
         <span class="dot"></span>
-        <span class="name" id="barName">Syncbox</span>
+        <span class="name">Syncbox</span>
         <span class="stxt" id="stxt"></span>
-        <button class="gear" id="gear" title="Settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg></button>
+        <button class="gear" id="gear" title="Settings window (see reference-agent-settings.html)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg></button>
+      </div>
+
+      <div class="gmenu" id="gmenu">
+        <button id="mSettings">Settings…</button>
+        <button id="mPause">Pause syncing</button>
+        <div class="sep"></div>
+        <button class="quit" id="mQuit">Quit</button>
       </div>
 
       <div class="banner e">Connection refused: sync.example.org — retrying in 30&nbsp;s.</div>
@@ -185,43 +190,48 @@
         <label class="fld">Server address
           <input id="server" type="text" value="https://sync.example.org" spellcheck="false">
         </label>
-        <div class="step1-only" style="font-size:11.5px;color:#7a8694;">The address your Syncbox server is reachable at — e.g. the https origin you gave the deploy.</div>
+        <label class="fld">Server password
+          <input id="spw" type="password" placeholder="Server password" autocomplete="current-password">
+        </label>
+        <div class="step1-only" style="font-size:11.5px;color:#7a8694;">The address your Syncbox server is reachable at, and its password — the same one the web login asks for.</div>
         <div class="fld" style="display:none;" id="vaultFld">Choose a vault
+          <div class="hgroup" id="gSeg" style="margin-bottom:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="seg"><button class="on" type="button">Choose from server</button><button type="button">Enter id by hand</button></div>
+          </div>
           <div class="vaults">
-            <label><input type="radio" name="v" checked><span><span class="vn">Files synced</span><span class="vm"> · 412 files, 1.8 GB</span></span></label>
-            <label><input type="radio" name="v"><span><span class="vn">Photos</span><span class="vm"> · 12.4k files, 64 GB</span></span></label>
+            <label><input type="radio" name="v" value="0" checked><span><span class="vn">Files synced</span><span class="vm"> · 412 files, 1.8 GB</span></span></label>
+            <label><input type="radio" name="v" value="1"><span><span class="vn">Photos</span><span class="vm"> · 12.4k files, 64 GB</span></span></label>
+          </div>
+          <div class="hgroup" id="gNew" style="margin-top:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="newrow" role="button">＋ New vault <span style="font-weight:400;color:#7a8694;">· name only</span></div>
           </div>
         </div>
-        <label class="fld vaultFld2" style="display:none;">Sync folder on this computer
-          <input id="folder" type="text" value="/home/you/Syncbox/Files synced" spellcheck="false">
-        </label>
+        <div class="fld vaultFld2" style="display:none;">Sync folder — set automatically
+          <div class="autof">⌂ /home/you/Syncbox/Files synced <span class="auto">AUTO</span></div>
+          <div style="font-size:10.5px;color:#7a8694;margin-top:4px;">Chosen by the server — the vault's name under your sync folder. Nothing to pick; renaming the vault does not move it.</div>
+          <div class="hgroup" id="gFolders" style="margin-top:8px;"><span class="rtag">SHOW HIDDEN</span>
+            <div class="autof">⌂ /home/you/LaptopMirror/Files synced <span class="auto byhand">BY HAND</span></div>
+            <div class="addf" role="button">＋ Add another folder</div>
+          </div>
+        </div>
+        <label style="display:flex;gap:7px;align-items:center;font-size:10.5px;color:#7a8694;"><input type="checkbox" id="hiddenDemo"> demo — Show hidden features is on (the real switch lives in the settings window footer)</label>
       </div>
 
       <div class="mid">
-        <h3><span id="actHead">Activity</span> <span class="cnt" id="passCnt"></span></h3>
-        <ul class="feed" id="feed">
-          <li><span class="dir up">↑</span><span class="fn">sunrise.jpg</span><span class="tm">2 min ago</span></li>
-          <li><span class="dir dn">↓</span><span class="fn">budget-2026.xlsx</span><span class="tm">2 min ago</span></li>
-          <li><span class="dir warn">!</span><span class="fn">notes.md — conflict, both copies kept</span><span class="tm">yesterday</span></li>
-          <li><span class="dir dn">↓</span><span class="fn muted">12 files — initial sync</span><span class="tm">Mon 09:12</span></li>
-        </ul>
+        <h3>Vaults <span class="cnt" id="passCnt"></span></h3>
+        <ul class="vlist" id="vlist"></ul>
       </div>
 
       <div class="bottom">
-        <div class="usage"><span>1.8 GB · 412 files</span><span class="r">pass 57</span></div>
+        <div class="usage"><span>1.5 GB · 3 vaults</span><span class="r" id="pass2">pass 57</span></div>
         <button class="setup-btn" id="setupBtn">Connect</button>
-        <button class="vault-btn locked" id="vaultBtn">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-          <span id="vaultLbl">Unlock vault</span>
-        </button>
       </div>
     </div>
 
     <!-- ===== unlock window ===== -->
     <div class="side hidden" id="winUnlock">
-      <div class="chrome"><span class="tl r" data-close="winUnlock" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Unlock</span></div>
       <div class="bar">
-        <span class="ttl"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Unlock “Files synced”</span>
+        <span class="ttl"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span id="unlockTtl">Unlock “Files synced”</span></span>
       </div>
       <div class="body">
         <p class="hint">Enter the vault password. It is used now, to derive the keys — never written down.</p>
@@ -234,147 +244,171 @@
       </div>
     </div>
 
-    <!-- ===== settings window ===== -->
-    <div class="side hidden" id="winSettings">
-      <div class="chrome"><span class="tl r" data-close="winSettings" title="Close"></span><span class="tl y"></span><span class="tl g"></span><span class="ct">Settings</span></div>
-      <div class="bar">
-        <span class="ttl"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>Settings</span>
-      </div>
-      <div class="body">
-        <div class="srow"><span class="k">Server</span><span class="v" id="popServer">sync.example.org</span></div>
-        <div class="srow"><span class="k">Folder</span><span class="v">~/Syncbox/Files synced</span><button class="mini">Open</button></div>
-        <div class="srow"><span class="k">Start on login</span><button class="sw on" id="swAuto" aria-label="autostart"></button></div>
-        <div class="srow"><span class="k">Pause syncing</span><button class="sw" id="swPause" aria-label="pause"></button></div>
-        <div class="srow"><span class="k">Vault</span><span class="v">Files synced · change in setup</span><button class="mini" id="reconfigure">Switch…</button></div>
-        <p class="fine">own top-level window · values come from the agent, edits go straight back</p>
-      </div>
-    </div>
-
     <div class="legend">
       <div class="bub"><span class="d" style="background:#16a34a"></span>idle / up to date</div>
-      <div class="bub"><span class="d" style="background:#ffd280"></span>syncing (pulsing)</div>
-      <div class="bub"><span class="d" style="background:#ffb3ad"></span>error — banner + retry</div>
+      <div class="bub"><span class="d" style="background:#f59e0b"></span>syncing (pulsing)</div>
+      <div class="bub"><span class="d" style="background:#dc2626"></span>error — banner + retry</div>
       <div class="bub"><span class="d" style="background:#d97706"></span>paused</div>
-      <div class="bub"><span class="d" style="background:#cbd5e1"></span>locked — files stay listed</div>
-      <div class="bub"><span class="d" style="background:#fff;box-shadow:0 0 0 2px #cbd5e1"></span>first run — name only</div>
-      <div class="bub" style="padding-top:14px;color:var(--muted-foreground)">Main, Unlock and Settings are three separate windows; the main window never sees a password.</div>
+      <div class="bub"><span class="chip grey" style="margin:0">locked</span>vault locked — row opens unlock</div>
+      <div class="bub"><span class="d halo"></span>first run — name only</div>
+      <div class="bub" style="padding-top:14px;color:var(--muted-foreground)">Main and Unlock are separate windows. Settings is a window of its own, designed in the settings reference. The main window never sees a password.</div>
     </div>
   </div>
 
   <h2>Design sources (verified, hotlinkable)</h2>
   <div class="refs">
-    <div class="ref"><img loading="lazy" class="cover" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Syncthing-screenshot-dark.png/640px-Syncthing-screenshot-dark.png" alt=""><div class="b"><b>Syncthing</b><p>Honest status header + per-folder live rows. Borrowed: state-first header, per-item activity rows.<br><a href="https://commons.wikimedia.org/wiki/File:Syncthing-screenshot-dark.png" target="_blank" rel="noopener">Commons · MPL-2.0</a></p></div></div>
+    <div class="ref"><img loading="lazy" class="cover" src="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Syncthing-screenshot-dark.png/640px-Syncthing-screenshot-dark.png" alt=""><div class="b"><b>Syncthing</b><p>Honest status header + per-folder live rows. Borrowed: state-first header, one row per sync target.<br><a href="https://commons.wikimedia.org/wiki/File:Syncthing-screenshot-dark.png" target="_blank" rel="noopener">Commons · MPL-2.0</a></p></div></div>
     <div class="ref"><img loading="lazy" src="https://doc.owncloud.com/desktop/7.1/_images/using/oc-windows-account-settings.png" alt=""><div class="b"><b>ownCloud 7.1</b><p>Account settings is its own window, setup starts with the server URL. Borrowed: settings-as-window, server-first wizard.<br><a href="https://doc.owncloud.com/desktop/7.1/using.html" target="_blank" rel="noopener">doc.owncloud.com</a></p></div></div>
     <div class="ref"><img loading="lazy" src="https://support.microsoft.com/en-us/onedrive/media/onedrive-settings-ui-new.png" alt=""><div class="b"><b>OneDrive (new sync app)</b><p>A settings window of its own; report lines, pause/resume, usage footer.<br><a href="https://support.microsoft.com/en-us/onedrive/how-to-access-onedrive-settings" target="_blank" rel="noopener">Microsoft Support</a></p></div></div>
   </div>
 
-  <div class="note">Three Tauri windows: main (status + activity), unlock (its own webview, so the password goes straight from that window to <code>unlock</code> and never touches the main window), settings (reads agent status/Config, writes through existing commands: <code>set_autostart</code>, pause, open-folder; <i>Switch…</i> reopens the first-run picker). First run: <i>Connect</i> → <code>list_vaults</code>, rows ← <code>VaultChoice</code>. Everyday states: <code>SyncState</code> → dot, <code>AgentStatus</code> → lines, <code>history()</code> → activity, <code>Index</code> → usage/passes. Pause remains the one new agent concept.</div>
+  <div class="note">Two windows in this mock: <b>main</b> (status + vault list) and <b>unlock</b> (its own webview, so the password goes straight to the <code>unlock</code> command and never touches the main window). The <b>gear</b> opens a click menu — <i>Settings…</i> (a window of its own, designed in <code>reference-agent-settings.html</code>), <i>Pause syncing</i> / <i>Resume syncing</i>, and <i>Quit</i> (red, under a divider). First run: <i>Connect</i> (address + server password → token) → <code>list_vaults</code> → picker rows ← <code>VaultChoice</code>; <i>Save &amp; unlock</i> lands on the vault list with the unlock window up for the chosen vault. Locking is per-vault: a locked row dims its icon and carries a grey chip + <i>Unlock</i>. States: <code>SyncState</code> → dot, <code>AgentStatus</code> → banners/passes. Pause remains the one new agent concept. <b>Pass 2:</b> the default flow is <i>sign in → pick from server → auto folder → unlock</i> — the sync folder is the server-derived one, shown read-only, and the advanced controls (<i>＋ New vault</i> name-only, <i>Enter id by hand</i>, extra sync folders) appear only when <i>Show hidden features</i> is on in settings — tick the demo checkbox to see them revealed.</div>
 </div>
 
 <script>
+var VIC = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3" fill="#0b8bd2"/><path d="M4 5v5c0 1.7 3.6 3 8 3s8-1.3 8-3V5z" fill="#3aa3dd"/><path d="M4 11v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5z" fill="#7cc4e8"/></svg>';
+var VAULTS = [
+  { name: 'Files synced', meta: '412 files · 1.8 GB', locked: false },
+  { name: 'Photos', meta: '12.4k files · 64 GB', locked: true },
+  { name: 'Studio archive', meta: '480 files · 1.2 GB', locked: true }
+];
 var win = document.getElementById('win');
 var phase = 'setup', step = 1;
-var state = 'locked', timer = null;
-var QUEUE = [
-  { dir: 'up', name: 'sunset-lake.jpg', pct: 0 },
-  { dir: 'dn', name: 'archive-2025.zip', pct: 0 },
-  { dir: 'up', name: 'quarterly.pdf', pct: 0 },
-  { dir: 'up', name: 'notes.md', pct: 0 }
-];
-var HIST = [
-  '<li><span class="dir up">↑</span><span class="fn">sunrise.jpg</span><span class="tm">2 min ago</span></li>',
-  '<li><span class="dir dn">↓</span><span class="fn">budget-2026.xlsx</span><span class="tm">2 min ago</span></li>',
-  '<li><span class="dir warn">!</span><span class="fn">notes.md — conflict, both copies kept</span><span class="tm">yesterday</span></li>',
-  '<li><span class="dir dn">↓</span><span class="fn muted">12 files — initial sync</span><span class="tm">Mon 09:12</span></li>'
-];
-var TXT = { idle: 'up to date', sync: 'syncing…', err: 'sync error', pause: 'paused', locked: 'locked' };
+var state = 'idle', timer = null, pct = 0, syncingVault = 0, unlockingVault = null, folderFlash = null;
+var TXT = { idle: 'up to date', sync: 'syncing…', err: 'sync error', pause: 'paused' };
+document.getElementById('hiddenDemo').addEventListener('change', function() {
+  var on = this.checked;
+  ['gSeg', 'gNew', 'gFolders'].forEach(function(id) { document.getElementById(id).classList.toggle('show', on); });
+});
 
-function liveFeed() {
-  var out = [];
-  QUEUE.forEach(function(q) {
-    if (q.done) return;
-    out.push('<li><span class="dir ' + q.dir + '">' + (q.dir === 'up' ? '↑' : '↓') + '</span><span class="fn">' + q.name + '</span><span class="prog"><i style="width:' + q.pct + '%"></i></span><span class="pct">' + q.pct + '%</span></li>');
-  });
-  return out.concat(HIST);
+function renderVaults() {
+  document.getElementById('vlist').innerHTML = VAULTS.map(function(v, i) {
+    var right;
+    if (phase === 'main' && state === 'sync' && i === syncingVault) {
+      right = '<span class="prog"><i style="width:' + pct + '%"></i></span><span class="pct">' + pct + '%</span>';
+    } else if (v.locked) {
+      right = '<span class="chip grey">locked</span><button class="mini" data-unlock="' + i + '">Unlock</button>';
+    } else if (folderFlash === i) {
+      right = '<span class="chip">opening folder…</span>';
+    } else {
+      right = '<span class="chip">synced</span>';
+    }
+    return '<li class="vrow' + (v.locked ? ' locked' : '') + '" data-vault="' + i + '">' +
+      '<span class="vic">' + VIC + '</span>' +
+      '<span class="vname">' + v.name + '</span>' +
+      '<span class="vmeta">· ' + v.meta + '</span>' +
+      '<span class="vr">' + right + '</span></li>';
+  }).join('');
 }
-function baseFeed() { return HIST.slice(); }
-function showWin(id) { document.getElementById(id).classList.remove('hidden'); if (id === 'winUnlock') { document.getElementById('pw').value = ''; setTimeout(function(){ document.getElementById('pw').focus(); }, 30); } }
+function showWin(id) { document.getElementById(id).classList.remove('hidden'); }
 function hideWin(id) { document.getElementById(id).classList.add('hidden'); }
 function paint() {
-  document.getElementById('feed').innerHTML = (state === 'sync' && phase === 'main') ? liveFeed().join('') : baseFeed().join('');
-  document.getElementById('barName').textContent = phase === 'setup' ? 'Syncbox' : 'Files synced';
   document.getElementById('stxt').textContent = phase === 'setup' ? '' : TXT[state];
-  document.getElementById('actHead').textContent = (phase === 'main' && state === 'locked') ? 'Last synced' : 'Activity';
-  document.getElementById('vaultBtn').className = 'vault-btn ' + (state === 'locked' ? 'locked' : 'open');
-  document.getElementById('vaultLbl').textContent = state === 'locked' ? 'Unlock vault' : 'Files synced — Lock';
   document.getElementById('passCnt').textContent = state === 'sync' ? 'pass 58' : (state === 'idle' ? 'pass 57' : '');
-  document.getElementById('swPause').classList.toggle('on', state === 'pause');
+  renderVaults();
   var b = document.getElementById('setupBtn');
   b.textContent = step === 1 ? 'Connect' : 'Save & unlock';
-  b.disabled = step === 1 && !document.getElementById('server').value.trim();
+  b.disabled = step === 1 && !(document.getElementById('server').value.trim() && document.getElementById('spw').value.trim());
+  document.getElementById('mPause').textContent = state === 'pause' ? 'Resume syncing' : 'Pause syncing';
 }
 function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
 function startPass() {
-  stopTimer();
-  QUEUE.forEach(function(q) { q.pct = 0; q.done = false; });
+  stopTimer(); pct = 0;
   timer = setInterval(function() {
-    var open = QUEUE.filter(function(q) { return !q.done; });
-    if (!open.length) { stopTimer(); setState('idle'); document.getElementById('feed').insertAdjacentHTML('afterbegin', '<li><span class="dir up">↑</span><span class="fn muted">4 files — pass finished</span><span class="tm">just now</span></li>'); return; }
-    open[0].pct = Math.min(100, open[0].pct + 18 + Math.floor(Math.random() * 10));
-    if (open[0].pct >= 100) open[0].done = true;
+    pct = Math.min(100, pct + 14 + Math.floor(Math.random() * 12));
+    if (pct >= 100) { stopTimer(); setState('idle'); return; }
     paint();
-  }, 550);
+  }, 450);
 }
 function setState(s) {
   if (s === 'setup') {
     phase = 'setup'; step = 1; stopTimer();
     win.classList.add('setup');
     document.getElementById('setupCard').classList.remove('step2');
-    hideWin('winUnlock'); hideWin('winSettings');
+    hideWin('winUnlock');
   } else {
     phase = 'main'; win.classList.remove('setup'); state = s;
-    if (s !== 'locked') hideWin('winUnlock');
-    showWin('winSettings');
+    if (s !== 'sync' && !VAULTS.some(function(v) { return v.locked; })) hideWin('winUnlock');
+    if (s === 'sync' && syncingVault === null) syncingVault = VAULTS.findIndex(function(v) { return !v.locked; });
   }
-  ['idle','sync','err','pause','locked'].forEach(function(x) { win.classList.toggle('st-' + x, phase === 'main' && x === state); });
+  ['idle','sync','err','pause'].forEach(function(x) { win.classList.toggle('st-' + x, phase === 'main' && x === state); });
   document.querySelectorAll('#demo button').forEach(function(b) { b.classList.toggle('on', b.dataset.s === (phase === 'setup' ? 'setup' : state)); });
   if (phase === 'main' && state === 'sync') startPass(); else stopTimer();
   paint();
+}
+function openUnlock(i) {
+  unlockingVault = i;
+  document.getElementById('unlockTtl').textContent = 'Unlock “' + VAULTS[i].name + '”';
+  showWin('winUnlock');
+  var pw = document.getElementById('pw');
+  pw.value = ''; setTimeout(function() { pw.focus(); }, 30);
 }
 document.getElementById('demo').addEventListener('click', function(e) {
   var b = e.target.closest('button'); if (!b) return; setState(b.dataset.s);
 });
 document.getElementById('server').addEventListener('input', paint);
+document.getElementById('spw').addEventListener('input', paint);
 document.getElementById('setupBtn').addEventListener('click', function() {
   if (step === 1) {
     step = 2;
     var host = document.getElementById('server').value.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     document.getElementById('okTxt').textContent = 'Connected to ' + host;
-    document.getElementById('popServer').textContent = host;
     document.getElementById('setupCard').classList.add('step2');
     document.getElementById('vaultFld').style.display = '';
     var f2 = document.querySelector('.vaultFld2'); if (f2) f2.style.display = '';
   } else {
-    setState('locked');
-    showWin('winUnlock');
+    var picked = document.querySelector('input[name="v"]:checked');
+    syncingVault = picked ? +picked.value : 0;
+    setState('idle');
+    openUnlock(syncingVault);
   }
   paint();
 });
-document.getElementById('vaultBtn').addEventListener('click', function() {
-  if (state === 'locked' && phase === 'main') showWin('winUnlock'); else setState('locked');
+document.getElementById('vlist').addEventListener('click', function(e) {
+  if (e.target.closest('[data-close]')) return;
+  var ub = e.target.closest('[data-unlock]');
+  if (ub) { openUnlock(+ub.dataset.unlock); return; }
+  var row = e.target.closest('[data-vault]'); if (!row) return;
+  var i = +row.dataset.vault;
+  if (VAULTS[i].locked) { openUnlock(i); return; }
+  folderFlash = i; paint();
+  setTimeout(function() { if (folderFlash === i) { folderFlash = null; paint(); } }, 1200);
 });
-document.getElementById('dlgUnlock').addEventListener('click', function() { hideWin('winUnlock'); setState('sync'); });
-document.getElementById('gear').addEventListener('click', function() { showWin('winSettings'); });
-document.getElementById('swAuto').addEventListener('click', function() { this.classList.toggle('on'); });
-document.getElementById('swPause').addEventListener('click', function() {
-  if (state === 'pause') { state = 'idle'; } else { state = 'pause'; }
-  ['idle','sync','err','pause','locked'].forEach(function(x) { win.classList.toggle('st-' + x, x === state); });
-  document.querySelectorAll('#demo button').forEach(function(b) { b.classList.toggle('on', b.dataset.s === state); });
-  stopTimer(); paint();
+document.getElementById('dlgUnlock').addEventListener('click', function() {
+  if (unlockingVault !== null) {
+    VAULTS[unlockingVault].locked = false;
+    syncingVault = unlockingVault; unlockingVault = null;
+  }
+  hideWin('winUnlock'); setState('sync');
 });
-document.getElementById('reconfigure').addEventListener('click', function() { setState('setup'); });
+document.getElementById('gear').addEventListener('click', function(e) {
+  e.stopPropagation();
+  if (phase === 'setup') return;
+  document.getElementById('gmenu').classList.toggle('open');
+});
+document.addEventListener('click', function(e) {
+  var m = document.getElementById('gmenu');
+  if (!e.target.closest('#gmenu') && !e.target.closest('#gear')) m.classList.remove('open');
+});
+function flashBar(txt) {
+  var t = document.getElementById('stxt');
+  t.textContent = txt;
+  setTimeout(paint, 1500);
+}
+document.getElementById('mSettings').addEventListener('click', function() {
+  document.getElementById('gmenu').classList.remove('open');
+  flashBar('→ settings window (demo)');
+});
+document.getElementById('mPause').addEventListener('click', function() {
+  document.getElementById('gmenu').classList.remove('open');
+  setState(state === 'pause' ? 'idle' : 'pause');
+});
+document.getElementById('mQuit').addEventListener('click', function() {
+  document.getElementById('gmenu').classList.remove('open');
+  flashBar('Quit (demo) — the agent exits');
+});
 document.querySelectorAll('[data-close]').forEach(function(b) {
-  b.addEventListener('click', function() { hideWin(b.dataset.close); paint(); });
+  b.addEventListener('click', function() { hideWin(b.dataset.close); });
 });
 setState('setup');
 </script>

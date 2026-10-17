@@ -1,71 +1,130 @@
 # Syncbox agent client — design reference
 
-Version 1. This is the visual reference the desktop agent (sync client) is
+Version 2. This is the visual reference the desktop agent (sync client) is
 built toward: window anatomy, first-run flow, everyday states, and how each
 element maps to `syncbox-agent`. The interactive mockup is
 [`reference-agent-ui.html`](reference-agent-ui.html) — open it in a browser;
-the demo buttons switch states, the gear and *Unlock vault* open their
-windows.
+the demo buttons switch states, locked vault rows open the unlock window, and
+the gear opens the gear menu (Settings… · Pause syncing · Quit). Version 2
+adopts the web UI's design language
+([`reference-web-ui.md`](reference-web-ui.md)): light tinted headers instead
+of the blue gradient bar, no drawn window chrome, 22 px pills.
 
 Status: design reference only. Nothing in `client/` implements it yet. The
-settings window shown here is a placeholder — its real design lives in
-[`reference-agent-settings.md`](reference-agent-settings.md).
+settings window is **not part of this mock** — its design lives in
+[`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
+main window's bar and the tray menu are its entry points.
 
 ## Windows
 
-Three separate top-level windows (each its own Tauri `WebviewWindow`), not
-overlays:
+Two top-level windows in this reference (each its own Tauri
+`WebviewWindow`), not overlays — plus the settings window, documented in its
+own reference:
 
 | Window | Size | Role |
 |---|---|---|
-| Main | 420 × 600 | status bar, activity feed, vault button |
+| Main | 420 × 600 | status bar, vault list, usage line |
 | Unlock | 340 auto | password entry; the only webview that ever sees the password |
-| Settings | 340 auto | server/folder/autostart/pause — superseded by [`reference-agent-settings.md`](reference-agent-settings.md) |
 
-On top of these three windows, the always-present **tray icon** carries a
+On top of these two windows, the always-present **tray icon** carries a
 small native menu — see [`reference-agent-tray.md`](reference-agent-tray.md).
+
+Windows are **content only** — no drawn chrome, no fake title bars. The OS
+draws the real one, exactly as the web UI has none.
 
 ### Main window anatomy
 
 ```text
 ┌──────────────────────────────┐
-│ ● Files synced   locked    ⚙ │ status bar (gradient #006AA3→#0B8BD2)
+│ ● Syncbox    up to date    ⚙ │ status bar (light tint #F1F8FD→#DCEBFA)
 ├──────────────────────────────┤
 │ banners: error / paused      │
-│ LAST SYNCED                  │
-│  ↑ sunrise.jpg    2 min ago  │ activity feed
-│  ↓ budget.xlsx    2 min ago  │
-│  ! notes.md conflict yest.   │
+│ VAULTS                  pass │
+│  ⊙ Files synced 412f·1.8GB   │ vault list — one row per vault:
+│    [synced]                  │ icon, name, meta, state chip;
+│  ⊙ Photos 12.4k·64GB         │ locked rows dim the icon and add
+│    [locked]  [Unlock]        │ an Unlock button
+│  ⊙ Studio archive            │
+│    [locked]  [Unlock]        │
 ├──────────────────────────────┤
-│ 1.8 GB · 412 files    pass 57│ usage line
-│ [ 🔒 Unlock vault ]          │ vault button (full-width pill)
+│ 1.5 GB · 3 vaults     pass 57│ usage line
 └──────────────────────────────┘
 ```
 
 First run replaces everything below the bar with a setup card and the bar
 shows only "Syncbox" (no dot, no state, no gear).
 
+### Gear menu
+
+Clicking the gear opens a small dropdown anchored under it — the main
+window's only command surface:
+
+| Item | Behaviour |
+|---|---|
+| Settings… | opens the settings window ([`reference-agent-settings.md`](reference-agent-settings.md)) |
+| Pause syncing ⇄ Resume syncing | toggles the paused state (amber dot + banner); label follows the state |
+| — divider — | |
+| Quit (red `#B3413F`) | exits the agent; tray presence ends |
+
+Menu: white, 1 px `#E6EEF4`, radius 10 px, soft blue shadow, min-width
+160 px, rows 8 × 12 px with `#F3F9FD` hover. Closes on any outside click.
+(The tray menu carries the same pause/quit pair natively — see
+[`reference-agent-tray.md`](reference-agent-tray.md); this is the window-side
+equivalents.)
+
 ## First run
 
-1. **Server address** — one field; *Connect* pings it.
+1. **Server address + password** — two fields; *Connect* pings the address
+   and exchanges the password for a token (`POST /api/v1/auth/token`). It is
+   the same secret the web login asks for
+   ([`reference-web-login.md`](reference-web-login.md)) — distinct from the
+   *vault* password, which only ever appears in the unlock window.
 2. **Vault picker** — rows from `list_vaults` (`VaultChoice`: name, size,
-   file count; archived hidden).
-3. **Sync folder** — defaults to `~/Syncbox/<vault>`.
-4. **Save & unlock** → main window in Locked state, unlock window opens.
+   file count; archived hidden). By default this is the **only** way a
+   client gets a vault: the out-of-the-box client never creates one, never
+   types an id, never picks a folder.
+3. **Sync folder — automatic, read-only** — the server's location for the
+   space: its **name** under the client's sync root (`~/Syncbox/<vault>`),
+   derived by the server at registration and shown as a locked line, nothing
+   to type or pick. Renaming the space does not move it.
+4. **Save & unlock** → the main window shows the vault list, and the unlock
+   window opens for the chosen vault.
 
-Unlock window: padlock title, password field, *Cancel* / *Unlock & sync* →
-`unlock` command, window closes, sync pass starts. Closing the main window
-never destroys tray presence; closing unlock cancels the attempt.
+### Hidden tier — `Show hidden` in settings
+
+Three advanced behaviours belong to this design but are **absent from every
+default screen** until the *Show hidden features* switch is on in the
+settings window ([`reference-agent-settings.md`](reference-agent-settings.md)):
+
+| Revealed control | Behaviour |
+|---|---|
+| `+ New vault` row under the picker rows | creates the space on the server — **name only**, the location derives from the name (same rule as the console) |
+| `Enter id by hand` segment on the picker | escape hatch when `list_vaults` cannot reach the server or list what the user knows exists |
+| Folder list with *Add another folder* | extra sync folders beside the automatic one; each folder is a copy of the space, changes in any sync to all |
+
+The switch gates controls that really exist, so it is never decorative in
+either state. Out of the box the flow draws none of these: *sign in → pick
+from server → auto folder → unlock*.
+
+Unlock window: padlock title naming the vault, password field, *Cancel* /
+*Unlock & sync* → `unlock` command; the window closes, the row flips to
+`synced`, and that vault's sync pass starts. It opens from a locked vault
+row (click the row or its *Unlock* button). Closing the main window never
+destroys tray presence; closing unlock cancels the attempt.
 
 ## Everyday states
 
 | State | Dot | Bar text | Extras |
 |---|---|---|---|
 | Idle | green | up to date | — |
-| Syncing | yellow, pulsing | syncing… | live feed rows with per-file progress bars |
+| Syncing | yellow, pulsing | syncing… | the syncing vault's row carries a progress bar + % |
 | Error | red | sync error | red banner with `last_error` + retry countdown |
 | Paused | amber | paused | amber banner; local edits queue |
-| Locked | grey | locked | feed stays visible (opacity .72), heading reads "Last synced", button becomes *Unlock vault* |
+
+Locking is **per-vault**, not a window state: a locked vault dims its icon
+(0.55) and shows a grey `locked` chip + **Unlock** in its row; clicking the
+row opens the unlock window. The dot tracks the sync engine, never the lock.
+Clicking a synced vault's row opens its local folder.
 
 ## Backend mapping
 
@@ -73,23 +132,32 @@ never destroys tray presence; closing unlock cancels the attempt.
 |---|---|
 | Dot + bar text | `SyncState` (+ a Paused flag — the one new agent concept) |
 | Error banner | `AgentStatus.last_error`, `last_report` |
-| Activity feed | `SyncEvent` / `history()`; per-file progress rows are a later step |
+| Vault list rows | `list_vaults` (`VaultChoice`) + a per-vault lock flag; row click on a synced vault opens the local folder |
 | Usage line | `Index::files()`, `Index::referenced_bytes()` (not over IPC yet) |
 | Pass counter | `AgentStatus.passes` |
+| First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |
 | Unlock window → | `unlock` command; main window never touches the password |
-| Settings: autostart | `get_autostart` / `set_autostart` |
-| Settings: vault switch | reopens the first-run picker |
+| Settings window (gear menu, tray) | its own reference: [`reference-agent-settings.md`](reference-agent-settings.md) |
+| Gear menu: pause / resume | the Paused flag toggle |
+| Gear menu: quit | process exit (no IPC round-trip needed) |
 
 ## Design tokens
 
 Shared with [`reference-web-ui.md`](reference-web-ui.md): brand `#0082C9`,
-brand-dark `#006AA3` (also the gradient start, end `#0B8BD2`), text
-`#272833`, muted `#7A8694`, row hover `#F3F9FD`, focus ring
-`rgba(0,130,201,.2)`.
+brand-dark `#006AA3` (CTA pills), header tint gradient 160°
+`#F1F8FD → #DCEBFA` (the web sidebar's gradient), text `#272833`, muted
+`#7A8694`, row hover `#F3F9FD`, focus ring `rgba(0,130,201,.2)`. State dot:
+idle `#16A34A`, syncing `#F59E0B` (pulsing), error `#DC2626`, paused
+`#D97706`. Chips (the web vault-card chips): synced `#E8F3FB` on `#006AA3`
+text, locked `#EEF1F4` on `#66727E` text.
 
-Geometry: window radius 12 px, OS title bar 30 px (`#E9EEF3`), pills 20–24
-px, feed rows 8 px; state dot 9 px with a 3 px white halo. Locked feed dim
-factor 0.72.
+Geometry: window radius 12 px (OS title bar sits above — the design has no
+chrome), pills 22 px, vault rows 8 px radius; state dot 9 px with a 3 px
+white halo; locked row icon dim 0.55.
+
+Dark mode follows the **drafted dark palette** in
+[`reference-web-ui.md`](reference-web-ui.md) — drafted, not shippable until
+a build renders it.
 
 ## Design sources
 
