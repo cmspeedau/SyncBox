@@ -53,8 +53,11 @@ type S3 struct {
 	now    func() time.Time // clock seam for tests
 }
 
-// compile-time check.
-var _ Target = (*S3)(nil)
+// compile-time checks.
+var (
+	_ Target    = (*S3)(nil)
+	_ Versioned = (*S3)(nil)
+)
 
 // NewS3 validates the configuration. It performs no network I/O: a server
 // starting up learns about an unreachable endpoint from the first backup, not
@@ -226,20 +229,28 @@ type objectVersionXML struct {
 	VersionID string `xml:"VersionId"`
 }
 
-// Write stores r at rel, replacing any previous object.
-func (s *S3) Write(ctx context.Context, rel string, r io.Reader) (int64, error) {
+// Write stores r at rel, replacing any previous object. On a versioned bucket
+// the object's identity is the version the service created — recorded by the
+// engine so Verify and Restore can read exactly these bytes again even after
+// someone PUTs a newer version in front of them.
+func (s *S3) Write(ctx context.Context, rel string, r io.Reader) (int64, string, error) {
 	key, err := s.key(rel)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 	body, err := io.ReadAll(r)
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	if _, err := s.do(ctx, http.MethodPut, key, nil, body, nil); err != nil {
-		return 0, err
+	resp, err := s.do(ctx, http.MethodPut, key, nil, body, nil)
+	if err != nil {
+		return 0, "", err
 	}
-	return int64(len(body)), nil
+	// The version header answers the PUT; the (empty) body must still be
+	// closed or the connection is never reused.
+	version := resp.Header.Get("x-amz-version-id")
+	resp.Body.Close()
+	return int64(len(body)), version, nil
 }
 
 // Read opens rel; the caller closes the returned reader.
@@ -252,6 +263,25 @@ func (s *S3) Read(ctx context.Context, rel string) (io.ReadCloser, error) {
 	if err != nil {
 		if errorIs(err, http.StatusNotFound) {
 			return nil, fmt.Errorf("s3 target: %s: %w", rel, ErrNotFound)
+		}
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+// ReadVersion opens one pinned version. This is the seam that turns the
+// object-lock promise inside out for readers: even with a newer version
+// standing in front of the object, the bytes the snapshot sealed are the
+// bytes restore gets.
+func (s *S3) ReadVersion(ctx context.Context, rel, versionID string) (io.ReadCloser, error) {
+	key, err := s.key(rel)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.do(ctx, http.MethodGet, key, url.Values{"versionId": []string{versionID}}, nil, nil)
+	if err != nil {
+		if errorIs(err, http.StatusNotFound) {
+			return nil, fmt.Errorf("s3 target: %s (version %s): %w", rel, versionID, ErrNotFound)
 		}
 		return nil, err
 	}
@@ -357,12 +387,13 @@ func (s *S3) ReadOnly(ctx context.Context, rel string) error {
 		if version.isDeleteMark {
 			continue // nothing behind a marker to protect
 		}
-		_, err := s.do(ctx, http.MethodPut, version.key,
+		resp, err := s.do(ctx, http.MethodPut, version.key,
 			url.Values{"retention": []string{}, "versionId": []string{version.versionID}},
 			retention, headers)
 		if err != nil {
 			return fmt.Errorf("sealing s3://%s/%s (version %s): %w", s.cfg.Bucket, version.key, version.versionID, err)
 		}
+		resp.Body.Close() // the 2xx answer must be drained to reuse the connection
 		sealed++
 	}
 	if sealed == 0 {
@@ -387,8 +418,9 @@ func (s *S3) RemoveAll(ctx context.Context, rel string) error {
 		return err
 	}
 	for _, version := range versions {
-		if _, err := s.do(ctx, http.MethodDelete, version.key,
-			url.Values{"versionId": []string{version.versionID}}, nil, nil); err != nil {
+		resp, err := s.do(ctx, http.MethodDelete, version.key,
+			url.Values{"versionId": []string{version.versionID}}, nil, nil)
+		if err != nil {
 			if errorIs(err, http.StatusForbidden) {
 				return fmt.Errorf("s3://%s/%s (version %s): %w: %v", s.cfg.Bucket, version.key, version.versionID, ErrRetained, err)
 			}
@@ -397,6 +429,7 @@ func (s *S3) RemoveAll(ctx context.Context, rel string) error {
 			}
 			return err
 		}
+		resp.Body.Close()
 	}
 	return nil
 }

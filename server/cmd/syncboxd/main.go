@@ -321,8 +321,12 @@ func restoreCommand(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "restored %s (%d chunks, %d bytes) into %s\n",
-		manifest.ID, len(manifest.Chunks), manifest.ChunkBytes, *dest)
+	pinned := ""
+	if manifest.Pinned() {
+		pinned = ", read pinned to the sealed versions"
+	}
+	fmt.Fprintf(stdout, "restored %s (%d chunks, %d bytes%s) into %s\n",
+		manifest.ID, len(manifest.Chunks), manifest.ChunkBytes, pinned, *dest)
 	return nil
 }
 
