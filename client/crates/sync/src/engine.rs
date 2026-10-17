@@ -207,6 +207,18 @@ impl<I: Index> Engine<I> {
 
         let head = self.pull(client, &vault_id, now, &mut report)?;
         self.push(client, &vault_id, head, now, &mut report)?;
+
+        // Folder-mode pulls assemble files in a root staging directory; a pass
+        // that left nothing half-assembled has earned the right to hide the
+        // scaffolding again. `remove_dir` only succeeds on an *empty* dir, so
+        // an interrupted pass's part-file — the resume head-start — keeps it
+        // alive untouched, and a directory that was never created is a no-op.
+        // Ignoring the error is deliberate: "not empty" and "not there" are
+        // precisely the outcomes we want.
+        if !self.folderless {
+            let stage = self.vault.plaintext_root().join(STAGING_DIR);
+            let _ = std::fs::remove_dir(&stage);
+        }
         Ok(report)
     }
 
