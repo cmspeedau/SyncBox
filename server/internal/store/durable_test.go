@@ -79,11 +79,11 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 	}
 	// Operator facts the import must carry across: a minted name, an empty
 	// vault that no client has touched yet, and a retired flag.
-	photosID, err := src.CreateVault(ctx, "Photos")
+	photosID, err := src.CreateVault(ctx, "Photos", "")
 	if err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
-	retiredID, err := src.CreateVault(ctx, "Retired")
+	retiredID, err := src.CreateVault(ctx, "Retired", "Archive/Retired")
 	if err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
@@ -136,10 +136,14 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 	}
 	if photos := byID[photosID]; photos.Name != "Photos" || photos.ID != photosID || photos.Revisions != 0 {
 		t.Errorf("imported Photos vault = %+v, want name Photos at id %s with no revisions", photos, photosID)
+	} else if photos.Location != "Photos" {
+		t.Errorf("imported Photos location = %q, want the name it defaulted to", photos.Location)
 	}
 	retired := byID[retiredID]
 	if !retired.Archived || retired.Name != "Retired" {
 		t.Errorf("imported retired vault = %+v", retired)
+	} else if retired.Location != "Archive/Retired" {
+		t.Errorf("imported retired location = %q, want Archive/Retired", retired.Location)
 	}
 	if commitBorn := byID["vault"]; commitBorn.Name != "" || commitBorn.Revisions != 3 {
 		t.Errorf("imported commit-born vault = %+v, want nameless with 3 revisions", commitBorn)

@@ -40,11 +40,14 @@
       <p class="hint">Vaults live here, on the server. Set one up, then point
         clients at this address with <code>--vault-id</code>. Encryption keys
         are made and kept on each client — setting a vault up here does not
-        hand anyone the ability to read it.</p>
+        hand anyone the ability to read it. The folder below is where a vault's
+        files land on every client, relative to that client's home directory.</p>
 
       <form id="create-form">
         <input type="text" id="vault-name" maxlength="120"
                placeholder="Name the vault (for example: Photos)" aria-label="Vault name">
+        <input type="text" id="vault-location" maxlength="1024"
+               placeholder="Folder (defaults to the name)" aria-label="Vault folder">
         <button type="submit">Create vault</button>
       </form>
       <p id="vault-error" class="error" role="alert"></p>

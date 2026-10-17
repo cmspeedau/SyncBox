@@ -513,11 +513,13 @@ mod tests {
                 ServerVault {
                     id: "ABCDEFGH".into(),
                     name: "Photos".into(),
+                    location: "Syncbox/Photos".into(),
                     archived: false,
                 },
                 ServerVault {
                     id: "QRSTUVWX".into(),
                     name: String::new(),
+                    location: String::new(),
                     archived: true,
                 },
             ],

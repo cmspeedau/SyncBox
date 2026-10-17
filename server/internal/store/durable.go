@@ -421,12 +421,18 @@ func (d *Durable) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
-// CreateVault mints a fresh id and registers it under name. The retry loop is
-// form against luck: eight base32 characters is 32^5 ids, and a PRIMARY KEY
-// collision just means minting again.
-func (d *Durable) CreateVault(ctx context.Context, name string) (string, error) {
+// CreateVault mints a fresh id and registers it under name, in location. The
+// retry loop is form against luck: eight base32 characters is 32^5 ids, and a
+// PRIMARY KEY collision just means minting again.
+func (d *Durable) CreateVault(ctx context.Context, name, location string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("creating vault: %w", err)
+	}
+	if location == "" {
+		location = name
+	}
+	if err := d.ensureLocationFree(ctx, location, ""); err != nil {
+		return "", err
 	}
 
 	for attempt := 0; attempt < 5; attempt++ {
@@ -435,8 +441,8 @@ func (d *Durable) CreateVault(ctx context.Context, name string) (string, error) 
 			return "", err
 		}
 		res, err := d.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO vault (id, name, created_at) VALUES (?, ?, ?)`,
-			id, name, d.now().Unix())
+			`INSERT OR IGNORE INTO vault (id, name, location, created_at) VALUES (?, ?, ?, ?)`,
+			id, name, location, d.now().Unix())
 		if err != nil {
 			return "", fmt.Errorf("registering vault %s: %w", id, err)
 		}
@@ -449,6 +455,28 @@ func (d *Durable) CreateVault(ctx context.Context, name string) (string, error) 
 		}
 	}
 	return "", errors.New("registering vault: five minted ids in a row already existed")
+}
+
+// ensureLocationFree refuses a location another live vault already claims. An
+// empty location is never a claim, so commit-born vaults that were never
+// pointed anywhere do not collide; skipID lets a vault keep its own location
+// while being updated.
+func (d *Durable) ensureLocationFree(ctx context.Context, location, skipID string) error {
+	if location == "" {
+		return nil
+	}
+	var found int
+	err := d.db.QueryRowContext(ctx, `
+		SELECT 1 FROM vault
+		WHERE location = ? AND location <> '' AND archived_at IS NULL AND id <> ?
+		LIMIT 1`, location, skipID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking location %q: %w", location, err)
+	}
+	return fmt.Errorf("%w: %s", ErrLocationTaken, location)
 }
 
 // listVaultsQuery assembles the registry view: one row per vault, whether the
@@ -469,7 +497,7 @@ tally AS (
     WHERE rn = 1
     GROUP BY vault_id
 )
-SELECT v.id, v.name, v.created_at,
+SELECT v.id, v.name, v.location, v.created_at,
        CASE WHEN v.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
        COUNT(r.id) AS revisions,
        COALESCE(MAX(r.stored_at), 0) AS last_write,
@@ -497,7 +525,7 @@ func (d *Durable) ListVaults(ctx context.Context) ([]VaultInfo, error) {
 	for rows.Next() {
 		var info VaultInfo
 		var archived int
-		if err := rows.Scan(&info.ID, &info.Name, &info.CreatedAt, &archived,
+		if err := rows.Scan(&info.ID, &info.Name, &info.Location, &info.CreatedAt, &archived,
 			&info.Revisions, &info.LastWriteAt, &info.LiveFiles, &info.Bytes); err != nil {
 			return nil, fmt.Errorf("reading vault registry: %w", err)
 		}
@@ -521,6 +549,22 @@ func (d *Durable) RenameVault(ctx context.Context, id, name string) error {
 		return fmt.Errorf("renaming vault %s: %w", id, err)
 	}
 	return requireVaultRow(res, id, "renaming")
+}
+
+// SetVaultLocation points a vault at a folder. A location another live vault
+// already claims is refused; a vault may keep its own, so the check skips it.
+func (d *Durable) SetVaultLocation(ctx context.Context, id, location string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("locating vault %s: %w", id, err)
+	}
+	if err := d.ensureLocationFree(ctx, location, id); err != nil {
+		return err
+	}
+	res, err := d.db.ExecContext(ctx, `UPDATE vault SET location = ? WHERE id = ?`, location, id)
+	if err != nil {
+		return fmt.Errorf("locating vault %s: %w", id, err)
+	}
+	return requireVaultRow(res, id, "locating")
 }
 
 // SetVaultArchived flags a vault as retired.
@@ -628,9 +672,9 @@ func (d *Durable) ImportMetadata(ctx context.Context, doc Metadata) (chunks, rev
 			archivedAt = d.now().Unix()
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO vault (id, name, created_at, archived_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET name = excluded.name, created_at = excluded.created_at, archived_at = excluded.archived_at`,
-			record.ID, record.Name, record.CreatedAt, archivedAt); err != nil {
+			INSERT INTO vault (id, name, location, created_at, archived_at) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name, location = excluded.location, created_at = excluded.created_at, archived_at = excluded.archived_at`,
+			record.ID, record.Name, record.Location, record.CreatedAt, archivedAt); err != nil {
 			return 0, 0, fmt.Errorf("importing vault registry entry %s: %w", record.ID, err)
 		}
 	}
@@ -729,7 +773,7 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 	}
 
 	vaultRows, err := tx.QueryContext(ctx,
-		`SELECT id, name, created_at, archived_at FROM vault ORDER BY id`)
+		`SELECT id, name, location, created_at, archived_at FROM vault ORDER BY id`)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 	}
@@ -738,16 +782,18 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 		var (
 			id            string
 			name          string
+			location      string
 			createdAt     int64
 			archivedAtSql sql.NullInt64
 		)
-		if err := vaultRows.Scan(&id, &name, &createdAt, &archivedAtSql); err != nil {
+		if err := vaultRows.Scan(&id, &name, &location, &createdAt, &archivedAtSql); err != nil {
 			return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 		}
 		doc.Vaults = append(doc.Vaults, id)
 		doc.VaultRegistry = append(doc.VaultRegistry, VaultRecord{
 			ID:        id,
 			Name:      name,
+			Location:  location,
 			CreatedAt: createdAt,
 			Archived:  archivedAtSql.Valid,
 		})

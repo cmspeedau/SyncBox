@@ -16,18 +16,36 @@ import (
 // uses — until per-vault credentials exist, there is no separate admin role
 // to gate them behind.
 //
-//	GET    /admin/vaults              every vault with its bookkeeping
-//	POST   /admin/vaults   {name}     register one; the server mints the id
-//	PATCH  /admin/vaults/{id} {name}  rename
+//	GET    /admin/vaults                          every vault with its bookkeeping
+//	POST   /admin/vaults   {name, location}       register one; the server mints the id
+//	PATCH  /admin/vaults/{id} {name?, location?}  rename, or point at a folder
 //	POST   /admin/vaults/{id}/archive {archived}  retire, or bring back
+//
+// The location (S3c) is where the vault's files land on a client: a path
+// relative to each client's home, so one server-side fact covers a laptop, a
+// desktop and a NAS. It defaults to the vault's name and may be left empty for
+// a vault whose clients are told where to put it by hand.
 
 // maxVaultNameRunes bounds what an operator may type. Generous for a label,
 // small enough that no one mistakes it for a document.
 const maxVaultNameRunes = 120
 
-// vaultNameBody is the create and rename request.
-type vaultNameBody struct {
-	Name string `json:"name"`
+// maxVaultLocationRunes bounds a location. A path, not a document, but deep
+// enough for the folder trees people actually use.
+const maxVaultLocationRunes = 1024
+
+// vaultCreateBody is the create request.
+type vaultCreateBody struct {
+	Name     string `json:"name"`
+	Location string `json:"location"`
+}
+
+// vaultPatchBody is the rename and/or locate request. Pointers so "absent" and
+// "set to empty" stay different things: clearing a location is legitimate,
+// leaving it out is not a change.
+type vaultPatchBody struct {
+	Name     *string `json:"name"`
+	Location *string `json:"location"`
 }
 
 // vaultArchiveBody is the retire/restore request.
@@ -45,6 +63,18 @@ func cleanVaultName(raw string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// cleanVaultLocation validates a location. Empty is allowed: it means the vault
+// has no server-set folder and each client is told one by hand. Otherwise it is
+// whatever the operator typed, used as typed, so `Syncbox/Photos`, `~/Photos`
+// and `/srv/photos` are all equally valid.
+func cleanVaultLocation(raw string) (string, bool) {
+	location := strings.TrimSpace(raw)
+	if utf8.RuneCountInString(location) > maxVaultLocationRunes {
+		return "", false
+	}
+	return location, true
 }
 
 // handleIndex answers the bare root. Browsers get the embedded console;
@@ -87,12 +117,14 @@ func (s *Server) handleAsset(name string) http.HandlerFunc {
 }
 
 // clientVault is the registry as a sync client needs it: which vaults exist,
-// what they are called, and which are retired. No bookkeeping — a client
-// resolves a name or auto-selects the sole vault; it has no business auditing
-// the server, and every extra field is one more thing to keep stable.
+// what they are called, where each one's files land, and which are retired. No
+// bookkeeping — a client resolves a name or auto-selects the sole vault; it has
+// no business auditing the server, and every extra field is one more thing to
+// keep stable.
 type clientVault struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	Location string `json:"location"`
 	Archived bool   `json:"archived"`
 }
 
@@ -108,7 +140,12 @@ func (s *Server) handleVaultsListClient(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]clientVault, 0, len(vaults))
 	for _, vault := range vaults {
-		out = append(out, clientVault{ID: vault.ID, Name: vault.Name, Archived: vault.Archived})
+		out = append(out, clientVault{
+			ID:       vault.ID,
+			Name:     vault.Name,
+			Location: vault.Location,
+			Archived: vault.Archived,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"vaults": out})
 }
@@ -126,7 +163,7 @@ func (s *Server) handleAdminVaultsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminVaultsCreate(w http.ResponseWriter, r *http.Request) {
-	var request vaultNameBody
+	var request vaultCreateBody
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "creating a vault needs a JSON body with a name")
 		return
@@ -137,8 +174,17 @@ func (s *Server) handleAdminVaultsCreate(w http.ResponseWriter, r *http.Request)
 			"a vault name is 1 to "+strconv.Itoa(maxVaultNameRunes)+" characters")
 		return
 	}
+	location, ok := cleanVaultLocation(request.Location)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_location",
+			"a location is at most "+strconv.Itoa(maxVaultLocationRunes)+" characters")
+		return
+	}
+	if location == "" {
+		location = name
+	}
 
-	id, err := s.store.CreateVault(r.Context(), name)
+	id, err := s.store.CreateVault(r.Context(), name, location)
 	if err != nil {
 		writeErrorFrom(w, err)
 		return
@@ -149,29 +195,52 @@ func (s *Server) handleAdminVaultsCreate(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, store.VaultInfo{
 		ID:        id,
 		Name:      name,
+		Location:  location,
 		CreatedAt: s.now().Unix(),
 	})
 }
 
-func (s *Server) handleAdminVaultsRename(w http.ResponseWriter, r *http.Request) {
-	var request vaultNameBody
+// handleAdminVaultsPatch renames a vault and/or points it at a folder. Both are
+// optional, but a request that changes neither is a mistake, not a no-op.
+func (s *Server) handleAdminVaultsPatch(w http.ResponseWriter, r *http.Request) {
+	var request vaultPatchBody
 	if err := decodeJSON(r, &request); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_request", "renaming needs a JSON body with a name")
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"updating a vault needs a JSON body with a name and/or location")
 		return
 	}
-	name, ok := cleanVaultName(request.Name)
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid_name",
-			"a vault name is 1 to "+strconv.Itoa(maxVaultNameRunes)+" characters")
+	if request.Name == nil && request.Location == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"updating a vault needs a name and/or location")
 		return
 	}
 
 	id := r.PathValue("id")
-	if err := s.store.RenameVault(r.Context(), id, name); err != nil {
-		writeErrorFrom(w, err)
-		return
+	if request.Name != nil {
+		name, ok := cleanVaultName(*request.Name)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_name",
+				"a vault name is 1 to "+strconv.Itoa(maxVaultNameRunes)+" characters")
+			return
+		}
+		if err := s.store.RenameVault(r.Context(), id, name); err != nil {
+			writeErrorFrom(w, err)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "name": name})
+	if request.Location != nil {
+		location, ok := cleanVaultLocation(*request.Location)
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid_location",
+				"a location is at most "+strconv.Itoa(maxVaultLocationRunes)+" characters")
+			return
+		}
+		if err := s.store.SetVaultLocation(r.Context(), id, location); err != nil {
+			writeErrorFrom(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id})
 }
 
 func (s *Server) handleAdminVaultsArchive(w http.ResponseWriter, r *http.Request) {
