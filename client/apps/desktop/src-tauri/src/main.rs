@@ -52,6 +52,7 @@ fn main() {
             commands::lock,
             commands::sync_now,
             commands::create_vault,
+            commands::list_vaults,
             commands::backups,
             commands::back_up_now,
             commands::get_autostart,

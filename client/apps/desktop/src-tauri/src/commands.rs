@@ -11,7 +11,7 @@ use tauri_plugin_autostart::ManagerExt as _;
 
 use syncbox_transport::{Client, TransportError, UreqHttp};
 
-use crate::dto::{self, Activity, BackupAction, BackupResult, Status, VaultSettings};
+use crate::dto::{self, Activity, BackupAction, BackupResult, Status, VaultChoice, VaultSettings};
 use crate::state::Shared;
 
 /// The current sync status (state, last pass, any error).
@@ -92,6 +92,33 @@ pub async fn create_vault(dir: String, password: String) -> Result<String, Strin
     })
     .await
     .map_err(|e| format!("create task failed: {e}"))?
+}
+
+/// The server's vaults, for the welcome form's picker. Pairing means an
+/// operator named the vault on the server; the human picks the name, the app
+/// keeps the id. It runs before anything is unlocked — the credentials are
+/// the same ones unlock will use — and answers with the same small shape the
+/// CLI's `--vault-name` resolves against.
+#[command]
+pub async fn list_vaults(server: String, password: String) -> Result<Vec<VaultChoice>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut client = dial(&server, &password);
+        let listing = client
+            .token(&password)
+            .and_then(|_| client.vaults())
+            .map_err(|e| format!("could not read the server's vaults: {e}"))?;
+        Ok(listing
+            .vaults
+            .iter()
+            .map(|vault| VaultChoice {
+                id: vault.id.clone(),
+                name: vault.name.clone(),
+                archived: vault.archived,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("vault-list task failed: {e}"))?
 }
 
 /// Lists the server's snapshots for the Backups panel. Rides the admin route with

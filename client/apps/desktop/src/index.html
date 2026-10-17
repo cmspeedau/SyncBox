@@ -64,7 +64,7 @@
       }
       .row { display: flex; gap: 8px; flex-wrap: wrap; }
       label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); flex: 1 1 180px; }
-      input {
+      input, select {
         padding: 7px 9px;
         border: 1px solid var(--line);
         border-radius: 7px;
@@ -124,10 +124,21 @@
           <div id="locked-view">
             <div class="row" id="form">
               <label>Server<input id="server" placeholder="https://sync.example" /></label>
-              <label>Vault id<input id="vaultId" placeholder="my-vault" /></label>
+              <label>Vault
+                <select id="vaultPick" disabled>
+                  <option value="">Find vaults below…</option>
+                </select>
+              </label>
               <label>Vault folder<input id="vaultDir" placeholder="~/.syncbox/vault" /></label>
               <label>Sync folder<input id="folder" placeholder="~/Syncbox" /></label>
               <label>Password<input id="password" type="password" /></label>
+            </div>
+            <div class="row" id="pairing" style="margin-top: 10px; align-items: center">
+              <button id="find" class="secondary">Find vaults</button>
+              <label class="muted" style="display: flex; align-items: center; gap: 6px; flex: none">
+                <input id="manualId" type="checkbox" /> enter vault id by hand
+              </label>
+              <input id="vaultId" class="hidden" placeholder="vault id from the server" />
             </div>
             <div class="row" style="margin-top: 10px">
               <button id="unlock">Unlock &amp; sync</button>
@@ -289,19 +300,72 @@
         }
       }
 
+      function chosenVaultId() {
+        return $("manualId").checked ? $("vaultId").value.trim() : $("vaultPick").value;
+      }
+
       function settings() {
         return {
           server: $("server").value.trim(),
-          vaultId: $("vaultId").value.trim(),
+          vaultId: chosenVaultId(),
           vaultDir: $("vaultDir").value.trim(),
           folder: $("folder").value.trim(),
           password: $("password").value,
         };
       }
 
+      // Pairing: the operator named the vault on the server, so the human
+      // finds and picks the name; the id rides along unseen. One vault means
+      // one option, pre-selected — the home-server case in one click.
+      $("find").addEventListener("click", async () => {
+        const msg = $("unlock-msg");
+        msg.className = "msg muted";
+        msg.textContent = "Asking the server for its vaults…";
+        const pick = $("vaultPick");
+        try {
+          const vaults = await invoke("list_vaults", {
+            server: $("server").value.trim(),
+            password: $("password").value,
+          });
+          const live = vaults.filter((v) => !v.archived);
+          pick.innerHTML = "";
+          for (const v of live) {
+            const option = document.createElement("option");
+            option.value = v.id;
+            option.textContent = v.name ? `${v.name} (${v.id})` : v.id;
+            pick.appendChild(option);
+          }
+          pick.disabled = live.length === 0 || $("manualId").checked;
+          if (live.length === 0) {
+            msg.className = "msg err";
+            msg.textContent = "This server has no vaults yet — set one up on its web page first.";
+          } else if (live.length === 1) {
+            msg.textContent = "Found the server's only vault: " + (live[0].name || live[0].id);
+          } else {
+            msg.textContent = live.length + " vaults on this server — pick one.";
+          }
+        } catch (err) {
+          msg.className = "msg err";
+          msg.textContent = String(err);
+        }
+      });
+
+      // The expert's door, still there: a name that never surfaced in the
+      // registry (an old server, a hand-adopted vault) can always be typed.
+      $("manualId").addEventListener("change", () => {
+        const manual = $("manualId").checked;
+        $("vaultId").classList.toggle("hidden", !manual);
+        $("vaultPick").disabled = manual || $("vaultPick").options.length === 0;
+      });
+
       $("unlock").addEventListener("click", async () => {
         const msg = $("unlock-msg");
         msg.className = "msg muted";
+        if (!chosenVaultId()) {
+          msg.className = "msg err";
+          msg.textContent = "Pick a vault first — Find vaults, or tick “enter vault id by hand”.";
+          return;
+        }
         msg.textContent = "Unlocking…";
         try {
           const s = await invoke("unlock", { settings: settings() });
