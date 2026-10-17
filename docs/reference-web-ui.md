@@ -41,6 +41,9 @@ Top to bottom, and nothing else:
 | Primary nav | `All files` (the only nav entry) |
 | Footer (bottom-anchored, divider above) | `Deleted files` · `1.8 MB used` (quota readout) · `Settings` |
 
+`Settings` opens the settings page — see
+[`reference-web-settings.md`](reference-web-settings.md).
+
 Deliberately absent from earlier drafts: Personal files, Recent, Favorites,
 Shares, Tags, Folder tree, and the "Files settings" label (now just
 **Settings**). Re-adding any of these should be a decision, not a drift.
