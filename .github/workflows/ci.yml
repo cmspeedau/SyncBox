@@ -126,12 +126,22 @@ jobs:
 
       - name: Install tauri CLI
         run: |
+          # Look for the binary both in PATH and where this step installs it:
+          # a runner whose PATH lacks ~/.cargo/bin still has last run's copy.
+          # Either way, if PATH cannot see it, fix PATH for later steps too.
           if ! command -v cargo-tauri >/dev/null 2>&1; then
-            mkdir -p "$HOME/.cargo/bin"
-            curl -sSL "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz" \
-              | tar -xz -C "$HOME/.cargo/bin"
+            if [ ! -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+              mkdir -p "$HOME/.cargo/bin"
+              curl -sSL "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz" \
+                | tar -xz -C "$HOME/.cargo/bin"
+            fi
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
+          # GITHUB_PATH additions only take effect from the NEXT step, so a
+          # first-ever run on a runner cannot see what it just installed.
+          # Exporting here closes that boundary for this step (later steps
+          # get it through GITHUB_PATH anyway).
+          export PATH="$HOME/.cargo/bin:$PATH"
           cargo-tauri --version
 
       - name: Build bundles
