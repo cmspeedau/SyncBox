@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -744,5 +745,82 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	if grandma.Name != "" || !grandma.Archived || grandma.Revisions != 1 ||
 		grandma.LiveFiles != 1 || grandma.Bytes != 12 {
 		t.Errorf("commit-born vault reads %+v, want nameless, archived, 1 revision of 12 live bytes", grandma)
+	}
+}
+
+func TestConsoleServedToBrowsers(t *testing.T) {
+	c := newClient(t, false)
+
+	request, err := http.NewRequest(http.MethodGet, c.server.URL+"/", nil)
+	if err != nil {
+		t.Fatalf("building request: %v", err)
+	}
+	request.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET / as a browser: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET / as a browser = %s, want 200", response.Status)
+	}
+	if ctype := response.Header.Get("Content-Type"); !strings.HasPrefix(ctype, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html", ctype)
+	}
+	if csp := response.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+		t.Errorf("Content-Security-Policy = %q, want default-src 'self'", csp)
+	}
+	if cache := response.Header.Get("Cache-Control"); cache != "no-store" {
+		t.Errorf("Cache-Control on the page = %q, want no-store", cache)
+	}
+
+	page, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("reading page: %v", err)
+	}
+	body := string(page)
+	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page is missing %q", want)
+		}
+	}
+	// The CSP's promise, checked against the page itself: no inline script or
+	// style, which is what script-src 'self' exists to make unnecessary.
+	for _, forbidden := range []string{"<script>", "<style", "onclick=", "onload="} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Errorf("page smuggles inline behaviour: %q", forbidden)
+		}
+	}
+}
+
+func TestConsoleAssetsAreRoutedNotMounted(t *testing.T) {
+	c := newClient(t, false)
+
+	// The assets need no token — the shell is public; every byte of data it
+	// will fetch behind that shell does.
+	for path, wantType := range map[string]string{"/app.js": "text/javascript", "/style.css": "text/css"} {
+		response := c.raw(http.MethodGet, path, nil, "")
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Errorf("GET %s = %s, want 200", path, response.Status)
+		}
+		if ctype := response.Header.Get("Content-Type"); !strings.HasPrefix(ctype, wantType) {
+			t.Errorf("%s Content-Type = %q, want %s", path, ctype, wantType)
+		}
+		if len(body) == 0 {
+			t.Errorf("%s served empty; go:embed lost the file", path)
+		}
+	}
+
+	// Nothing is reachable but the embedded set: there is no directory to walk.
+	response := c.raw(http.MethodGet, "/../server/internal/config/config.go", nil, "")
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusOK {
+		t.Fatal("path walked outside the embedded assets")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/syncbox/server/internal/store"
+	"github.com/syncbox/server/internal/ui"
 )
 
 // The vault registry (M10): vaults are set up on the server and clients are
@@ -46,11 +47,14 @@ func cleanVaultName(raw string) (string, bool) {
 	return name, true
 }
 
-// handleIndex answers the bare root with a name-card instead of the 404 a
-// bare ServeMux used to give. The console being built over these endpoints
-// will take the browser side of this route; until then this is the honest
-// answer to "what is this port", for whichever human or script asks.
+// handleIndex answers the bare root. Browsers get the embedded console;
+// everything else (curl, scripts, clients) gets the JSON name-card — the
+// honest answer to "what is this port" that replaced the old bare 404.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.Header.Get("Accept"), "text/html") {
+		ui.Serve(w, r, "index.html")
+		return
+	}
 	version := s.version
 	if version == "" {
 		version = "dev"
@@ -70,6 +74,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 			"backups":        "GET|POST /admin/backups (bearer token)",
 		},
 	})
+}
+
+// handleAsset serves one of the console's embedded static files. Routing
+// each by name instead of mounting the filesystem keeps the asset surface
+// exactly the files go:embed shipped — there is no path a request can walk.
+func (s *Server) handleAsset(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ui.Serve(w, r, name)
+	}
 }
 
 func (s *Server) handleAdminVaultsList(w http.ResponseWriter, r *http.Request) {
