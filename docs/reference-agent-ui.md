@@ -22,6 +22,9 @@ overlays:
 | Unlock | 340 auto | password entry; the only webview that ever sees the password |
 | Settings | 340 auto | server/folder/autostart/pause — superseded by [`reference-agent-settings.md`](reference-agent-settings.md) |
 
+On top of these three windows, the always-present **tray icon** carries a
+small native menu — see [`reference-agent-tray.md`](reference-agent-tray.md).
+
 ### Main window anatomy
 
 ```text

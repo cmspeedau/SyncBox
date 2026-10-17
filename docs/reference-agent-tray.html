@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Syncbox tray menu — reference UI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: var(--font-sans); color: var(--foreground); }
+  .wrap { width: 100%; padding: 8px 16px 28px; }
+  h1 { font-size: 1.1rem; }
+  p.sub { color: var(--muted-foreground); font-size: .83rem; margin: 2px 0 14px; }
+  h2 { font-size: .85rem; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin: 22px 0 10px; }
+
+  .demo { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+  .demo .lbl { font-size: .78rem; color: var(--muted-foreground); margin-right: 4px; }
+  .demo button { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 999px; padding: 5px 13px; font: 600 .78rem var(--font-sans); cursor: pointer; }
+  .demo button.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
+  .stage { display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* taskbar strip with the tray icon */
+  .taskbar { width: 340px; max-width: 100%; height: 38px; background: #1f2937; border-radius: 8px; display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; gap: 12px; }
+  .taskbar .fake { width: 14px; height: 14px; border-radius: 3px; background: #374151; }
+  .ticon { position: relative; width: 26px; height: 26px; border: 0; border-radius: 6px; background: #374151; display: grid; place-items: center; cursor: pointer; }
+  .ticon:hover, .ticon.open { background: #4b5563; }
+  .ticon .badge { position: absolute; right: -2px; bottom: -2px; width: 9px; height: 9px; border-radius: 50%; background: #7bd88f; border: 2px solid #1f2937; }
+  .st-locked .ticon .badge { background: #cbd5e1; }
+
+  /* native-style context menu */
+  .tmenu { width: 252px; margin-top: 8px; background: #fff; color: #272833; border: 1px solid rgba(0,0,0,.18); border-radius: 8px; box-shadow: 0 14px 40px rgba(0,0,0,.3); padding: 4px; font-size: 12.5px; }
+  .mstat { display: flex; align-items: center; gap: 8px; padding: 7px 10px; color: #7a8694; font-size: 11.5px; }
+  .mstat .d { width: 8px; height: 8px; border-radius: 50%; background: #7bd88f; flex: none; }
+  .st-locked .mstat .d { background: #cbd5e1; }
+  .mit { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; border: 0; background: none; border-radius: 6px; padding: 7px 10px; font: inherit; color: inherit; cursor: pointer; }
+  .mit:hover { background: #eaf4fb; }
+  .mit svg { flex: none; color: #5b6672; }
+  .mit .hint { margin-left: auto; font-size: 10.5px; color: #97a3af; }
+  .mit.quit:hover { background: #fdeceb; color: #b91c1c; }
+  .sep { height: 1px; background: #e5eaef; margin: 4px 6px; }
+
+  /* client password window that lock/unlock opens */
+  .pw { width: 300px; background: #fff; color: #272833; border-radius: 12px; border: 1px solid rgba(0,0,0,.16); box-shadow: 0 18px 50px rgba(0,0,0,.25); overflow: hidden; font-size: 13px; margin-top: 8px; }
+  .pw.hidden { display: none; }
+  .pwbar { display: flex; align-items: center; gap: 6px; height: 30px; background: #e9eef3; border-bottom: 1px solid #d8e0e8; position: relative; }
+  .pwbar .tl { width: 10px; height: 10px; border-radius: 50%; flex: none; margin-left: 4px; cursor: pointer; }
+  .pwbar .tl.r { background: #ff5f57; } .pwbar .tl.y { background: #febc2e; } .pwbar .tl.g { background: #28c840; cursor: default; }
+  .pwbar .ct { position: absolute; left: 0; right: 0; text-align: center; font-size: 11px; font-weight: 600; color: #5b6672; }
+  .pw .body { padding: 14px 16px; }
+  .pw .hint { font-size: 12px; color: #7a8694; margin-bottom: 10px; }
+  .pw input { width: 100%; border: 1px solid #b7cfe0; border-radius: 20px; padding: 11px 13px; font: inherit; outline: none; margin-bottom: 12px; }
+  .pw input:focus { border-color: #0082c9; box-shadow: 0 0 0 2px rgba(0,130,201,.2); }
+  .pw .btns { display: flex; gap: 8px; }
+  .pw .b { flex: 1; border: 0; border-radius: 20px; padding: 10px; font: 700 12.5px var(--font-sans); cursor: pointer; }
+  .pw .pri { background: #006aa3; color: #fff; }
+  .pw .gh { background: #fff; border: 1px solid #d5dee6; color: #272833; }
+
+  #actionBar { margin-top: 10px; min-height: 34px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; color: var(--muted-foreground); width: 340px; max-width: 100%; }
+  #actionBar b { color: var(--foreground); }
+  #actionBar code { background: var(--code-background); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: .95em; }
+
+  .legend { width: 250px; font-size: 12.5px; color: var(--muted-foreground); }
+  .legend .bub { padding: 7px 10px; }
+
+  .refs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px,100%), 1fr)); gap: 14px; }
+  .ref { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; font-size: .8rem; }
+  .ref img { width: 100%; height: 190px; object-fit: contain; background: #fff; display: block; border-bottom: 1px solid var(--border); }
+  .ref .b { padding: 10px 12px; }
+  .ref b { display: block; margin-bottom: 3px; }
+  .ref p { color: var(--muted-foreground); }
+  .ref a { color: var(--info); text-decoration: none; }
+  .note { margin-top: 16px; font-size: .8rem; color: var(--muted-foreground); background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .note code { background: var(--code-background); border-radius: 4px; padding: 1px 5px; font-family: var(--font-mono); font-size: .95em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Syncbox tray menu — reference UI</h1>
+  <p class="sub">Right-click (or Windows/Linux single-click) on the tray icon opens this menu; a plain icon click opens the agent UI. Locking is instant — no password needed; only when the vault <b>is locked</b> does the item become <i>Unlock vault…</i> and open the client's password window. Click items to try it.</p>
+
+  <div class="demo" id="demo">
+    <span class="lbl">demo:</span>
+    <button data-s="open" class="on">Unlocked</button>
+    <button data-s="locked">Locked</button>
+  </div>
+
+  <div class="stage">
+    <div>
+      <div class="taskbar" id="taskbar">
+        <span class="fake"></span><span class="fake"></span>
+        <button class="ticon open" id="ticon" title="Syncbox — click opens the agent UI">
+          <svg width="16" height="10" viewBox="0 0 40 24" fill="none" stroke="#7fb6da" stroke-width="3"><circle cx="12" cy="14" r="6.5"/><circle cx="27" cy="14" r="6.5"/></svg>
+          <span class="badge"></span>
+        </button>
+      </div>
+
+      <div class="tmenu" id="tmenu">
+        <div class="mstat"><span class="d"></span><span id="statTxt">Syncbox — up to date</span></div>
+        <button class="mit" data-act="<b>Open Syncbox</b> — show + focus the main window. This is the same action a plain icon click performs (ownCloud does the same with left-click).">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8"/></svg>
+          Open Syncbox <span class="hint">click icon</span>
+        </button>
+        <button class="mit" data-act="<b>Open sync folder</b> — reveal <code>~/Syncbox/Files synced</code> in the OS file manager.">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+          Open sync folder
+        </button>
+        <div class="sep"></div>
+        <button class="mit" id="lockItem" data-act="<b>Lock vault</b> — acts directly: <code>lock</code> clears the derived keys and sync stops until an unlock. A lock never needs the password.">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+          <span id="lockLbl">Lock vault</span> <span class="hint" id="lockHint"></span>
+        </button>
+        <button class="mit" data-act="<b>Settings…</b> — open the Settings window (gear button does the same).">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+          Settings…
+        </button>
+        <div class="sep"></div>
+        <button class="mit quit" data-act="<b>Quit</b> — exit the agent process. Tray presence gone, sync stops; local files and server data untouched (unlike closing the window, which keeps running).">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+          Quit
+        </button>
+      </div>
+
+      <div id="actionBar">Demo: click any menu item — <i>Unlock vault…</i> (locked state) also opens the client password window.</div>
+    </div>
+
+    <!-- the client password window that unlock opens -->
+    <div class="pw hidden" id="pw">
+      <div class="pwbar"><span class="tl r" id="pwClose"></span><span class="tl y"></span><span class="tl g"></span><span class="ct" id="pwTitle">Unlock “Files synced”</span></div>
+      <div class="body">
+        <p class="hint" id="pwHint">Enter the vault password. It is used now, to derive the keys — never written down.</p>
+        <input type="password" id="pwIn" placeholder="Vault password">
+        <div class="btns">
+          <button class="b gh" id="pwCancel">Cancel</button>
+          <button class="b pri" id="pwOk">Unlock &amp; sync</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="bub"><b>Icon click ≠ right-click.</b> Left/plain click opens the agent UI (same as <i>Open Syncbox</i>); right-click (macOS: any click on the menu bar item) opens this menu. ownCloud uses exactly this split.</div>
+      <div class="bub"><b>Lock is instant, unlock is passworded.</b> <i>Lock vault</i> acts straight from the tray — locking only clears the derived keys, so it needs no password. Only when the vault <b>is locked</b> does the item become <i>Unlock vault…</i>, which raises the client and shows the password window.</div>
+      <div class="bub"><b>Password only ever in the client</b> — the tray menu itself has no password field, and a stray tray click can never unlock the vault.</div>
+      <div class="bub"><b>No pause item</b> on purpose — pausing lives in Settings (with durations) and the main window, so the tray menu stays five rows.</div>
+    </div>
+  </div>
+
+  <h2>Baseline (verified, hotlinkable)</h2>
+  <div class="refs">
+    <div class="ref"><img loading="lazy" src="https://doc.owncloud.com/desktop/7.1/_images/using/oc-windows-systray-icon-menu.png" alt="ownCloud systray menu"><div class="b"><b>ownCloud desktop 7.1</b><p>Right-click = quick-action menu, left-click = app window. Ours is flatter — one vault, so no account submenu; and locking is a single direct item, with the password only ever asked by the client when unlocking.<br><a href="https://doc.owncloud.com/desktop/7.1/using.html#the-systray" target="_blank" rel="noopener">doc.owncloud.com</a></p></div></div>
+    <div class="ref"><img loading="lazy" src="https://support.microsoft.com/en-us/onedrive/media/onedrive-settings-ui-new.png" alt="OneDrive settings"><div class="b"><b>OneDrive (new sync app)</b><p>Its tray menu carries pause-with-durations; we moved that into Settings to keep the tray menu minimal.<br><a href="https://support.microsoft.com/en-us/onedrive/how-to-access-onedrive-settings" target="_blank" rel="noopener">Microsoft Support</a></p></div></div>
+  </div>
+
+  <div class="note">Implementation: Tauri <code>TrayIcon</code> with a native <code>Menu</code>; items relabel as <code>SyncState</code> changes. Icon click → show/focus the main window; <i>Open sync folder</i> → open-folder command; <i>Lock vault</i> (unlocked) → direct <code>lock</code>; <i>Unlock vault…</i> (locked) → focus client + open the password window, where <code>unlock</code> derives the keys and sync starts; <i>Settings…</i> → Settings window; <i>Quit</i> → agent process exit. The password field lives only in the client's own webview — never in the native menu.</div>
+</div>
+
+<script>
+var demo = document.getElementById('demo'), tmenu = document.getElementById('tmenu'), taskbar = document.getElementById('taskbar');
+var lockItem = document.getElementById('lockItem'), lockLbl = document.getElementById('lockLbl'), lockHint = document.getElementById('lockHint'), statTxt = document.getElementById('statTxt');
+var pw = document.getElementById('pw'), pwOk = document.getElementById('pwOk'), pwIn = document.getElementById('pwIn');
+var locked = false;
+
+function setLocked(v) {
+  locked = v;
+  tmenu.classList.toggle('st-locked', v);
+  taskbar.classList.toggle('st-locked', v);
+  lockLbl.textContent = v ? 'Unlock vault…' : 'Lock vault';
+  lockHint.textContent = v ? 'opens client' : '';
+  lockItem.dataset.act = v
+    ? '<b>Unlock vault…</b> — raises the client and opens the password window; <code>unlock</code> derives the keys and sync starts. The tray never sees the password.'
+    : '<b>Lock vault</b> — acts directly: <code>lock</code> clears the derived keys and sync stops until an unlock. A lock never needs the password.';
+  statTxt.textContent = v ? 'Syncbox — locked' : 'Syncbox — up to date';
+  demo.querySelectorAll('button').forEach(function(x) { x.classList.toggle('on', (x.dataset.s === 'locked') === v); });
+}
+function showPw() {
+  pwIn.value = '';
+  pw.classList.remove('hidden');
+  setTimeout(function(){ pwIn.focus(); }, 30);
+}
+function hidePw() { pw.classList.add('hidden'); }
+
+demo.addEventListener('click', function(e) {
+  var b = e.target.closest('button'); if (!b) return;
+  setLocked(b.dataset.s === 'locked');
+  hidePw();
+});
+var bar = document.getElementById('actionBar');
+tmenu.addEventListener('click', function(e) {
+  var b = e.target.closest('.mit'); if (!b) return;
+  bar.innerHTML = b.dataset.act;
+  if (b === lockItem) {
+    if (locked) { showPw(); }        // locked → password window in the client
+    else { setLocked(true); hidePw(); } // unlocked → direct lock, no password
+  } else hidePw();
+});
+document.getElementById('pwClose').addEventListener('click', hidePw);
+document.getElementById('pwCancel').addEventListener('click', hidePw);
+pwOk.addEventListener('click', function() { setLocked(false); hidePw(); });
+</script>
+</body>
+</html>
