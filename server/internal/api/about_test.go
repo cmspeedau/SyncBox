@@ -42,6 +42,10 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 	}
 	backups := backup.NewManager(tgt, store.NewMemory(MaxChunkBytes), "test-version")
 
+	// A fixed clock so uptime is deterministic: the server started 90 minutes before
+	// its own clock reads "now". The clock sits in the future so the login token the
+	// test client checks (against the real wall clock) is still live.
+	fixed := time.Now().Add(365 * 24 * time.Hour)
 	c := newAboutClient(t, backups, func(s *Server) {
 		s.SetVersion("9.9.9")
 		s.SetDeployment("/var/lib/syncbox", "SQLite")
@@ -49,6 +53,8 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 		s.SetRecycleDays(30)
 		s.SetRateLimit(5, 10)
 		s.SetRequireRegisteredVaults(true)
+		s.now = func() time.Time { return fixed }
+		s.started = fixed.Add(-90 * time.Minute)
 	})
 
 	var body aboutBody
@@ -87,6 +93,12 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 	// testPassword arrives as the env password, so the source reads environment.
 	if body.PasswordSource != "environment" {
 		t.Errorf("PasswordSource = %q, want environment", body.PasswordSource)
+	}
+	if want := fixed.Add(-90 * time.Minute).Unix(); body.StartedUnix != want {
+		t.Errorf("StartedUnix = %d, want %d", body.StartedUnix, want)
+	}
+	if body.UptimeSeconds != 5400 {
+		t.Errorf("UptimeSeconds = %d, want 5400 (90 minutes)", body.UptimeSeconds)
 	}
 }
 

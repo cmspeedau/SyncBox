@@ -137,6 +137,7 @@ directory entirely, and came back byte-identical.
 | M12 | First-run bring-up: a fresh server with no password awaits one and seals it with Argon2id; the console sets it in place of a logged secret and can rotate it; env-provided passwords behave exactly as before | ✅ |
 | M13 | Settings: the console sets the snapshot schedule live (`GET/PUT /admin/backups/config`; a restart falls back to `SYNCBOX_BACKUP_SCHEDULE`), reports backup freshness (newest snapshot's age and when the next one is due, via `next_due_unix`), and a read-only **About this server** panel (`GET /admin/about`) shows storage, data directory, backup target, share TTL and recycle retention | ✅ |
 | M14 | Settings continuity: because the live schedule is not persisted, the console flags when it differs from the boot value — `GET /admin/backups/config` reports `boot_interval_seconds`/`boot_schedule` and a `drifted` flag, so an operator sees that a change made in the console reverts on restart — and the **About** panel reports the environment's security posture (session-token lifetime, rate limit, the unknown-vault commit gate) and how the sign-in password is managed (`password_source`: env vs stored, which decides whether the console can rotate it) | ✅ |
+| M15 | Uptime visibility: the **About** panel reports when the process came up (`started_unix`) and how long it has run (`uptime_seconds`), so an operator can tell at a glance whether an unpersisted setting has already reverted on a restart | ✅ |
 
 ## License
 

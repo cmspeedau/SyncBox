@@ -73,6 +73,10 @@ type Server struct {
 	rateLimit float64
 	rateBurst int
 	now       func() time.Time
+	// started is when this process came up. About reports it (and the uptime since)
+	// so an operator can see how long the running, unpersisted settings — the
+	// console-set snapshot schedule in particular — have actually been in force.
+	started time.Time
 	// shareTTL is the longest a share link stays valid. A mint may ask for a
 	// shorter life; nothing may ask for a longer one.
 	shareTTL time.Duration
@@ -116,6 +120,7 @@ func NewWithAuthority(st store.Store, backups *backup.Manager, issuer *auth.Issu
 		creds:    creds,
 		hub:      newHub(),
 		now:      time.Now,
+		started:  time.Now(),
 		shareTTL: DefaultShareTTL,
 	}
 }
