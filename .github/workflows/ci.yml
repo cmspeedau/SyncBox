@@ -212,11 +212,11 @@ jobs:
       # boots uninitialized and takes its password through first run, refuses
       # strangers, and keeps a space registered as `sync` in the clear —
       # a cleartext name and body in, the same out (S2's server-side contract,
-      # which the Rust engine's fake server can only approximate). A throwaway
-      # container ships no SYNCBOX_PASSWORD, so it boots uninitialized; the probe
-      # gives it a password over the one-shot setup route rather than reading a
-      # secret out of a log. The assertions on the auth paths are the point of
-      # the exercise: a regression that ships an open server fails HERE, not in
+      # which the Rust engine's fake server can only approximate). Credentials
+      # are not read from anywhere: the probe completes the container's first run
+      # through POST /api/v1/auth/setup, the door a person facing a fresh
+      # deployment uses. The assertions on the auth paths are the point of the
+      # exercise: a regression that ships an open server fails HERE, not in
       # someone's deployment.
       - name: Runtime check
         run: |
@@ -295,43 +295,61 @@ jobs:
             exit 1
           fi
 
-          # ---- first run: give this throwaway server its password ----
-          # The image ships uninitialized (no SYNCBOX_PASSWORD), exactly what a
-          # throwaway container wants: the probe sets a password over the
-          # one-shot setup route, so no credential ever appears in the workflow.
-          # The boot log is kept for the closing-evidence step at the end.
-          boot_log="${RUNNER_TEMP:-.}/syncbox-boot.log"
-          password="syncbox-ci-first-run-9f3a"
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
-            -d "$(printf '{"password":"%s"}' "$password")" \
+          # ---- first-run setup, the way an operator does it ----------
+          # M12 S1 removed the generated password from the boot log deliberately:
+          # a fresh server now says it has no password and waits for the console to
+          # give it one, so there is no secret left to read out of a log line. That
+          # broke the probe below this block, which had been signing in with a
+          # password scraped from `docker logs`. Good — the container this job boots
+          # IS the first-run case, so the probe now plays the operator instead:
+          # confirm the door is open, fail a weak password, set a real one, sign in
+          # with it, and check the door shuts behind you.
+          status=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/v1/auth/status")
+          if [[ $status != *'"initialized":false'* ]]; then
+            echo "::error::a fresh container reported itself initialized: $status"
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -X POST -d '{"password":"short"}' "http://127.0.0.1:${port}/api/v1/auth/setup")
+          if [ "$code" != 400 ]; then
+            echo "::error::a below-floor password got $code on setup, expected 400 weak_password"
+            exit 1
+          fi
+          password="probe-first-run-$(date +%s)"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            -X POST -d "$(printf '{"password":"%s"}' "$password")" \
             "http://127.0.0.1:${port}/api/v1/auth/setup")
           if [ "$code" != 201 ]; then
             echo "::error::first-run setup got $code, expected 201"
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
-          # The setup door is one-shot: a second attempt must be refused.
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X POST \
-            -d '{"password":"another-password-here"}' \
+          status=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/v1/auth/status")
+          if [[ $status != *'"initialized":true'* ]]; then
+            echo "::error::after setup the container still reports itself uninitialized: $status"
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -X POST -d '{"password":"another-secret-password"}' \
             "http://127.0.0.1:${port}/api/v1/auth/setup")
           if [ "$code" != 409 ]; then
-            echo "::error::a second setup got $code, expected 409 already_initialized"
+            echo "::error::a second first run got $code, expected 409 already_initialized"
             exit 1
           fi
-          # Now a wrong password is refused on its merits, not for lack of one.
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-            -X POST -d '{"password":"wrong"}' "http://127.0.0.1:${port}/api/v1/auth/token")
-          if [ "$code" != 401 ]; then
-            echo "::error::wrong password after setup got $code, expected 401"
-            exit 1
-          fi
-          token=$(curl -fsS --max-time 5 -X POST \
+          token=$(curl -fsS --max-time 3 -X POST \
             -d "$(printf '{"password":"%s"}' "$password")" \
             "http://127.0.0.1:${port}/api/v1/auth/token" \
             | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           if [ -z "$token" ]; then
-            echo "::error::the token exchange returned no token"
+            echo "::error::the password just set did not sign in"
             docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -X POST -d '{"password":"wrong-then-ever-after"}' \
+            "http://127.0.0.1:${port}/api/v1/auth/token")
+          if [ "$code" != 401 ]; then
+            echo "::error::a wrong password got $code after setup, expected 401"
             exit 1
           fi
           auth="Authorization: Bearer ${token}"
