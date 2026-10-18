@@ -615,7 +615,11 @@ jobs:
     #
     # With the input left empty, the `if` skips this job, so pushes and PRs never
     # see it and nothing about ordinary CI changes.
-    name: Runner canary (${{ inputs.canary_label }})
+    # The label goes in the name only when there is one. On a push or PR there is no
+    # `inputs` context, and GitHub renders an unevaluated expression literally: every
+    # ordinary run grew a job called `Runner canary (${{ inputs.canary_label }})`,
+    # skipped but confusing. Interpolate it in the expression instead of the string.
+    name: ${{ github.event_name == 'workflow_dispatch' && format('Runner canary ({0})', inputs.canary_label) || 'Runner canary (manual only)' }}
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.canary_label != '' }}
     runs-on: [self-hosted, '${{ inputs.canary_label }}']
     timeout-minutes: 5
