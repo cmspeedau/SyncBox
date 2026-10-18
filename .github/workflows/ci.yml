@@ -115,6 +115,10 @@ jobs:
     # get that box, which is also the box with warm caches and 14 GB.
     # `Server (Go)` below stays unpinned on purpose: the NUC does it in ~25s, and
     # leaving one Linux job shareable keeps the two heavy jobs starting at once.
+    # The desktop Tauri shell is a workspace member, so this job also compiles and
+    # tests it: the runner must carry the webkit2gtk/gtk/libsoup development stack,
+    # which makes the `desktop` pin load-bearing for the check itself, not just for
+    # its speed. Bundle jobs (`package`, `package-macos`) build the app from here.
     runs-on: [self-hosted, Linux, desktop]
     # Sized from real runs, with room for a cold cache: this job took 4m32s on a
     # warm cache (run 39104747110). It is also the job most likely to wedge the only
@@ -532,7 +536,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: client/apps/desktop/src-tauri
+          workspaces: client
 
       - name: Install system libraries (hosted runners only)
         run: |
@@ -577,8 +581,8 @@ jobs:
         with:
           name: syncbox-desktop-linux
           path: |
-            client/apps/desktop/src-tauri/target/release/bundle/deb/*.deb
-            client/apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            client/target/release/bundle/deb/*.deb
+            client/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   package-macos:
@@ -608,7 +612,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: client/apps/desktop/src-tauri
+          workspaces: client
 
       - name: Install tauri CLI
         run: |
@@ -639,8 +643,8 @@ jobs:
         with:
           name: syncbox-desktop-macos
           path: |
-            client/apps/desktop/src-tauri/target/release/bundle/osx/*.app
-            client/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            client/target/release/bundle/osx/*.app
+            client/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
   canary:

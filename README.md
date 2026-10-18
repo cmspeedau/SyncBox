@@ -42,7 +42,7 @@ Read [docs/format.md](docs/format.md) for the vault format,
 | `client/crates/mount` | FUSE filesystem over the vault, read-only or writable |
 | `client/crates/agent` | The desktop app's sync controller, Tauri-free and testable |
 | `client/apps/cli` | Headless `syncbox`: vault, sync, mount, gc, backup commands |
-| `client/apps/desktop` | Tauri v2 desktop app (its own workspace; built separately) |
+| `client/apps/desktop` | Tauri v2 desktop app (a workspace member; building it needs the Tauri system libraries) |
 | `server` | Go server: API, metadata, chunk store, rate limiting, backup engine ([operator's manual](server/README.md)) |
 | `deploy` | Dockerfile, docker-compose, Caddyfile |
 

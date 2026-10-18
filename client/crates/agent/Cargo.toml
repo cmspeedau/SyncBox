@@ -5,10 +5,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-# The desktop window (apps/desktop, excluded from the workspace) shells around
-# this crate. Keeping the behaviour here — with no Tauri or webkit dependency —
-# is what lets `cargo test --workspace` exercise the whole sync lifecycle on a
-# headless box with no system GUI libraries.
+# The desktop window (apps/desktop, a workspace member) shells around this crate.
+# Keeping the behaviour here — with no Tauri or webkit dependency — is what lets the
+# agent's own `cargo test -p syncbox-agent` exercise the whole sync lifecycle on a
+# headless box with no system GUI libraries. (`cargo test --workspace` as a whole
+# now needs those libraries, because the desktop member does.)
 
 [dependencies]
 rusqlite.workspace = true

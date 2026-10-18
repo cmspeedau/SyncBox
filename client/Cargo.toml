@@ -9,12 +9,15 @@ members = [
   "crates/agent",
   "crates/mount",
   "apps/cli",
+  "apps/desktop/src-tauri",
 ]
 
-# The desktop app joins the workspace in M4, once the Tauri system dependencies
-# (webkit2gtk on Linux, the Windows and macOS SDKs) are wired into CI. Keeping it
-# excluded now means `cargo check` still works on a machine without them.
-exclude = ["apps/desktop"]
+# The desktop app is a member, so `cargo check`/`clippy`/`test --workspace` also
+# compile the Tauri shell. That means building the whole workspace now needs the
+# Tauri system libraries — webkit2gtk-4.1, gtk-3, libsoup-3.0, javascriptcoregtk-4.1
+# on Linux (the SDKs elsewhere). CI's `Client (Rust)` job is pinned to the one
+# runner that has them (see .github/workflows/ci.yml), and `cargo tauri build`
+# bundles from here rather than from the crate's old standalone workspace.
 
 [workspace.package]
 version = "0.1.0"

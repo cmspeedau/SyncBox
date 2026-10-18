@@ -5,14 +5,13 @@ description = "Syncbox desktop app (Tauri v2 shell over the sync agent)"
 edition = "2021"
 rust-version = "1.85"
 
-# This crate is a STANDALONE workspace and is excluded from the client workspace
-# (see client/Cargo.toml). That is the whole point: `cargo test --workspace` never
-# needs the Tauri system libraries, which are only required to build this app.
-#
-# The Linux build needs webkit2gtk-4.1, gtk-3, libsoup-3.0, javascriptcoregtk-4.1
-# (present on a desktop). The tray icon additionally needs libappindicator, so the
+# This crate is a MEMBER of the client workspace (see client/Cargo.toml): a plain
+# package, not a workspace of its own. So `cargo check`/`clippy`/`test --workspace`
+# compile it and its tests, and `cargo tauri build` bundles it from the workspace.
+# Its build needs the Tauri system libraries: webkit2gtk-4.1, gtk-3, libsoup-3.0,
+# javascriptcoregtk-4.1 (present on a desktop; CI's `Client (Rust)` job is pinned to
+# the runner that has them). The tray icon additionally needs libappindicator, so the
 # tray is left behind a feature for now (see README); M6 packaging installs it.
-[workspace]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
