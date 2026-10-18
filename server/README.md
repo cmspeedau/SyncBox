@@ -68,7 +68,7 @@ host can run two servers). `syncboxd serve -h` lists the flags.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SYNCBOX_LISTEN_ADDR` | `127.0.0.1:8080` | host:port to bind; `0.0.0.0` earns a startup warning and needs TLS in front |
-| `SYNCBOX_PASSWORD` | generated | the one account credential; clients buy tokens with it. Unset means *generate and log one* — a development convenience, never a deployment |
+| `SYNCBOX_PASSWORD` | unset | the one account credential; clients buy tokens with it. Set, it always wins and is compared as typed. Unset, the server falls back to a password an earlier first run sealed into the data dir, or — with neither — starts *uninitialised* and awaits first-run setup in the console (`POST /api/v1/auth/setup`); it no longer generates and logs one. Set it before exposing the server on a network |
 | `SYNCBOX_TOKEN_SECRET` | per-boot | signs bearer tokens; unset, every restart invalidates outstanding tokens |
 | `SYNCBOX_TOKEN_TTL` | `24h` | how long an issued token stays valid (any Go duration) |
 | `SYNCBOX_DATA_DIR` | `./data` | SQLite metadata plus the `chunks/` store; the container sets `/data` |
@@ -108,14 +108,18 @@ of a backup.
 
 The desktop client and CLI use this API; curl is for poking and for
 integrations. Everything under `/api/v1` and `/admin` is bearer-token
-only, with one deliberate exception: `/api/v1/shares/{token}`, whose
-credential *is* the signed link. `/healthz` is open.
+only, with the exceptions that a server cannot yet be behind: the signed
+share link `/api/v1/shares/{token}` (whose credential *is* the link), and
+the first-run pair `/api/v1/auth/status` + `/api/v1/auth/setup`, which a
+server with no password yet answers before any credential exists.
+`/healthz` is open.
 
 The embedded console at `/` drives all of it: sign in with the same
-password, and each **sync space** offers *Browse files* — read its tree,
-hand out a share link to one file (with a copyable URL and its expiry),
-and pull a deletion back from the recycle bin. A **vault's** card says
-plainly that none of that is possible, because the server holds only
+password — or, on a server that has none yet, meet the **first run** screen
+that lets you set one — and each **sync space** offers *Browse files* — read
+its tree, hand out a share link to one file (with a copyable URL and its
+expiry), and pull a deletion back from the recycle bin. A **vault's** card
+says plainly that none of that is possible, because the server holds only
 ciphertext — and would answer `403` if you asked it to try.
 
 ```sh
@@ -135,7 +139,9 @@ The surface, all under a bearer header:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/v1/auth/token` | exchange the password for a token (`{token, expires_unix}`) |
+| `POST /api/v1/auth/token` | exchange the password for a token (`{token, expires_unix}`). While the server is uninitialised it answers `401 uninitialized` |
+| `GET /api/v1/auth/status` | `{"initialized": bool}` — whether anything can sign in yet; the console's login screen reads it to choose sign-in vs first run (open, no credential) |
+| `POST /api/v1/auth/setup` | give a fresh server its first password, once. Argon2id-sealed into the data dir; a later call is `409 already_initialized`, a password under 8 chars is `400 weak_password` (open only until it succeeds) |
 | `GET/POST /api/v1/vaults/{id}/revisions` | list revisions; commit a new one (manifest + chunk references) |
 | `GET /api/v1/vaults/{id}/events` | long-poll-style wakeups when a vault changes |
 | `POST /api/v1/vaults/{id}/chunks/exists` | "which of these chunk IDs do you already have" — dedup before upload |
@@ -160,6 +166,14 @@ an object is never read (docs/backup.md).
 
 - **Tokens are per-boot unless you set `SYNCBOX_TOKEN_SECRET`.** Set it in
   `.env` and restarts stop logging everyone out.
+- **Finish first run before you expose the server.** A password-less server is
+  reachable-by-anyone-once by design: whoever calls `POST /api/v1/auth/setup`
+  first gives it its password. That is the point on loopback or tailscale,
+  where first run is the operator's own, but a deployment heading for a network
+  should set `SYNCBOX_PASSWORD` — or complete the console's first-run screen —
+  *before* it is reachable. Once any password exists, env or sealed, setup is
+  refused forever (`409`). A sealed password lands in the data dir as an
+  Argon2id hash at mode `0600`, never as the password itself.
 - **The data dir is everything.** SQLite file plus `chunks/`; snapshots
   under `SYNCBOX_BACKUP_TARGET` are the copies. A restore is `syncboxd
   restore` (offline) or `POST /admin/backups/{id}/restore` (live store),

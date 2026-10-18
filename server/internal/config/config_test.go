@@ -197,26 +197,43 @@ func TestVaultEnforcementSwitch(t *testing.T) {
 	}
 }
 
-func TestMissingPasswordIsGeneratedNotAbsent(t *testing.T) {
+func TestMissingPasswordIsLeftUnset(t *testing.T) {
 	t.Setenv("SYNCBOX_PASSWORD", "")
 
 	cfg, err := FromEnv()
 	if err != nil {
 		t.Fatalf("FromEnv: %v", err)
 	}
-	if cfg.Password == "" {
-		t.Fatal("an unset password left the server with no credential at all")
-	}
-	if cfg.Password == Defaults().Password {
-		t.Error("the generated password is a constant")
+	if cfg.Password != "" {
+		t.Errorf("Password = %q; an unset SYNCBOX_PASSWORD must stay unset so the server can await first-run setup", cfg.Password)
 	}
 
-	other, err := FromEnv()
-	if err != nil {
-		t.Fatalf("FromEnv again: %v", err)
+	// The unset password is worth a startup warning, so a container log says so
+	// rather than leaving the operator staring at a login screen with no clue.
+	var warned bool
+	for _, warning := range cfg.Warnings() {
+		if strings.Contains(warning, "first-run") {
+			warned = true
+		}
 	}
-	if other.Password == cfg.Password {
-		t.Error("two generations produced the same password")
+	if !warned {
+		t.Errorf("Warnings() = %q; want one naming the unset password", cfg.Warnings())
+	}
+}
+
+func TestEnvironmentPasswordWins(t *testing.T) {
+	t.Setenv("SYNCBOX_PASSWORD", "  a-real-password  ")
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.Password != "a-real-password" {
+		t.Errorf("Password = %q; want the trimmed environment value", cfg.Password)
+	}
+	for _, warning := range cfg.Warnings() {
+		if strings.Contains(warning, "first-run") {
+			t.Errorf("a configured password should not warn about first run, got %q", warning)
+		}
 	}
 }
 

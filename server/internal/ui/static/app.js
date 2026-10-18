@@ -41,14 +41,28 @@ async function reason(response) {
 
 function showLogin(message) {
   $("console").hidden = true;
+  $("setup").hidden = true;
   $("login").hidden = false;
   $("login-error").textContent = message || "";
   $("session").textContent = "";
   stopLiveStats();
 }
 
+// showSetup reveals the first-run screen: a server with no password yet, which the
+// login form cannot sign into because there is nothing to sign in with.
+function showSetup() {
+  $("console").hidden = true;
+  $("login").hidden = true;
+  $("setup").hidden = false;
+  $("setup-error").textContent = "";
+  $("session").textContent = "";
+  stopLiveStats();
+  $("setup-password").focus();
+}
+
 function showConsole() {
   $("login").hidden = true;
+  $("setup").hidden = true;
   $("console").hidden = false;
   $("session").textContent = "";
   startLiveStats();
@@ -62,34 +76,125 @@ function showConsole() {
   $("session").appendChild(signOut);
 }
 
-$("login-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  $("login-error").textContent = "";
+// fetchAuthStatus asks which screen the door wants: a server with no password yet
+// must show first-run, not a sign-in form it can never satisfy. Anything other
+// than an explicit "not initialized" — a fetch failure, a surprising reply — falls
+// back to the ordinary sign-in, which is the safe default.
+async function fetchAuthStatus() {
+  try {
+    const response = await fetch("/api/v1/auth/status");
+    if (!response.ok) return { initialized: true };
+    return await response.json();
+  } catch {
+    return { initialized: true };
+  }
+}
+
+// issueToken exchanges a password for a session token, translating the server's
+// refusals into the one line of human text each deserves. It stores the token on
+// success; callers own moving to the console.
+async function issueToken(password) {
   let response;
   try {
     response = await fetch("/api/v1/auth/token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: $("password").value }),
+      body: JSON.stringify({ password }),
     });
   } catch {
-    $("login-error").textContent = "The server is unreachable.";
-    return;
+    return { ok: false, message: "The server is unreachable." };
   }
   if (response.status === 429) {
-    $("login-error").textContent = "Too many attempts — wait a moment and try again.";
-    return;
+    return { ok: false, message: "Too many attempts — wait a moment and try again." };
+  }
+  if (response.status === 401) {
+    return { ok: false, message: "That password was refused." };
   }
   if (!response.ok) {
-    $("login-error").textContent = "That password was refused.";
-    $("password").select();
-    return;
+    return { ok: false, message: "Could not sign in (server said " + response.status + ")." };
   }
   const issued = await response.json();
   sessionStorage.setItem(TOKEN_KEY, issued.token);
+  return { ok: true };
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("login-error").textContent = "";
+  const result = await issueToken($("password").value);
+  if (!result.ok) {
+    $("login-error").textContent = result.message;
+    $("password").select();
+    return;
+  }
   $("password").value = "";
   showConsole();
   refresh();
+});
+
+// The first run validates on the client for the usual reasons — an empty or short
+// password, or the two fields disagreeing — so the operator is not bounced to the
+// server for a mistake they can see, then hands off to issueToken to sign straight
+// in with the password just chosen. If the server already has a password (another
+// caller won the race, or the tab is stale), it falls back to plain sign-in.
+$("setup-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("setup-error").textContent = "";
+  const password = $("setup-password").value;
+  const confirm = $("setup-confirm").value;
+  if (password === "") {
+    $("setup-error").textContent = "Choose a password.";
+    $("setup-password").focus();
+    return;
+  }
+  if (password.length < 8) {
+    $("setup-error").textContent = "Use at least 8 characters.";
+    $("setup-password").focus();
+    return;
+  }
+  if (password !== confirm) {
+    $("setup-error").textContent = "The two passwords don't match.";
+    $("setup-confirm").focus();
+    return;
+  }
+
+  const submit = $("setup-form").querySelector("button");
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/v1/auth/setup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (response.status === 429) {
+      $("setup-error").textContent = "Too many attempts — wait a moment and try again.";
+      return;
+    }
+    if (response.status === 409) {
+      $("setup-password").value = "";
+      $("setup-confirm").value = "";
+      showLogin("This server already has a password. Sign in with it.");
+      return;
+    }
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      $("setup-error").textContent = body.reason || ("The server refused the password (" + response.status + ").");
+      return;
+    }
+    $("setup-password").value = "";
+    $("setup-confirm").value = "";
+    const signed = await issueToken(password);
+    if (!signed.ok) {
+      showLogin("The password is set, but sign-in did not take. Sign in again: " + signed.message);
+      return;
+    }
+    showConsole();
+    refresh();
+  } catch {
+    $("setup-error").textContent = "The server is unreachable.";
+  } finally {
+    submit.disabled = false;
+  }
 });
 
 function fmtBytes(n) {
@@ -741,11 +846,16 @@ function stopLiveStats() {
   }
 }
 
-// Boot: a stored token gets the console and the first 401 returns to the
-// door; no token means the login form is the front page, honestly labelled.
-if (token()) {
-  showConsole();
-  refresh();
-} else {
-  showLogin("");
-}
+// Boot: a stored token goes straight to the console (the first 401 returns to the
+// door); no token means we ask the server whether it even has a password yet — if
+// not, first-run setup is the front page; otherwise the sign-in form is.
+(async function boot() {
+  if (token()) {
+    showConsole();
+    refresh();
+    return;
+  }
+  const status = await fetchAuthStatus();
+  if (status.initialized === false) showSetup();
+  else showLogin("");
+})();

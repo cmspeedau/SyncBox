@@ -30,6 +30,21 @@
     <p id="login-error" class="error" role="alert"></p>
   </section>
 
+  <section id="setup" hidden>
+    <h2>First run</h2>
+    <p>This server has no password yet. Choose one to finish setting it up — you
+      sign in here with it, and clients that sync against it use it too. The
+      server keeps only an Argon2id seal of it, never the password itself.</p>
+    <form id="setup-form">
+      <input type="password" id="setup-password" autocomplete="new-password"
+             placeholder="Choose a password" aria-label="Choose a password">
+      <input type="password" id="setup-confirm" autocomplete="new-password"
+             placeholder="Confirm password" aria-label="Confirm password">
+      <button type="submit">Set password</button>
+    </form>
+    <p id="setup-error" class="error" role="alert"></p>
+  </section>
+
   <section id="console" hidden>
 
     <section id="overview">
