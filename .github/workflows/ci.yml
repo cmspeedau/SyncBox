@@ -62,6 +62,48 @@ permissions:
   contents: read
 
 jobs:
+  runner-check:
+    # The one failure mode a workflow cannot see from the inside: a job whose label
+    # has no runner. Proven on run 39108537863 — such a job does NOT fail at its
+    # `timeout-minutes`, it just sits against the 24-hour queue limit, so nothing
+    # downstream can notice and a whole run can hang quietly. This job asks only for
+    # `Linux`, which every runner here answers, and then asks GitHub who is actually
+    # online. Failing here turns a silent 24-hour wait into a named, one-minute error.
+    #
+    # It needs a token that may read /actions/runners. GITHUB_TOKEN cannot be given
+    # `administration:read` and this repo's fine-grained PAT gets 403, so without the
+    # RUNNER_ADMIN_TOKEN secret this job prints a warning and passes: CI behaves
+    # exactly as it did before. Add that secret and the guard switches on by itself.
+    name: Runner availability
+    runs-on: [self-hosted, Linux]
+    timeout-minutes: 5
+    steps:
+      - name: Every label set this workflow needs must have an online runner
+        env:
+          ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          DEFAULT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Label sets, one per line, joined with '+'. `Linux`/`X64` are listed
+          # because GitHub adds them automatically and a runner must really have
+          # them for the job to be routable.
+          need='self-hosted+Linux self-hosted+Linux+desktop self-hosted+docker self-hosted+desktop self-hosted+macOS'
+          tok="${ADMIN_TOKEN:-$DEFAULT_TOKEN}"
+          src="GITHUB_TOKEN"
+          [ -n "$ADMIN_TOKEN" ] && src="RUNNER_ADMIN_TOKEN"
+          code=$(curl -sS -o runners.json -w '%{http_code}' \
+            -H "Authorization: Bearer $tok" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners") || code=000
+          if [ "$code" != 200 ]; then
+            echo "::warning::runner inventory unreadable ($src -> HTTP $code): label check skipped"
+            echo "  grant a token administration:read and store it as RUNNER_ADMIN_TOKEN to switch this on"
+            exit 0
+          fi
+          # If python3 is not on this box, pass with a warning rather than fail:
+          # this job gates the whole workflow, so a missing interpreter must never
+          # read as "your CI is broken".
+          command -v python3 >/dev/null || { echo "::warning::no python3 on this runner: label check skipped"; exit 0; }
+          python3 -c 'import json,sys;R=json.load(open("runners.json"))["runners"];on=[(r["name"],{l["name"] for l in r["labels"]}) for r in R if r["status"]=="online"];print("  online: "+", ".join("%s[%s]"%(n,",".join(sorted(s))) for n,s in on));need=[x.split("+") for x in sys.argv[1].split()];bad=[x for x in need if not any(set(x)<=s for _,s in on)];[print("::error::no online runner answers %s"%("["+",".join(x)+"]")) for x in bad];sys.exit(1 if bad else 0)' "$need"
+
   rust:
     name: Client (Rust)
     # Pinned to the desktop box by asking for `desktop` next to `Linux`. That label
@@ -78,6 +120,7 @@ jobs:
     # warm cache (run 39104747110). It is also the job most likely to wedge the only
     # desktop runner, so the rope is short on purpose.
     timeout-minutes: 25
+    needs: runner-check
     defaults:
       run:
         working-directory: client
@@ -109,6 +152,7 @@ jobs:
     # 25s on the NUC with a warm `_work/_tool` (run 39104747110); 10 minutes covers a
     # cold toolchain download plus `go test -race` on two cores.
     timeout-minutes: 10
+    needs: runner-check
     defaults:
       run:
         working-directory: server
@@ -559,14 +603,15 @@ jobs:
     # with `canary_label` set to a label no runner has (`ghost`) and see which of
     # these two happens:
     #
-    #   1. it fails at `timeout-minutes` — queue time counts against the timeout, so
-    #      the `timeout-minutes` on every job above is also a hard bound on how long
-    #      a missing runner stays invisible, and the failure is dated and greppable.
-    #      That is the outcome to want.
-    #   2. it sits until the 24-hour queue limit — queue time is excluded from the
-    #      timeout, so a missing runner is only ever visible live, and the real fix
-    #      is an availability check using a token that can read /actions/runners
-    #      (this repo's fine-grained PAT gets 403 there), not a timeout.
+    #   1. it fails at `timeout-minutes` — queue time counts against the timeout.
+    #   2. it sits until the 24-hour queue limit — queue time is excluded.
+    #
+    # ANSWERED, 18 Oct 2026 (run 39108537863, canary_label=ghost): it sat 22 minutes
+    # at `timeout-minutes: 5` and never started, and the API kept reporting it as
+    # `queued`. **Queue time is excluded from the timeout — outcome 2.** So the
+    # timeouts on the jobs above bound hangs only, a missing runner is visible only
+    # live, and `runner-check` below is what actually fixes it. Keep this probe for
+    # regressions: if it ever starts failing at 5 minutes, GitHub changed the rule.
     #
     # With the input left empty, the `if` skips this job, so pushes and PRs never
     # see it and nothing about ordinary CI changes.
