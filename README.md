@@ -69,10 +69,17 @@ cd server && go run ./cmd/syncboxd serve
 To sync a folder against it:
 
 ```sh
+# A vault: everything is sealed on the client before it leaves the machine.
 syncbox vault create ~/myvault
 syncbox sync once --server http://127.0.0.1:8080 --vault-id <root-id> \
                   --vault ~/myvault --folder ~/Documents
 syncbox mount ~/myvault /mnt/syncbox --writable
+
+# A sync space: the server keeps the files in the clear so it can index and
+# serve them. Register the space on the server first; the client needs only a
+# folder to sync and a directory of its own for the local index.
+syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
+                  --vault ~/.local/state/syncbox/files --folder ~/Files
 ```
 
 ## Status

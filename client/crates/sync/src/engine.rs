@@ -31,7 +31,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
-use syncbox_crypto::content::{NONCE_LEN, TAG_LEN};
 use syncbox_crypto::names::DirId;
 use syncbox_crypto::ChunkId;
 use syncbox_index::{FileEntry, Index};
@@ -556,7 +555,7 @@ impl<I: Index> Engine<I> {
                         client.upload_chunk(vault_id, id, stored)?;
                         report.chunks_uploaded += 1;
                         report.bytes_uploaded +=
-                            (stored.len() as u64).saturating_sub((NONCE_LEN + TAG_LEN) as u64);
+                            (stored.len() as u64).saturating_sub(self.vault.stored_overhead());
                         Ok(())
                     })?;
             }
@@ -731,7 +730,7 @@ impl<I: Index> Engine<I> {
                         client.upload_chunk(vault_id, id, &stored)?;
                         report.chunks_uploaded += 1;
                         report.bytes_uploaded +=
-                            (stored.len() as u64).saturating_sub((NONCE_LEN + TAG_LEN) as u64);
+                            (stored.len() as u64).saturating_sub(self.vault.stored_overhead());
                     }
                 }
             }
@@ -772,10 +771,12 @@ impl<I: Index> Engine<I> {
 
     /// Maps a revision's `(dir_id, cipher_name)` to a local relative path.
     ///
-    /// A file is placeable if its directory exists locally (so we can decrypt its
-    /// name into that directory), or if we already track a file under that exact
-    /// key and can reuse its path. Otherwise the directory is one a peer created
-    /// that we cannot name from an opaque id, and the file is skipped.
+    /// A sync space decodes the path from its directory id, so a directory a
+    /// peer created appears even though we have never made it locally. A vault
+    /// can only place a file whose directory exists locally (so we can decrypt
+    /// its name into that directory), or whose exact key we already track;
+    /// otherwise the directory is one a peer created that we cannot name from
+    /// an opaque id, and the file is skipped.
     fn resolve_path(
         &self,
         dir_map: &HashMap<DirId, String>,
@@ -783,6 +784,10 @@ impl<I: Index> Engine<I> {
         dir_id: &DirId,
         cipher_name: &str,
     ) -> Result<Option<String>> {
+        if let Some(rel_dir) = self.vault.dir_id_to_rel(dir_id) {
+            let name = self.vault.plaintext_name(dir_id, cipher_name)?;
+            return Ok(Some(join_rel(&rel_dir, &name)));
+        }
         if let Some(rel_dir) = dir_map.get(dir_id) {
             let name = self.vault.plaintext_name(dir_id, cipher_name)?;
             return Ok(Some(join_rel(rel_dir, &name)));

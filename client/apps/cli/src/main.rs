@@ -2,13 +2,15 @@
 //!
 //! This binary is the sync engine without a window. It exists for two reasons: it
 //! drives the end-to-end tests that would otherwise need a desktop build, and it
-//! gives someone running a vault on a server a way in that is not a GUI.
+//! gives someone running a space on a server a way in that is not a GUI.
 //!
 //! The subcommand surface is the one the desktop app will call into. `vault create`
 //! and `vault unlock` do the password/Argon2id/key-wrap ceremony; `sync once`
-//! unlocks a vault, opens the local SQLite index, and runs one full push/pull pass
-//! against a live server. Watch mode (`sync watch`) is a loop over `sync once` and
-//! is the one command still open in this milestone.
+//! opens the local SQLite index and runs one full push/pull pass against a live
+//! server. It reads the space's mode from the server's registry: a **vault** is
+//! unlocked with the password and sealed on the client, a **sync space** holds no
+//! keys and is sent in the clear. Watch mode (`sync watch`) is a loop over
+//! `sync once` and is the one command still open in this milestone.
 
 #[cfg(feature = "mount")]
 mod fusefs;
@@ -23,7 +25,8 @@ use syncbox_crypto::kdf::Params;
 use syncbox_crypto::names::DirId;
 use syncbox_index::{Index as _, SqliteIndex};
 use syncbox_sync::{Engine, SyncReport, Vault};
-use syncbox_transport::{Client, TransportError, UreqHttp};
+use syncbox_transport::dto::SpaceMode;
+use syncbox_transport::{Client, Http, TransportError, UreqHttp};
 use syncbox_vault::{VaultConfig, CONFIG_FILE_NAME, CURRENT_VERSION};
 
 #[derive(Parser)]
@@ -184,17 +187,20 @@ enum SyncCommand {
         /// Server origin, e.g. `https://sync.example`.
         #[arg(long)]
         server: String,
-        /// The server's id for the vault to sync into. Omit it to let the
-        /// server decide: with exactly one vault, that one; with several,
-        /// name the one you mean. Cannot be combined with `--vault-name`.
-        #[arg(long, conflicts_with = "vault_name")]
+        /// The server's id for the space to sync into; `--space-id` is an
+        /// alias. Omit it to let the server decide: with exactly one space,
+        /// that one; with several, name the one you mean. Cannot be combined
+        /// with `--vault-name`.
+        #[arg(long, visible_alias = "space-id", conflicts_with = "vault_name")]
         vault_id: Option<String>,
-        /// The operator's name for the vault, resolved against the server's
-        /// registry — the pairing story: set a vault up on the server, point
+        /// The operator's name for the space, resolved against the server's
+        /// registry — the pairing story: set a space up on the server, point
         /// this client at `--server` and `--vault-name`.
         #[arg(long)]
         vault_name: Option<String>,
-        /// Directory holding `vault.json` (the encrypted keys).
+        /// Directory holding `vault.json` (the encrypted keys) for a vault, or
+        /// the local index for a sync space. A sync space has no keys, so no
+        /// header is needed.
         #[arg(long)]
         vault: PathBuf,
         /// The plaintext folder to keep in sync with the vault. Omit for a folderless
@@ -317,33 +323,45 @@ fn unlock(path: &Path, password: &str) -> Result<()> {
 
 /// Which vault on the server does this client mean?
 ///
-/// Three doors, deliberately. `--vault-id` is the expert's door and needs no
-/// lookup, so an old server keeps working. `--vault-name` is the pairing
-/// story: whatever the operator called the vault in the console is what the
-/// human types here. And with neither, a server holding exactly one vault
-/// picks it — the home-server case, where "point the client at the URL" is
-/// the whole configuration. A multi-vault server refuses to guess and prints
-/// the menu instead.
-fn resolve_vault_id(
-    client: &mut Client<UreqHttp>,
+/// Resolves which space to sync and the mode its registry entry declares.
+///
+/// Three doors, deliberately. `--vault-id` (alias `--space-id`) is the expert's
+/// door: the id needs no name lookup. `--vault-name` is the pairing story:
+/// whatever the operator called the space in the console is what the human
+/// types here. And with neither, a server holding exactly one live space picks
+/// it — the home-server case, where "point the client at the URL" is the whole
+/// configuration. A multi-space server refuses to guess and prints the menu.
+///
+/// The mode comes from the registry so a sync space is not sealed by mistake.
+/// A server that predates the registry, and a space it has no entry for, both
+/// read as a vault: that is the encrypted world they always were, and guessing
+/// plaintext from an unknown id is the one unrecoverable mistake here.
+fn resolve_space<H: Http>(
+    client: &mut Client<H>,
     server: &str,
     vault_id: Option<&str>,
     vault_name: Option<&str>,
-) -> Result<String> {
-    if let Some(id) = vault_id {
-        return Ok(id.to_owned());
-    }
-
+) -> Result<(String, SpaceMode)> {
     let listing = match client.vaults() {
-        Ok(listing) => listing,
-        Err(TransportError::Refused { code, .. }) if code == "not_found" => {
-            bail!("{server} does not offer a vault registry; name the vault with --vault-id")
-        }
+        Ok(listing) => Some(listing),
+        Err(TransportError::Refused { code, .. }) if code == "not_found" => None,
         Err(e) => {
             return Err(anyhow::anyhow!(
-                "asking {server} for its vaults failed: {e}"
+                "asking {server} for its spaces failed: {e}"
             ))
         }
+    };
+
+    if let Some(id) = vault_id {
+        let mode = listing
+            .as_ref()
+            .and_then(|listing| listing.vaults.iter().find(|v| v.id == id))
+            .map_or(SpaceMode::Vault, |v| v.mode.effective());
+        return Ok((id.to_owned(), mode));
+    }
+
+    let Some(listing) = listing else {
+        bail!("{server} does not offer a space registry; name the space with --vault-id")
     };
 
     // The label a human recognises: name when it has one, id always.
@@ -361,7 +379,7 @@ fn resolve_vault_id(
             0 => {
                 let known: Vec<String> = listing.vaults.iter().map(label).collect();
                 bail!(
-                    "no vault named {wanted:?} on {server}; it knows: {}",
+                    "no space named {wanted:?} on {server}; it knows: {}",
                     if known.is_empty() {
                         "none yet".to_owned()
                     } else {
@@ -370,28 +388,59 @@ fn resolve_vault_id(
                 );
             }
             1 if matching[0].archived => {
-                bail!("vault {wanted:?} is archived on {server}; un-archive it there first");
+                bail!("space {wanted:?} is archived on {server}; un-archive it there first");
             }
-            1 => Ok(matching[0].id.clone()),
-            n => bail!("{server} has {n} vaults named {wanted:?}; say which by --vault-id"),
+            1 => Ok((matching[0].id.clone(), matching[0].mode.effective())),
+            n => bail!("{server} has {n} spaces named {wanted:?}; say which by --vault-id"),
         };
     }
 
     let live: Vec<_> = listing.vaults.iter().filter(|v| !v.archived).collect();
     match live.len() {
-        0 => bail!("{server} has no vaults to sync yet; set one up on the server first"),
+        0 => bail!("{server} has no spaces to sync yet; set one up on the server first"),
         1 => {
-            println!("using the server's only vault: {}", label(live[0]));
-            Ok(live[0].id.clone())
+            println!("using the server's only space: {}", label(live[0]));
+            Ok((live[0].id.clone(), live[0].mode.effective()))
         }
         n => {
             let menu: Vec<String> = live.iter().map(|v| label(v)).collect();
             bail!(
-                "{server} has {n} vaults — say which you mean with --vault-name or --vault-id: {}",
+                "{server} has {n} spaces — say which you mean with --vault-name or --vault-id: {}",
                 menu.join(", ")
             );
         }
     }
+}
+
+/// Whether `candidate` is `parent` or sits under it, comparing the two places
+/// rather than the two spellings.
+///
+/// Both paths are made absolute and lexically normalised (`.` dropped, `..`
+/// popped), so `./index.db` and `/home/u/Files/index.db` compare as the same
+/// place when the working directory is `/home/u/Files`.
+fn path_is_inside(candidate: &Path, parent: &Path) -> bool {
+    absolute_normalized(candidate).starts_with(absolute_normalized(parent))
+}
+
+/// The absolute, lexically normalised form of `path`. No filesystem access, so
+/// it works for a path that does not exist yet.
+fn absolute_normalized(path: &Path) -> PathBuf {
+    let base = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut out = PathBuf::new();
+    for component in base.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -414,21 +463,43 @@ fn sync_once(
     client
         .token(password)
         .map_err(|e| anyhow::anyhow!("authentication against {server} failed: {e}"))?;
-    let vault_id = resolve_vault_id(&mut client, server, vault_id, vault_name)?;
+    let (vault_id, mode) = resolve_space(&mut client, server, vault_id, vault_name)?;
 
-    let keys =
-        syncbox_vault::unlock(vault_dir, password).context("could not unlock the vault to sync")?;
     // Parse the gc spec before anything expensive: a typo should fail the
     // command at once, not after a full sync pass has already run.
     let gc_policy = parse_gc_spec(gc_spec)?;
     let index_path = index.unwrap_or_else(|| vault_dir.join("index.db"));
+    // The folder scan pushes every file it finds, so an index inside the synced
+    // folder would be uploaded as a peer's file — and re-uploaded every pass as
+    // it changes. A vault keeps its state in `--vault` beside its header; a sync
+    // space has no header to make that obvious, so refuse the collision out loud.
+    if let Some(folder) = folder {
+        if path_is_inside(&index_path, folder) {
+            bail!(
+                "the local index {} is inside the synced folder {}; keep them apart \
+                 (pass --index outside the folder, or a separate --vault directory)",
+                index_path.display(),
+                folder.display()
+            );
+        }
+    }
     let index = SqliteIndex::open(&index_path)
         .map_err(|e| anyhow::anyhow!("opening index at {}: {e}", index_path.display()))?;
 
     // No folder means folderless: the vault directory stands in for the plaintext
     // root, which the engine then never reads or writes.
     let plaintext_root = folder.unwrap_or(vault_dir);
-    let vault = Vault::new(keys, vault_id, plaintext_root.to_path_buf())?;
+    // The registry's mode chooses the codec. A vault needs its header unlocked;
+    // a sync space holds no keys, so nothing here reads `vault.json` — and the
+    // password only ever authenticated the server above.
+    let vault = match mode {
+        SpaceMode::Sync => Vault::sync_space(vault_id, plaintext_root.to_path_buf()),
+        _ => {
+            let keys = syncbox_vault::unlock(vault_dir, password)
+                .context("could not unlock the vault to sync")?;
+            Vault::new(keys, vault_id, plaintext_root.to_path_buf())?
+        }
+    };
 
     // Folderless always has a store — it is the only content — defaulting to
     // `<vault>/blobs` exactly where `syncbox mount` looks. With a folder, a store is
@@ -880,6 +951,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use syncbox_transport::{Http, Request, Response};
 
     #[test]
     fn the_gc_spec_parses_off_and_spans() {
@@ -939,5 +1011,81 @@ mod tests {
         let date = today();
         assert_eq!(date.len(), 10, "{date}");
         assert!(date.contains('-'));
+    }
+
+    #[test]
+    fn an_index_inside_the_synced_folder_is_detected() {
+        let files = Path::new("/home/u/Files");
+        assert!(path_is_inside(Path::new("/home/u/Files/index.db"), files));
+        assert!(path_is_inside(
+            Path::new("/home/u/Files/sub/index.db"),
+            files
+        ));
+        assert!(!path_is_inside(Path::new("/home/u/state/index.db"), files));
+        assert!(
+            !path_is_inside(Path::new("/home/u/Files2/index.db"), files),
+            "a shared name prefix is not containment"
+        );
+        // Relative and dotted spellings resolve to the same place.
+        assert!(path_is_inside(Path::new("./index.db"), Path::new(".")));
+        assert!(path_is_inside(
+            Path::new("Files/../Files/index.db"),
+            Path::new("Files")
+        ));
+    }
+
+    /// Answers `GET /vaults` from a fixed body; nothing else is expected.
+    struct Registry(&'static str);
+
+    impl Http for Registry {
+        fn send(&mut self, request: Request) -> syncbox_transport::Result<Response> {
+            assert!(
+                request.path.ends_with("/vaults"),
+                "unexpected request {}",
+                request.path
+            );
+            Ok(Response {
+                status: 200,
+                body: self.0.as_bytes().to_vec(),
+            })
+        }
+    }
+
+    fn registry(body: &'static str) -> Client<Registry> {
+        let mut client = Client::new("http://srv", Registry(body));
+        // Set the bearer directly: `resolve_space` only reads the registry, and
+        // the token exchange is not what is under test.
+        client.token = "tok".into();
+        client
+    }
+
+    #[test]
+    fn resolve_space_takes_the_mode_from_the_registry() {
+        let mut client = registry(
+            r#"{"vaults":[
+                {"id":"space-sync","name":"Files","mode":"sync","archived":false},
+                {"id":"space-vault","name":"Private","mode":"vault","archived":false}
+            ]}"#,
+        );
+        let (id, mode) = resolve_space(&mut client, "http://srv", None, Some("Files")).unwrap();
+        assert_eq!(id, "space-sync");
+        assert_eq!(mode, SpaceMode::Sync, "a sync space is read as sync");
+
+        let (id, mode) = resolve_space(&mut client, "http://srv", None, Some("Private")).unwrap();
+        assert_eq!(id, "space-vault");
+        assert_eq!(mode, SpaceMode::Vault);
+    }
+
+    #[test]
+    fn an_id_the_registry_does_not_know_stays_a_vault() {
+        let mut client = registry(
+            r#"{"vaults":[{"id":"space-sync","name":"Files","mode":"sync","archived":false}]}"#,
+        );
+        // Even the expert door reads the mode, so a sync space is not sealed.
+        let (_, mode) = resolve_space(&mut client, "http://srv", Some("space-sync"), None).unwrap();
+        assert_eq!(mode, SpaceMode::Sync);
+        // An unregistered (or predating) id is the encrypted world it always was.
+        let (_, mode) = resolve_space(&mut client, "http://srv", Some("ghost"), None).unwrap();
+        assert_eq!(mode, SpaceMode::Vault);
     }
 }

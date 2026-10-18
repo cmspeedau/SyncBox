@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 base64.workspace = true
+sha2.workspace = true
 syncbox-crypto.workspace = true
 syncbox-index.workspace = true
 syncbox-transport.workspace = true

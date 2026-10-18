@@ -32,6 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use syncbox_index::{Index, SqliteIndex};
 use syncbox_sync::{Engine, SyncReport, Vault};
+use syncbox_transport::dto::SpaceMode;
 use syncbox_transport::{Client, Http, TransportError};
 
 mod worker;
@@ -124,8 +125,11 @@ pub enum SyncEvent {
 pub struct Config {
     /// Server origin, e.g. `https://sync.example`.
     pub server: String,
-    /// The server's id for the vault being synced.
+    /// The server's id for the space being synced.
     pub vault_id: String,
+    /// What the space stores: `vault` (encrypted) or `sync` (cleartext). The
+    /// registry's answer, carried here so a session builds the right codec.
+    pub mode: SpaceMode,
     /// Directory holding `vault.json` (the wrapped keys).
     pub vault_dir: PathBuf,
     /// The plaintext folder kept in sync with the vault.
@@ -350,52 +354,86 @@ impl<I: Index> Agent<I> {
 }
 
 impl Agent<SqliteIndex> {
-    /// Unlocks the vault in `config` and opens its durable index, returning a
+    /// Opens the space in `config` and its durable index, returning a
     /// ready-to-sync session.
+    ///
+    /// A vault unlocks with `password`. A sync space holds no keys, so nothing
+    /// is unlocked: the password is accepted (the caller still uses it to
+    /// authenticate to the server) and ignored here.
     ///
     /// Does not contact the server. Authenticate a [`Client`] separately and pass
     /// it to [`Agent::sync_once`].
     ///
     /// # Errors
     ///
-    /// [`AgentError::Vault`] for a wrong password or missing header;
-    /// [`AgentError::Index`] if the database cannot be opened.
+    /// [`AgentError::Vault`] for a wrong password or missing header in vault
+    /// mode; [`AgentError::Index`] if the database cannot be opened.
     pub fn unlock(config: &Config, password: &str) -> Result<Self> {
-        let keys = syncbox_vault::unlock(&config.vault_dir, password)?;
         let index = SqliteIndex::open(config.index_path())?;
-        let vault = Vault::new(keys, config.vault_id.clone(), config.folder.clone())?;
-        Ok(Self::from_engine(Engine::new(index, vault)))
+        let space = match config.mode.effective() {
+            SpaceMode::Sync => Vault::sync_space(config.vault_id.clone(), config.folder.clone()),
+            _ => Vault::new(
+                syncbox_vault::unlock(&config.vault_dir, password)?,
+                config.vault_id.clone(),
+                config.folder.clone(),
+            )?,
+        };
+        Ok(Self::from_engine(Engine::new(index, space)))
     }
 
-    /// Unlocks `vault_dir` once, then opens one independent session per folder.
+    /// Opens one independent session per folder for the space `vault_id` in
+    /// `mode`.
     ///
     /// A vault can live in as many folders as the user wants; each folder is its
     /// own copy with its own index, converging with the others through the server
     /// exactly as two machines would. Unlocking once means a vault in five
-    /// folders pays Argon2id once, not five times.
+    /// folders pays Argon2id once, not five times. A sync space has no keys at
+    /// all, so nothing is unlocked and the password is ignored.
     ///
     /// Does not contact the server, as [`Agent::unlock`].
     ///
     /// # Errors
     ///
-    /// [`AgentError::Vault`] for a wrong password or missing header;
-    /// [`AgentError::Index`] if a folder's database cannot be opened. A failure
-    /// part-way through leaves the earlier sessions dropped, so no key outlives
-    /// the call on the error path.
+    /// [`AgentError::Vault`] for a wrong password or missing header in vault
+    /// mode; [`AgentError::Index`] if a folder's database cannot be opened. A
+    /// failure part-way through leaves the earlier sessions dropped, so no key
+    /// outlives the call on the error path.
+    pub fn open_folders(
+        vault_dir: &Path,
+        vault_id: &str,
+        mode: SpaceMode,
+        password: &str,
+        folders: &[Folder],
+    ) -> Result<Vec<Self>> {
+        let keys = match mode.effective() {
+            SpaceMode::Sync => None,
+            _ => Some(syncbox_vault::unlock(vault_dir, password)?),
+        };
+        let mut sessions = Vec::with_capacity(folders.len());
+        for folder in folders {
+            let index = SqliteIndex::open(&folder.index)?;
+            let space = match &keys {
+                Some(keys) => Vault::new(keys.clone(), vault_id.to_owned(), folder.path.clone())?,
+                None => Vault::sync_space(vault_id.to_owned(), folder.path.clone()),
+            };
+            sessions.push(Self::from_engine(Engine::new(index, space)));
+        }
+        Ok(sessions)
+    }
+
+    /// Unlocks `vault_dir` once, then opens one independent session per folder —
+    /// the vault-mode spelling of [`Agent::open_folders`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Agent::open_folders`].
     pub fn unlock_folders(
         vault_dir: &Path,
         vault_id: &str,
         password: &str,
         folders: &[Folder],
     ) -> Result<Vec<Self>> {
-        let keys = syncbox_vault::unlock(vault_dir, password)?;
-        let mut sessions = Vec::with_capacity(folders.len());
-        for folder in folders {
-            let index = SqliteIndex::open(&folder.index)?;
-            let vault = Vault::new(keys.clone(), vault_id.to_owned(), folder.path.clone())?;
-            sessions.push(Self::from_engine(Engine::new(index, vault)));
-        }
-        Ok(sessions)
+        Self::open_folders(vault_dir, vault_id, SpaceMode::Vault, password, folders)
     }
 }
 
@@ -569,6 +607,7 @@ mod tests {
         let config = Config {
             server: "https://srv".into(),
             vault_id: "vault-1".into(),
+            mode: SpaceMode::Vault,
             vault_dir: dir.path().to_path_buf(),
             folder: dir.path().join("files"),
             index: None,
@@ -589,6 +628,7 @@ mod tests {
         let override_config = Config {
             server: "https://srv".into(),
             vault_id: "v".into(),
+            mode: SpaceMode::Vault,
             vault_dir: PathBuf::from("/vault"),
             folder: PathBuf::from("/files"),
             index: Some(PathBuf::from("/elsewhere/index.db")),
@@ -665,6 +705,32 @@ mod tests {
 
         // One wrong password is refused before any session opens.
         assert!(Agent::unlock_folders(home.path(), "vault-1", "wrong", &folders).is_err());
+    }
+
+    #[test]
+    fn a_sync_space_opens_without_a_vault_header_or_password() {
+        // The sync path at the agent's edge: no `vault.json` to unlock, one
+        // session per folder, and the password is never consulted here.
+        let dir = tempfile::tempdir().unwrap();
+        let folders = vec![Folder {
+            path: dir.path().join("Files"),
+            index: dir.path().join("index-Files.db"),
+        }];
+
+        let sessions =
+            Agent::open_folders(dir.path(), "space-1", SpaceMode::Sync, "unused", &folders)
+                .expect("a sync space needs no header");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].vault_id(), "space-1");
+        assert_eq!(sessions[0].state(), SyncState::Idle);
+        assert_eq!(sessions[0].folder(), folders[0].path);
+
+        // The vault spelling still refuses a directory with no header, so the
+        // two modes are not quietly interchangeable.
+        assert!(
+            Agent::open_folders(dir.path(), "space-1", SpaceMode::Vault, "unused", &folders)
+                .is_err()
+        );
     }
 
     fn scripted(replies: Vec<(u16, String)>) -> FakeServer {

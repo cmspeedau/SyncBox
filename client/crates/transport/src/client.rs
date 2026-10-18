@@ -432,7 +432,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    use crate::dto::{Revision, ServerVault, VaultListing};
+    use crate::dto::{Revision, ServerVault, SpaceMode, VaultListing};
 
     /// Records each request and answers from a queued list, so a test can pin both
     /// what the client sent and how it read the reply.
@@ -513,12 +513,14 @@ mod tests {
                 ServerVault {
                     id: "ABCDEFGH".into(),
                     name: "Photos".into(),
+                    mode: SpaceMode::Vault,
                     location: "Syncbox/Photos".into(),
                     archived: false,
                 },
                 ServerVault {
                     id: "QRSTUVWX".into(),
                     name: String::new(),
+                    mode: SpaceMode::Sync,
                     location: String::new(),
                     archived: true,
                 },

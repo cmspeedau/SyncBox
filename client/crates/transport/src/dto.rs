@@ -47,6 +47,46 @@ pub struct VaultListing {
     pub vaults: Vec<ServerVault>,
 }
 
+/// What a space stores, as its registry entry says.
+///
+/// A `vault` is encrypted on the client: the server holds opaque chunks and can
+/// read neither a name nor a byte. A `sync` space is ordinary files — names and
+/// content are stored as they are, so the server can index, browse and serve
+/// them. The two share the commit protocol; only the codec differs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpaceMode {
+    /// Encrypted on the client; the server is a blind store. This is also what
+    /// a server that predates the field means, and what an unknown future mode
+    /// falls back to: an older client must never start writing plaintext
+    /// because it misread a newer server.
+    #[default]
+    Vault,
+    /// Cleartext on the server, protected in flight by TLS.
+    Sync,
+    /// A mode this build does not know. Never sent; read as [`SpaceMode::Vault`]
+    /// by [`SpaceMode::effective`].
+    #[serde(other)]
+    Unknown,
+}
+
+impl SpaceMode {
+    /// The mode this build can honour: an unknown one is treated as a vault.
+    #[must_use]
+    pub fn effective(self) -> Self {
+        match self {
+            Self::Sync => Self::Sync,
+            Self::Vault | Self::Unknown => Self::Vault,
+        }
+    }
+
+    /// Whether the space's content is encrypted on the client.
+    #[must_use]
+    pub fn is_encrypted(self) -> bool {
+        self.effective() == Self::Vault
+    }
+}
+
 /// One entry of a [`VaultListing`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerVault {
@@ -54,6 +94,10 @@ pub struct ServerVault {
     pub id: String,
     /// The operator's label; empty while the vault is unnamed.
     pub name: String,
+    /// What the space stores. Older servers predate the field and send
+    /// nothing, which reads as [`SpaceMode::Vault`].
+    #[serde(default)]
+    pub mode: SpaceMode,
     /// Where the vault's files land on a client, relative to its home
     /// directory (`Syncbox/Photos`); empty when the operator left it to each
     /// client. A `~`-prefixed or absolute value is used as typed. Older
@@ -285,6 +329,32 @@ mod tests {
         })
         .expect("serializable");
         assert!(!json.contains("path"));
+    }
+
+    #[test]
+    fn a_space_mode_reads_as_vault_when_the_server_predates_it() {
+        // An older server sends no `mode`; the only correct reading of that
+        // silence is the encrypted world it knows.
+        let json = r#"{"vaults":[{"id":"v","name":"n","location":"","archived":false}]}"#;
+        let listing: VaultListing = serde_json::from_str(json).expect("listing");
+        assert_eq!(listing.vaults[0].mode, SpaceMode::Vault);
+        assert!(listing.vaults[0].mode.is_encrypted());
+    }
+
+    #[test]
+    fn a_sync_mode_round_trips_and_an_unknown_mode_falls_back_to_vault() {
+        let json = r#"{"vaults":[
+            {"id":"s","name":"Files","mode":"sync","archived":false},
+            {"id":"x","name":"Future","mode":"archive","archived":false}
+        ]}"#;
+        let listing: VaultListing = serde_json::from_str(json).expect("listing");
+        assert_eq!(listing.vaults[0].mode, SpaceMode::Sync);
+        assert!(!listing.vaults[0].mode.is_encrypted());
+        assert_eq!(listing.vaults[1].mode, SpaceMode::Unknown);
+        assert!(
+            listing.vaults[1].mode.is_encrypted(),
+            "a mode this build does not know must not become plaintext"
+        );
     }
 
     #[test]
