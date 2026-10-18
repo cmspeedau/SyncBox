@@ -124,7 +124,10 @@ ciphertext — and would answer `403` if you asked it to try. The Snapshots pane
 takes a snapshot on demand, verifies sealed ones, and sets the snapshot
 **schedule** on the running server — including switching it off; a change there
 applies live, while `SYNCBOX_BACKUP_SCHEDULE` in the environment stays the value
-a restart returns to.
+a restart returns to. An **About this server** list under the live stats reads
+back the facts the environment set — storage backend, data directory, backup
+target, share-link lifetime, recycle retention — so they are legible in the
+browser without grepping the process.
 
 ```sh
 # buy a token with the password
@@ -159,6 +162,7 @@ The surface, all under a bearer header:
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
 | `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
+| `GET /admin/about` | a read-only summary for the console: version, storage backend, data directory, backup target, share TTL, recycle retention (authenticated — the unauthenticated name-card and `healthz` must not name these) |
 
 Every non-2xx reply is `{"code": …, "reason": …}`. PUTs are
 content-addressed: the ID *is* the content's identity, so a re-upload of

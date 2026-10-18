@@ -141,6 +141,11 @@ func NewManager(tgt target.Target, src Source, serverVersion string) *Manager {
 	return &Manager{tgt: tgt, src: src, now: time.Now, version: serverVersion}
 }
 
+// Location describes where snapshots go, for the operator's eyes (the console's
+// About panel and logs). It is the target's own safe label — a directory or an
+// s3:// URL — and never the credentials that reach it.
+func (m *Manager) Location() string { return m.tgt.Location() }
+
 // SetPostHook installs a function that runs after every snapshot this manager
 // seals. A snapshot is committed the moment its seal lands, so the hook is a
 // notification, not a step: its outcome never changes the result of Create,
