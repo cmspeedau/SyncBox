@@ -190,6 +190,30 @@ func TestChangeRotatesAStoredPassword(t *testing.T) {
 	}
 }
 
+func TestSourceNamesTheAuthority(t *testing.T) {
+	none, _ := NewAuthority("", "")
+	if got := none.Source(); got != "unset" {
+		t.Errorf("uninitialized Source = %q, want unset", got)
+	}
+
+	env, _ := NewAuthority("", "the-env-password")
+	if got := env.Source(); got != "environment" {
+		t.Errorf("env Source = %q, want environment", got)
+	}
+
+	dir := t.TempDir()
+	stored, _ := NewAuthority(filepath.Join(dir, "password"), "")
+	if got := stored.Source(); got != "unset" {
+		t.Errorf("fresh-dir Source = %q, want unset before setup", got)
+	}
+	if err := stored.Setup("a-long-enough-secret"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if got := stored.Source(); got != "stored" {
+		t.Errorf("after setup Source = %q, want stored", got)
+	}
+}
+
 func TestChangeRefusesEnvAndUninitialized(t *testing.T) {
 	env, _ := NewAuthority("", "the-env-password")
 	if err := env.Change("the-env-password", "something-else-12"); !errors.Is(err, ErrEnvPassword) {

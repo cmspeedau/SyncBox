@@ -164,7 +164,7 @@ The surface, all under a bearer header:
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
 | `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); `GET` also carries `next_due_unix` (when the next snapshot is due) and `boot_interval_seconds`/`boot_schedule`/`drifted` (the cadence the environment set at boot, and whether the live one differs from it); a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
-| `GET /admin/about` | a read-only summary for the console: version, storage backend, data directory, backup target, share TTL, recycle retention, session-token lifetime, the rate-limit posture (`rate_limit_rps`/`rate_burst`, omitted when unlimited) and whether commits to unregistered vaults are refused (`require_registered_vaults`) — authenticated, because the unauthenticated name-card and `healthz` must not name these |
+| `GET /admin/about` | a read-only summary for the console: version, storage backend, data directory, backup target, share TTL, recycle retention, session-token lifetime, the rate-limit posture (`rate_limit_rps`/`rate_burst`, omitted when unlimited), whether commits to unregistered vaults are refused (`require_registered_vaults`), and how the sign-in password is managed (`password_source`: `environment`/`stored`/`unset`) — authenticated, because the unauthenticated name-card and `healthz` must not name these |
 
 Every non-2xx reply is `{"code": …, "reason": …}`. PUTs are
 content-addressed: the ID *is* the content's identity, so a re-upload of

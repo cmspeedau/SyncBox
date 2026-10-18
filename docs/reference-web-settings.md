@@ -10,8 +10,8 @@ Status: design reference for the web frontend. Two server pieces already exist
 and the embedded console drives them: the snapshot **schedule**
 (`GET/PUT /admin/backups/config`, Snapshots panel) and the read-only **About
 server** facts (`GET /admin/about` — version, storage backend, data dir, backup
-target, share TTL, recycle retention, session-token lifetime, rate limit, and the
-unknown-vault commit gate — shown under the Server stats). The web
+target, share TTL, recycle retention, session-token lifetime, rate limit, the
+unknown-vault commit gate, and how the password is managed — shown under the Server stats). The web
 page itself, the vault-key change, and Set-up-S3 are not built.
 
 ## Shape

@@ -84,6 +84,10 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 	if !body.RequireRegistered {
 		t.Error("SetRequireRegisteredVaults(true) was not reported")
 	}
+	// testPassword arrives as the env password, so the source reads environment.
+	if body.PasswordSource != "environment" {
+		t.Errorf("PasswordSource = %q, want environment", body.PasswordSource)
+	}
 }
 
 func TestAboutWithNoBackupTarget(t *testing.T) {

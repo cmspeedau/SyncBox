@@ -119,6 +119,24 @@ func (a *Authority) Initialized() bool {
 	return a.mode != modeUninitialized
 }
 
+// Source names how the server's password is managed, for the read-only About
+// panel: "environment" (it comes from SYNCBOX_PASSWORD, so the console cannot
+// rotate it), "stored" (an Argon2id hash the console set, which survives a
+// restart), or "unset" (no credential yet, first run pending). It names the
+// source, never the secret.
+func (a *Authority) Source() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch a.mode {
+	case modeEnv:
+		return "environment"
+	case modeStored:
+		return "stored"
+	default:
+		return "unset"
+	}
+}
+
 // Verify checks a guess against whichever credential is in force. An
 // uninitialized authority can never say yes: there is no password to match.
 func (a *Authority) Verify(guess string) bool {

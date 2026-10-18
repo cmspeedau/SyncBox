@@ -33,6 +33,10 @@ type aboutBody struct {
 	RateLimitRPS      float64 `json:"rate_limit_rps,omitempty"`
 	RateBurst         int     `json:"rate_burst,omitempty"`
 	RequireRegistered bool    `json:"require_registered_vaults"`
+	// PasswordSource names how the sign-in credential is managed — "environment",
+	// "stored", or "unset" — so an operator can tell whether the console's change
+	// password persists or whether SYNCBOX_PASSWORD owns it. Never the secret.
+	PasswordSource string `json:"password_source"`
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
@@ -48,6 +52,7 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 		RecycleDays:       s.recycleDays,
 		TokenTTLSeconds:   int(s.issuer.TTL() / time.Second),
 		RequireRegistered: s.requireRegisteredVaults,
+		PasswordSource:    s.creds.Source(),
 	}
 	if s.rateLimit > 0 {
 		body.RateLimitRPS = s.rateLimit
