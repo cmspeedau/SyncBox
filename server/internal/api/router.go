@@ -67,7 +67,12 @@ type Server struct {
 	storage string
 	hub     *hub
 	limiter *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
-	now     func() time.Time
+	// rateLimit and rateBurst are the numbers handed to SetRateLimit, kept so the
+	// About summary can name the throttle posture a deployment chose; a zero rate
+	// means unlimited. SetRateLimit is the only writer.
+	rateLimit float64
+	rateBurst int
+	now       func() time.Time
 	// shareTTL is the longest a share link stays valid. A mint may ask for a
 	// shorter life; nothing may ask for a longer one.
 	shareTTL time.Duration
@@ -120,6 +125,14 @@ func NewWithAuthority(st store.Store, backups *backup.Manager, issuer *auth.Issu
 // part of what a server is built over — a zero rate disables it, which is also
 // the default, so a single-user server on loopback runs unthrottled.
 func (s *Server) SetRateLimit(rate float64, burst int) {
+	// Keep the raw numbers so the About summary can echo the posture. Mirror the
+	// limiter's own floor (a burst below 1 means 1) so what we report is what it
+	// actually enforces; a zero rate is unlimited and needs no burst to show.
+	s.rateLimit = rate
+	if rate > 0 && burst < 1 {
+		burst = 1
+	}
+	s.rateBurst = burst
 	s.limiter = ratelimit.New(rate, burst)
 }
 

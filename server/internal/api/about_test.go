@@ -47,6 +47,8 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 		s.SetDeployment("/var/lib/syncbox", "SQLite")
 		s.SetShareTTL(24 * time.Hour)
 		s.SetRecycleDays(30)
+		s.SetRateLimit(5, 10)
+		s.SetRequireRegisteredVaults(true)
 	})
 
 	var body aboutBody
@@ -73,6 +75,15 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 	if body.BackupTarget != tgt.Location() {
 		t.Errorf("BackupTarget = %q, want the target location %q", body.BackupTarget, tgt.Location())
 	}
+	if body.TokenTTLSeconds != 3600 {
+		t.Errorf("TokenTTLSeconds = %d, want 3600 (the 1h issuer TTL)", body.TokenTTLSeconds)
+	}
+	if body.RateLimitRPS != 5 || body.RateBurst != 10 {
+		t.Errorf("rate limit = %g/%d, want 5 req/s burst 10", body.RateLimitRPS, body.RateBurst)
+	}
+	if !body.RequireRegistered {
+		t.Error("SetRequireRegisteredVaults(true) was not reported")
+	}
 }
 
 func TestAboutWithNoBackupTarget(t *testing.T) {
@@ -90,6 +101,16 @@ func TestAboutWithNoBackupTarget(t *testing.T) {
 	// Unset deployment facts read back empty rather than fabricating a location.
 	if body.DataDir != "" || body.Storage != "" {
 		t.Errorf("deployment facts leaked a default: dir=%q storage=%q", body.DataDir, body.Storage)
+	}
+	// The default posture: a 1h session, no throttle, unknown vaults accepted.
+	if body.TokenTTLSeconds != 3600 {
+		t.Errorf("TokenTTLSeconds = %d, want 3600 (issuer default)", body.TokenTTLSeconds)
+	}
+	if body.RateLimitRPS != 0 {
+		t.Errorf("RateLimitRPS = %g, want 0 (unlimited by default)", body.RateLimitRPS)
+	}
+	if body.RequireRegistered {
+		t.Error("commits to unknown vaults should be accepted by default")
 	}
 }
 
