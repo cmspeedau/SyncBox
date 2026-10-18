@@ -342,6 +342,7 @@ function renderAbout(body) {
       ["Deleted files kept", about.recycle_days > 0 ? about.recycle_days + " days" : "until purged by hand"],
       ["Request rate limit", about.rate_limit_rps > 0 ? about.rate_limit_rps + " req/s (burst " + about.rate_burst + ")" : "unlimited"],
       ["Commits to unknown vaults", about.require_registered_vaults ? "refused" : "accepted"],
+      ["Server password", about.password_source === "stored" ? "stored — set in the console, survives restarts" : about.password_source === "environment" ? "from SYNCBOX_PASSWORD — change it in the environment" : "not set up"],
     ]), { id: "about" })
   );
 }
