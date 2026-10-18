@@ -221,7 +221,9 @@ func snapshotEvery(ctx context.Context, manager *backup.Manager, sched *backup.S
 	for {
 		every := sched.Every()
 		if every <= 0 {
-			// Off: park until the cadence changes or the server stops, then re-read.
+			// Off: nothing is pending, then park until the cadence changes or the
+			// server stops, and re-read on wake.
+			sched.Arm(time.Time{})
 			select {
 			case <-ctx.Done():
 				return
@@ -231,6 +233,9 @@ func snapshotEvery(ctx context.Context, manager *backup.Manager, sched *backup.S
 		}
 
 		timer := time.NewTimer(every)
+		// Tell the server when this wait is meant to land, so the console can show
+		// "next in …". Re-armed on every pass, so a changed cadence updates it.
+		sched.Arm(time.Now().Add(every))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

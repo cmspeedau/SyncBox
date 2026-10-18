@@ -93,6 +93,8 @@
         space's files are readable to whoever holds the target. Snapshots cover
         the whole server, not one space.</p>
 
+      <p id="snapshot-status" class="hint" role="status"></p>
+
       <p><button type="button" id="take-snapshot">Take snapshot</button></p>
 
       <p class="hint">Scheduled snapshots run on this cadence. Changing it applies
@@ -111,6 +113,7 @@
         <button type="submit">Apply</button>
       </form>
       <p id="schedule-note" class="ok" role="status"></p>
+      <p id="next-due" class="hint" role="status"></p>
 
       <p id="snapshot-error" class="error" role="alert"></p>
       <p id="snapshot-note" class="ok" role="status"></p>

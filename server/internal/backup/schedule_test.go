@@ -56,6 +56,35 @@ func TestSchedulerNudgesOncePerChange(t *testing.T) {
 	}
 }
 
+func TestSchedulerArmsTheNextFire(t *testing.T) {
+	s := NewScheduler(time.Hour)
+
+	// A fresh scheduler has armed nothing: the loop has not started a wait yet.
+	if !s.NextDue().IsZero() {
+		t.Fatalf("a fresh scheduler should have no next-due, got %v", s.NextDue())
+	}
+
+	// The loop arms the time it expects to fire, and the API reads it back.
+	due := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	s.Arm(due)
+	if got := s.NextDue(); !got.Equal(due) {
+		t.Errorf("NextDue = %v, want %v", got, due)
+	}
+
+	// A cadence change drops the stale armed time until the loop re-arms.
+	s.SetInterval(time.Minute)
+	if !s.NextDue().IsZero() {
+		t.Errorf("SetInterval left a stale next-due of %v, want zero", s.NextDue())
+	}
+
+	// Arming zero (the off path) clears it too.
+	s.Arm(time.Now())
+	s.Arm(time.Time{})
+	if !s.NextDue().IsZero() {
+		t.Errorf("Arm(zero) left next-due of %v, want zero", s.NextDue())
+	}
+}
+
 // received reports whether a nudge is waiting and consumes it if so.
 func received(ch <-chan struct{}) bool {
 	select {
