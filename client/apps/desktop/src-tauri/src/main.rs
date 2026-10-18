@@ -16,6 +16,7 @@
 
 mod commands;
 mod dto;
+mod prefs;
 mod state;
 
 use std::sync::{Arc, Mutex};
@@ -44,15 +45,24 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // Opens a synced folder in the OS file manager — Rust-side only (the
+        // webview calls our `open_folder`, never the plugin directly), so the
+        // capability file stays empty.
+        .plugin(tauri_plugin_opener::init())
         .manage(shared)
         .invoke_handler(tauri::generate_handler![
             commands::status,
             commands::activity,
+            commands::usage,
             commands::unlock,
             commands::lock,
             commands::sync_now,
             commands::create_vault,
             commands::list_vaults,
+            commands::open_folder,
+            commands::quit,
+            commands::get_prefs,
+            commands::set_prefs,
             commands::get_autostart,
             commands::set_autostart,
         ])

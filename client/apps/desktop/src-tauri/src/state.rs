@@ -10,11 +10,12 @@
 //! loop), which drops the agents and the master keys with them — nothing sensitive
 //! survives a lock.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use syncbox_agent::{index_path_for, Agent, Folder, SyncWorker};
+use syncbox_transport::dto::SpaceMode;
 use syncbox_transport::{Client, UreqHttp};
 
 /// How often the loops run a pass when nothing is requested. A manual `Sync now`
@@ -25,18 +26,21 @@ pub const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 pub type Shared = Arc<Mutex<AppState>>;
 
 /// What the frontend submits to start a session, minus the transient password:
-/// the server to dial, the vault to unlock, the header to unlock it from, and the
-/// folders to keep in sync.
+/// the server to dial, the space to open, the directory holding its local state
+/// (the `vault.json` header for a vault), and the folders to keep in sync.
 #[derive(Clone, Debug)]
 pub struct Session {
     /// Server origin, e.g. `https://sync.example`.
     pub server: String,
     /// The server's id for the vault.
     pub vault_id: String,
-    /// Directory holding `vault.json`.
+    /// Directory holding `vault.json` (and, per folder, the local indexes).
     pub vault_dir: PathBuf,
     /// The plaintext folders kept in sync.
     pub folders: Vec<PathBuf>,
+    /// What the space stores: a vault derives keys, a sync space has none and
+    /// the password authenticates to the server only.
+    pub mode: SpaceMode,
 }
 
 /// Everything the shell tracks about the current session.
@@ -45,6 +49,10 @@ pub struct AppState {
     workers: Vec<SyncWorker>,
     server: String,
     password: String,
+    /// The chosen space's local state directory, kept while the session lives
+    /// so `usage` can find each folder's index without the frontend repeating
+    /// a path it never chose.
+    vault_dir: Option<PathBuf>,
 }
 
 impl AppState {
@@ -75,12 +83,20 @@ impl AppState {
             })
             .collect();
 
-        let agents =
-            Agent::unlock_folders(&session.vault_dir, &session.vault_id, &password, &folders)
-                .map_err(|e| e.to_string())?;
+        // One call for both modes: a vault derives its keys here, a sync space
+        // holds none and the password authenticates to the server only.
+        let agents = Agent::open_folders(
+            &session.vault_dir,
+            &session.vault_id,
+            session.mode,
+            &password,
+            &folders,
+        )
+        .map_err(|e| e.to_string())?;
 
         self.server = session.server.clone();
         self.password = password.clone();
+        self.vault_dir = Some(session.vault_dir.clone());
 
         let mut workers = Vec::with_capacity(agents.len());
         for agent in agents {
@@ -112,6 +128,14 @@ impl AppState {
     #[must_use]
     pub fn workers(&self) -> &[SyncWorker] {
         &self.workers
+    }
+
+    /// The chosen space's local state directory, once a session has named it —
+    /// `None` before the first unlock, so `usage` knows there are no indexes
+    /// to read yet.
+    #[must_use]
+    pub fn vault_dir(&self) -> Option<&Path> {
+        self.vault_dir.as_deref()
     }
 
     fn stop_workers(&mut self) {

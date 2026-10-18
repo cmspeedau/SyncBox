@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use syncbox_agent::{AgentStatus, SyncEvent, SyncState};
 use syncbox_sync::SyncReport;
+use syncbox_transport::dto::SpaceMode;
 
 use crate::state::Session;
 
@@ -25,7 +26,13 @@ pub struct VaultSettings {
     /// The plaintext folders kept in sync. A vault can live in as many as the
     /// user wants; blank rows (an empty input) are dropped rather than opened.
     pub folders: Vec<String>,
-    /// Vault password (never persisted; only used to unlock this session).
+    /// What the chosen space stores: `"vault"` or `"sync"`, as `list_vaults`
+    /// reported it. Missing reads as `"vault"` — the safe reading, the same one
+    /// [`SpaceMode::effective`] takes for a server that predates the field.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Vault password (never persisted; only used to unlock this session — and
+    /// a sync space, which has no keys, ignores it here).
     pub password: String,
 }
 
@@ -40,11 +47,16 @@ impl VaultSettings {
             .map(|folder| PathBuf::from(folder.trim()))
             .filter(|folder| !folder.as_os_str().is_empty())
             .collect();
+        let mode = match self.mode.as_deref() {
+            Some("sync") => SpaceMode::Sync,
+            _ => SpaceMode::Vault,
+        };
         let session = Session {
             server: self.server,
             vault_id: self.vault_id,
             vault_dir: PathBuf::from(self.vault_dir),
             folders,
+            mode,
         };
         (session, self.password)
     }
@@ -80,6 +92,27 @@ pub fn resolve_location(location: &str, home: Option<&Path>) -> Option<PathBuf> 
     home.map(|home| home.join(path))
 }
 
+/// The directory this machine keeps a space's own state in — the vault header
+/// (`vault.json`) for a vault, the index for any space. Derived from the home
+/// directory and the space's id, so it survives a rename of the space (the id
+/// never changes) and no screen ever asks the human for it. `None` with no
+/// `$HOME` to hang it on.
+#[must_use]
+pub fn default_header_dir(home: Option<&Path>, vault_id: &str) -> Option<PathBuf> {
+    Some(home?.join(".syncbox").join(vault_id))
+}
+
+/// A [`SpaceMode`] as the frontend's word: `"vault"` or `"sync"`, after
+/// [`SpaceMode::effective`] — an unknown mode ships as the safe one.
+#[must_use]
+pub fn mode_str(mode: SpaceMode) -> &'static str {
+    if mode.is_encrypted() {
+        "vault"
+    } else {
+        "sync"
+    }
+}
+
 /// One entry of the server's vault registry, as `list_vaults` returns it and
 /// the welcome form's picker renders it. Mirrors the wire shape of
 /// `GET /vaults` (`camelCase` for the frontend, snake_case on the wire).
@@ -90,14 +123,65 @@ pub struct VaultChoice {
     pub id: String,
     /// The operator's label on the server; empty while unnamed.
     pub name: String,
+    /// What the space stores: `"vault"` (encrypted on this device) or `"sync"`
+    /// (kept in the clear). The picker says which, because it is a fact about
+    /// the human's privacy, not bookkeeping.
+    pub mode: &'static str,
     /// Where the operator said the vault's files land, as stored on the server.
     pub location: String,
     /// `location` resolved against this client's home, ready to prefill the
     /// folders editor; `null` when the operator left the choice to the client.
     pub default_folder: Option<String>,
+    /// This client's own directory for the space (see [`default_header_dir`]),
+    /// derived so no default screen asks for it; `null` with no `$HOME`.
+    pub header_dir: Option<String>,
     /// Retired on the server; the picker hides these rather than trusting
     /// the human to read a badge.
     pub archived: bool,
+}
+
+/// What the synced folders hold, for the usage line and the per-row meta. The
+/// numbers come from each folder's local index, not the server.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Usage {
+    /// Files across all folders.
+    pub files: u64,
+    /// Referenced bytes across all folders.
+    pub bytes: u64,
+    /// One entry per synced folder, in the order they were unlocked.
+    pub folders: Vec<FolderUsage>,
+}
+
+/// One folder's line in [`Usage`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderUsage {
+    /// The plaintext folder this copy lives in.
+    pub folder: String,
+    /// Files this folder's index knows.
+    pub files: u64,
+    /// Bytes those files reference.
+    pub bytes: u64,
+}
+
+/// Assembles per-folder counts into the [`Usage`] shape; a folder whose index
+/// could not be read arrives as `(0, 0)` and simply reads empty.
+#[must_use]
+pub fn usage(counts: &[(String, u64, u64)]) -> Usage {
+    let folders = counts
+        .iter()
+        .map(|(folder, files, bytes)| FolderUsage {
+            folder: folder.clone(),
+            files: *files,
+            bytes: *bytes,
+        })
+        .collect();
+    Usage {
+        files: counts.iter().map(|(_, files, _)| *files).sum(),
+        bytes: counts.iter().map(|(_, _, bytes)| *bytes).sum(),
+        folders,
+    }
 }
 
 /// The tray/status line the frontend renders. A vault can live in many folders,
@@ -451,16 +535,74 @@ mod tests {
             vault_id: "v".into(),
             vault_dir: "/vault".into(),
             folders: vec!["/files".into(), "  ".into(), "/backup".into()],
+            mode: None,
             password: "pw".into(),
         };
         let (session, password) = settings.into_parts();
         assert_eq!(session.server, "https://srv");
         assert_eq!(session.vault_id, "v");
         assert_eq!(session.vault_dir, PathBuf::from("/vault"));
+        assert_eq!(session.mode, SpaceMode::Vault, "no mode reads vault");
         assert_eq!(
             session.folders,
             vec![PathBuf::from("/files"), PathBuf::from("/backup")]
         );
         assert_eq!(password, "pw");
+    }
+
+    #[test]
+    fn a_sync_space_carries_its_mode() {
+        // The one word that decides whether the session derives keys.
+        let json = r#"{
+            "server": "https://srv",
+            "vaultId": "v",
+            "vaultDir": "/state",
+            "folders": ["/files"],
+            "mode": "sync",
+            "password": "pw"
+        }"#;
+        let settings: VaultSettings = serde_json::from_str(json).unwrap();
+        let (session, _) = settings.into_parts();
+        assert_eq!(session.mode, SpaceMode::Sync);
+    }
+
+    #[test]
+    fn a_mode_reads_as_a_word_and_the_safe_way() {
+        assert_eq!(mode_str(SpaceMode::Vault), "vault");
+        assert_eq!(mode_str(SpaceMode::Sync), "sync");
+        assert_eq!(mode_str(SpaceMode::Unknown), "vault", "unknown ships safe");
+    }
+
+    #[test]
+    fn the_header_dir_hangs_under_the_home_by_space_id() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            default_header_dir(Some(home), "vault-7"),
+            Some(PathBuf::from("/home/me/.syncbox/vault-7")),
+            "the id, not the name: a rename does not move it"
+        );
+        assert_eq!(
+            default_header_dir(None, "vault-7"),
+            None,
+            "no home, no guess"
+        );
+    }
+
+    #[test]
+    fn usage_counts_each_folder_and_sums_the_line() {
+        let counts = vec![
+            ("/files".to_string(), 412, 1_800_000_000),
+            ("/mirror".to_string(), 412, 1_800_000_000),
+            ("/broken".to_string(), 0, 0),
+        ];
+        let json = serde_json::to_value(usage(&counts)).unwrap();
+        assert_eq!(json["files"], 824);
+        assert_eq!(json["bytes"], 3_600_000_000u64);
+        assert_eq!(json["folders"][0]["folder"], "/files");
+        assert_eq!(json["folders"][0]["files"], 412);
+        assert_eq!(
+            json["folders"][2]["bytes"], 0,
+            "an unreadable index reads empty"
+        );
     }
 }

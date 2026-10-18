@@ -10,7 +10,22 @@ adopts the web UI's design language
 ([`reference-web-ui.md`](reference-web-ui.md)): light tinted headers instead
 of the blue gradient bar, no drawn window chrome, 22 px pills.
 
-Status: design reference only. Nothing in `client/` implements it yet. The
+Status: the **main window is shipped** — M16 S1 rebuilt
+`client/apps/desktop/src/index.html` on this design: tinted bar, gear click
+menu, first-run card (connect → pick from server → auto folder → unlock),
+per-folder rows with state chips, usage line. Four honest deviations: the
+list shows the one space's folders (the client is single-space today, not the
+multi-vault mock); the gear carries only what exists (Sync now, Lock vault,
+Quit — Pause joins in M16 S2, Settings… in S4); the hidden tier's creation row
+writes a header on this machine (`create_vault`) — the mock's name-only-on-
+server version needs an endpoint the console still owns alone; and a Recent
+activity disclosure
+sits under the list until the settings window's Notifications page inherits
+it. Still pending: the separate Unlock and Settings windows (S3/S4 — the main
+window hosts the unlock form itself today, and the one password serves server
+and vault as the backend has always done), the tray
+([`reference-agent-tray.md`](reference-agent-tray.md), S5, gated on
+`libappindicator`), the pause concept, and the drafted dark palette. The
 settings window is **not part of this mock** — its design lives in
 [`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
 main window's bar and the tray menu are its entry points.
@@ -93,8 +108,11 @@ equivalents.)
 ### Hidden tier — `Show hidden` in settings
 
 Three advanced behaviours belong to this design but are **absent from every
-default screen** until the *Show hidden features* switch is on in the
-settings window ([`reference-agent-settings.md`](reference-agent-settings.md)):
+default screen** until the *Show hidden features* switch is on — a stored
+pref; its switch sits in the main window's footer bar until the settings
+window's footer inherits it (M16 S4), and the advanced controls it reveals
+are designed in
+[`reference-agent-settings.md`](reference-agent-settings.md):
 
 | Revealed control | Behaviour |
 |---|---|
@@ -133,7 +151,7 @@ Clicking a synced vault's row opens its local folder.
 | Dot + bar text | `SyncState` (+ a Paused flag — the one new agent concept) |
 | Error banner | `AgentStatus.last_error`, `last_report` |
 | Vault list rows | `list_vaults` (`VaultChoice`) + a per-vault lock flag; row click on a synced vault opens the local folder |
-| Usage line | `Index::files()`, `Index::referenced_bytes()` (not over IPC yet) |
+| Usage line | `Index::files()`, `Index::referenced_bytes()` — over IPC as the `usage` command since M16 S1 |
 | Pass counter | `AgentStatus.passes` |
 | First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |
 | Unlock window → | `unlock` command; main window never touches the password |

@@ -5,14 +5,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{command, AppHandle, State};
+use tauri::{command, AppHandle, Manager as _, State};
 
 use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_opener::OpenerExt as _;
 
-use syncbox_agent::SyncEvent;
+use syncbox_agent::{index_path_for, SyncEvent};
+use syncbox_index::{Index as _, SqliteIndex};
 use syncbox_transport::{Client, UreqHttp};
 
 use crate::dto::{self, Activity, FolderSnapshot, Status, VaultChoice, VaultSettings};
+use crate::prefs::{self, Prefs};
 use crate::state::{AppState, Shared};
 
 /// The current sync status (state, last pass, any error), aggregated across the
@@ -141,8 +144,11 @@ pub async fn list_vaults(server: String, password: String) -> Result<Vec<VaultCh
             .map(|vault| VaultChoice {
                 id: vault.id.clone(),
                 name: vault.name.clone(),
+                mode: dto::mode_str(vault.mode),
                 location: vault.location.clone(),
                 default_folder: dto::resolve_location(&vault.location, home)
+                    .map(|path| path.display().to_string()),
+                header_dir: dto::default_header_dir(home, &vault.id)
                     .map(|path| path.display().to_string()),
                 archived: vault.archived,
             })
@@ -178,6 +184,71 @@ pub fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
         autolaunch.disable()
     }
     .map_err(|e| e.to_string())
+}
+
+/// What the synced folders hold — per folder for the row meta, summed for the
+/// usage line. Reads each folder's local index; a session that has not synced
+/// yet simply reports zeros rather than failing.
+#[command]
+pub fn usage(shared: State<'_, Shared>) -> Result<dto::Usage, String> {
+    let state = shared.lock().map_err(|e| e.to_string())?;
+    let mut counts = Vec::new();
+    if let Some(vault_dir) = state.vault_dir() {
+        for worker in state.workers() {
+            let path = index_path_for(vault_dir, worker.folder());
+            // An unreadable index (not created yet, or held by a first pass
+            // mid-write) reads as an empty folder — the row, not the app.
+            let (files, bytes) = match SqliteIndex::open(&path) {
+                Ok(index) => (index.files().len() as u64, index.referenced_bytes()),
+                Err(_) => (0, 0),
+            };
+            counts.push((worker.folder().display().to_string(), files, bytes));
+        }
+    }
+    Ok(dto::usage(&counts))
+}
+
+/// Reveals a folder in the OS file manager — the synced vault row's click.
+/// Only directories that exist are opened; anything else is the frontend's
+/// imagination, and a desktop app should not spawn a file manager on a guess.
+#[command]
+pub fn open_folder(app: AppHandle, path: String) -> Result<(), String> {
+    let path = Path::new(&path);
+    if !path.is_dir() {
+        return Err("that folder does not exist".into());
+    }
+    app.opener()
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|e| format!("could not open the folder: {e}"))
+}
+
+/// Exits the agent — the gear menu's Quit, and the tray's later. Not closing a
+/// window: quit ends the process, and every worker stops with it.
+#[command]
+pub fn quit(app: AppHandle) {
+    app.exit(0);
+}
+
+/// The stored switches, read fresh on each ask.
+#[command]
+pub fn get_prefs(app: AppHandle) -> Result<Prefs, String> {
+    let path = prefs_path(&app)?;
+    Ok(prefs::load(&path))
+}
+
+/// Stores the switches (see [`prefs`]).
+#[command]
+pub fn set_prefs(app: AppHandle, settings: Prefs) -> Result<(), String> {
+    let path = prefs_path(&app)?;
+    prefs::save(&path, &settings)
+}
+
+/// Where the switches live: `prefs.json` in the app's config directory.
+fn prefs_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("prefs.json"))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

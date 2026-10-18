@@ -4,237 +4,387 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Syncbox</title>
+    <!--
+      The desktop main window, built to docs/reference-agent-ui.html (v2):
+      tinted status bar, gear click menu, one row per synced folder, usage
+      line, first-run card. The light palette is the mock's; the drafted dark
+      palette lands with the web console's, in a later slice.
+
+      A preview exists for browsers outside Tauri: open with
+      `?demo=setup|idle|sync|err` and every invoke answers from fixtures,
+      exactly the mock's own demo idiom. Inside Tauri the parameter is ignored.
+    -->
     <style>
       :root {
-        color-scheme: light dark;
-        --bg: light-dark(#ffffff, #17181c);
-        --fg: light-dark(#1c1e21, #e8eaed);
-        --muted: light-dark(#6b7280, #9aa0a6);
-        --line: light-dark(#e5e7eb, #2a2c31);
-        --card: light-dark(#f9fafb, #1e2024);
-        --accent: #3b82f6;
+        --brand: #0082c9;
+        --brand-dark: #006aa3;
+        --ink: #272833;
+        --muted: #7a8694;
+        --faint: #97a3af;
+        --line: #e6eef4;
+        --hover: #f3f9fd;
         --ok: #16a34a;
-        --warn: #d97706;
+        --warn: #f59e0b;
         --err: #dc2626;
+        --pause: #d97706;
         font-family: system-ui, sans-serif;
       }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--fg);
-        font-size: 14px;
-        line-height: 1.4;
+      * { box-sizing: border-box; margin: 0; }
+      html, body { height: 100%; }
+      body { background: #fff; color: var(--ink); font-size: 13px; }
+      .hidden { display: none !important; }
+
+      .win { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+
+      /* status bar */
+      .bar {
+        flex: none; display: flex; align-items: center; gap: 9px;
+        padding: 12px 14px;
+        background: linear-gradient(160deg, #f1f8fd, #dcebfa);
+        border-bottom: 1px solid rgba(0, 90, 140, 0.12);
       }
-      header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--line);
+      .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px #fff; }
+      .st-sync .bar .dot { background: var(--warn); animation: pulse 1s infinite; }
+      .st-err .bar .dot { background: var(--err); }
+      @keyframes pulse { 50% { opacity: 0.4; } }
+      .bar .name { font-weight: 700; font-size: 14px; }
+      .bar .stxt { font-size: 11.5px; color: var(--muted); margin-left: 2px; }
+      .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: #5a6a77; display: grid; place-items: center; cursor: pointer; }
+      .gear:hover { background: #e3eef7; color: var(--brand-dark); }
+      .setup .bar .dot, .setup .bar .stxt, .setup .gear { display: none; }
+      .setup .bar { justify-content: center; }
+      .setup .bar .name { margin-left: auto; margin-right: auto; }
+
+      /* gear click menu */
+      .gmenu {
+        position: absolute; right: 10px; top: 52px; z-index: 5;
+        background: #fff; border: 1px solid var(--line); border-radius: 10px;
+        box-shadow: 0 8px 24px rgba(0, 80, 130, 0.18); padding: 4px;
+        display: none; min-width: 160px;
       }
-      h1 { font-size: 16px; margin: 0; font-weight: 600; }
-      .badge {
-        margin-left: auto;
-        padding: 3px 10px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 600;
-        color: #fff;
-        background: var(--muted);
-      }
-      .badge.locked { background: var(--muted); }
-      .badge.idle { background: var(--ok); }
-      .badge.syncing { background: var(--accent); }
-      .badge.error { background: var(--err); }
-      main { padding: 16px 18px 40px; display: grid; gap: 18px; }
-      section { display: grid; gap: 8px; }
-      h2 {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--muted);
-        margin: 0;
-      }
-      .card {
-        background: var(--card);
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 14px;
-      }
-      .row { display: flex; gap: 8px; flex-wrap: wrap; }
-      label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); flex: 1 1 180px; }
-      input, select {
-        padding: 7px 9px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        background: var(--bg);
-        color: var(--fg);
-        font-size: 13px;
-      }
-      button {
-        padding: 7px 14px;
-        border: 1px solid var(--line);
-        border-radius: 7px;
-        background: var(--accent);
-        color: #fff;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      button.secondary { background: transparent; color: var(--fg); }
-      button:disabled { opacity: 0.5; cursor: default; }
-      .muted { color: var(--muted); }
-      .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
-      .kv span:nth-child(odd) { color: var(--muted); }
-      .stat { font-variant-numeric: tabular-nums; }
-      ul.feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
-      ul.feed li {
-        display: flex;
-        gap: 8px;
-        align-items: baseline;
-        padding: 6px 0;
-        border-bottom: 1px solid var(--line);
-      }
-      ul.feed li:last-child { border-bottom: none; }
-      .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-      .dot.done { background: var(--ok); }
-      .dot.failed { background: var(--err); }
-      table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-      th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
-      th { color: var(--muted); font-weight: 500; font-size: 12px; }
-      td.id, span.id { font-family: ui-monospace, monospace; font-size: 12px; }
-      .msg { font-size: 13px; }
-      .msg.err { color: var(--err); }
-      .msg.ok { color: var(--ok); }
-      .hidden { display: none; }
-      a { color: var(--accent); }
+      .gmenu.open { display: block; }
+      .gmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--ink); padding: 8px 12px; border-radius: 7px; cursor: pointer; }
+      .gmenu button:hover { background: var(--hover); }
+      .gmenu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+      .gmenu button.danger { color: #b3413f; }
+      .gmenu button.danger:hover { background: #fbeceb; }
+
+      /* banners */
+      .banner { display: none; margin: 10px 14px 0; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+      .banner.e { background: #fdeceb; border: 1px solid #f6c9c6; color: #b91c1c; }
+      .st-err .banner.e { display: block; }
+
+      /* first-run card */
+      .setupcard { display: none; flex: 1; min-height: 0; overflow-y: auto; flex-direction: column; gap: 10px; padding: 26px 22px 14px; }
+      .setup .setupcard { display: flex; }
+      .setupcard .logo { display: grid; place-items: center; margin: 4px 0 2px; }
+      .setupcard .t { text-align: center; }
+      .setupcard .t b { font-size: 15px; }
+      .setupcard .t p { color: var(--muted); font-size: 12px; margin-top: 4px; }
+      .fld { font-size: 11.5px; color: #5b6672; margin-top: 8px; }
+      .fld input[type="text"], .fld input[type="password"] { width: 100%; margin-top: 5px; border: 1px solid #b7cfe0; border-radius: 22px; padding: 10px 13px; font: inherit; outline: none; }
+      .fld input:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(0, 130, 201, 0.2); }
+      .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
+      .msg { font-size: 12px; color: var(--muted); margin-top: 8px; }
+      .msg.err { color: #b91c1c; }
+      .msg.ok { color: #15803d; }
+      .okline { display: none; align-items: center; gap: 7px; background: #e7f6ec; color: #15803d; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+      .step2 .okline { display: flex; }
+
+      .vaults { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+      .vaults label { display: flex; align-items: center; gap: 9px; border: 1px solid #d9e4ec; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+      .vaults label:hover { background: var(--hover); }
+      .vaults label input { accent-color: var(--brand); }
+      .vaults .vn { font-weight: 600; }
+      .vaults .vm { color: var(--muted); font-size: 11.5px; }
+
+      .autof { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--hover); border: 1px solid #dbe7f0; border-radius: 14px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+      .autof .auto { margin-left: auto; background: #e8f3fb; color: var(--brand-dark); border-radius: 20px; padding: 1px 8px; font-size: 9px; font-weight: 700; flex: none; font-family: inherit; white-space: nowrap; }
+      .autof .auto.byhand { background: #eef1f4; color: #66727e; }
+      .frow { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+      .frow input { flex: 1; border: 1px solid #b7cfe0; border-radius: 14px; padding: 6px 10px; font: 11.5px ui-monospace, Menlo, monospace; outline: none; }
+      .frow button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
+      .frow button:hover { color: #b3413f; }
+
+      /* hidden tier — advanced controls, dashed exactly like the mock */
+      .hgroup { display: none; border: 1px dashed #7db4d8; border-radius: 10px; padding: 9px 8px 8px; position: relative; margin-top: 8px; }
+      .hgroup.show { display: block; }
+      .hgroup .rtag { position: absolute; top: -7px; left: 10px; background: #fff; color: var(--brand-dark); font-size: 8.5px; font-weight: 700; padding: 0 5px; letter-spacing: 0.04em; }
+      .seg { display: flex; background: #fff; border: 1px solid #b7cfe0; border-radius: 20px; padding: 3px; gap: 3px; }
+      .seg button { flex: 1; border: 0; background: none; font: inherit; font-size: 11.5px; padding: 5px 0; border-radius: 17px; color: var(--muted); cursor: pointer; }
+      .seg button.on { background: var(--brand-dark); color: #fff; font-weight: 700; }
+      .newrow { border: 1px dashed #7db4d8; border-radius: 14px; color: var(--brand-dark); font-weight: 700; font-size: 11.5px; text-align: center; padding: 7px; cursor: pointer; background: #fff; }
+      .newrow:disabled { opacity: 0.5; cursor: default; }
+      .addf { border: 1px dashed #7db4d8; color: var(--brand-dark); font-weight: 700; font-size: 11px; border-radius: 16px; padding: 6px; text-align: center; margin-top: 6px; cursor: pointer; }
+
+      /* vault list */
+      .mid { flex: 1; min-height: 0; display: none; flex-direction: column; padding: 12px 14px 6px; }
+      .win:not(.setup) .mid { display: flex; }
+      .mid h3 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 8px; display: flex; align-items: center; font-weight: 600; }
+      .mid h3 .cnt { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+      .vlist { list-style: none; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+      .vrow { display: flex; align-items: center; gap: 9px; padding: 9px 8px; border-radius: 8px; font-size: 12.5px; cursor: pointer; }
+      .vrow:hover { background: var(--hover); }
+      .vrow .vic { flex: none; width: 22px; }
+      .vrow .vic svg { width: 22px; height: 22px; display: block; }
+      .vrow .vname { font-weight: 600; white-space: nowrap; }
+      .vrow .vmeta { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .vrow .vr { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+      .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e8f3fb; color: var(--brand-dark); flex: none; white-space: nowrap; }
+      .chip.grey { background: #eef1f4; color: #66727e; }
+      .chip.amber { background: #fdf3e3; color: #92600a; }
+      .chip.red { background: #fdeceb; color: #b91c1c; }
+
+      /* activity disclosure — the feed lives here until the settings window's
+         Notifications page gives it a home of its own (reference-agent-settings) */
+      details.feedbox { flex: none; border-top: 1px solid var(--line); padding: 6px 2px; font-size: 11.5px; color: var(--muted); }
+      details.feedbox summary { cursor: pointer; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+      ul.feed { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 4px; max-height: 140px; overflow-y: auto; }
+      ul.feed li { display: flex; gap: 7px; align-items: baseline; }
+      ul.feed .fdot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+      ul.feed .fdot.done { background: var(--ok); }
+      ul.feed .fdot.failed { background: var(--err); }
+      ul.feed .ftime { margin-left: auto; white-space: nowrap; }
+
+      /* bottom */
+      .bottom { flex: none; border-top: 1px solid var(--line); padding: 12px 14px 10px; }
+      .usage { display: none; font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
+      .win:not(.setup) .usage { display: flex; }
+      .usage .r { margin-left: auto; }
+      .setup-btn { width: 100%; border: 0; border-radius: 22px; padding: 13px; font-weight: 700; font-size: 13.5px; cursor: pointer; display: none; align-items: center; justify-content: center; gap: 9px; background: var(--brand-dark); color: #fff; box-shadow: 0 3px 10px rgba(0, 80, 130, 0.35); }
+      .setup-btn:hover { background: #0075b3; }
+      .setup-btn:disabled { opacity: 0.5; cursor: default; }
+      .setup .setup-btn { display: flex; }
+      .footerbar { display: flex; gap: 14px; justify-content: flex-end; background: #f6fafd; border-radius: 8px; padding: 6px 10px; margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+      .footerbar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+      .footerbar input { accent-color: var(--brand); }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Syncbox</h1>
-      <span class="badge locked" id="state">locked</span>
-    </header>
-    <main>
-      <!-- Session -->
-      <section>
-        <h2>Vault</h2>
-        <div class="card">
-          <div id="locked-view">
-            <div class="row" id="form">
-              <label>Server<input id="server" placeholder="https://sync.example" /></label>
-              <label>Vault
-                <select id="vaultPick" disabled>
-                  <option value="">Find vaults below…</option>
-                </select>
-              </label>
-              <label>Vault folder<input id="vaultDir" placeholder="~/.syncbox/vault" /></label>
-              <label>Password<input id="password" type="password" /></label>
-            </div>
-            <div id="folders-block" style="margin-top: 10px">
-              <div class="muted" style="font-size: 12px">
-                Folders to keep in sync — the vault can live in as many as you want
-              </div>
-              <div id="folderRows"></div>
-              <button id="addFolder" class="secondary" type="button" style="margin-top: 6px">
-                Add folder
-              </button>
-            </div>
-            <div class="row" id="pairing" style="margin-top: 10px; align-items: center">
-              <button id="find" class="secondary">Find vaults</button>
-              <label class="muted" style="display: flex; align-items: center; gap: 6px; flex: none">
-                <input id="manualId" type="checkbox" /> enter vault id by hand
-              </label>
-              <input id="vaultId" class="hidden" placeholder="vault id from the server" />
-            </div>
-            <div class="row" style="margin-top: 10px">
-              <button id="unlock">Unlock &amp; sync</button>
-              <button id="create" class="secondary">Create vault here</button>
-            </div>
-            <p class="msg muted" id="unlock-msg" style="margin-top: 8px"></p>
-          </div>
-          <div id="unlocked-view" class="hidden">
-            <div class="kv">
-              <span>Vault</span><b id="u-vault">—</b>
-              <span>Folders</span><b id="u-folders" class="stat">0</b>
-              <span>Last synced</span><b id="u-last" class="stat">—</b>
-              <span>Passes</span><b id="u-passes" class="stat">0</b>
-            </div>
-            <ul class="feed" id="u-folder-list"></ul>
-            <p class="msg err hidden" id="u-error" style="margin: 8px 0 0"></p>
-            <div class="row" style="margin-top: 12px">
-              <button id="sync">Sync now</button>
-              <button id="lock" class="secondary">Lock</button>
+    <div class="win setup" id="win">
+      <div class="bar">
+        <span class="dot"></span>
+        <span class="name">Syncbox</span>
+        <span class="stxt" id="stxt"></span>
+        <button class="gear" id="gear" title="Menu" aria-label="Menu">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>
+        </button>
+      </div>
+
+      <div class="gmenu" id="gmenu">
+        <button id="mSync" type="button">Sync now</button>
+        <button id="mLock" type="button">Lock vault</button>
+        <div class="sep"></div>
+        <button class="danger" id="mQuit" type="button">Quit</button>
+      </div>
+
+      <div class="banner e" id="errBanner"></div>
+
+      <!-- first run, and every locked session (same ask: which space, which password) -->
+      <div class="setupcard" id="setupCard">
+        <span class="logo"><svg width="52" height="34" viewBox="0 0 40 24" fill="none" stroke="#0082c9" stroke-width="2.4"><circle cx="12" cy="14" r="6.5"/><circle cx="27" cy="14" r="6.5"/><circle cx="20" cy="4" r="2.2" fill="#0082c9" stroke="none"/></svg></span>
+        <div class="t"><b>Welcome to Syncbox</b><p>Zero-knowledge sync. Connect to your server to choose the space you want on this machine.</p></div>
+        <div class="okline"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg><span id="okTxt"></span></div>
+
+        <label class="fld">Server address
+          <input id="server" type="text" placeholder="https://sync.example.org" spellcheck="false" />
+        </label>
+        <label class="fld">Server password
+          <input id="spw" type="password" placeholder="Server password" autocomplete="current-password" />
+        </label>
+        <div class="hint step1-only">The address your Syncbox server is reachable at, and its password — the same one the web login asks for.</div>
+
+        <div class="fld hidden" id="vaultFld">Choose a space
+          <div class="hgroup" id="gSeg"><span class="rtag">SHOW HIDDEN</span>
+            <div class="seg">
+              <button class="on" type="button" id="segServer">Choose from server</button>
+              <button type="button" id="segHand">Enter id by hand</button>
             </div>
           </div>
-          <div class="row" style="margin-top: 12px; align-items: center; justify-content: space-between">
-            <label class="muted" style="display: flex; align-items: center; gap: 6px">
-              <input id="autostart" type="checkbox" /> Start at login
-            </label>
-            <span class="msg muted" id="autostart-msg"></span>
+          <div class="vaults" id="vaultRows"></div>
+          <input id="vaultId" type="text" class="hidden" placeholder="vault id from the server" spellcheck="false" style="margin-top:6px;border:1px solid #b7cfe0;border-radius:22px;padding:10px 13px;font:inherit;outline:none;width:100%;" />
+          <div class="hgroup" id="gNew"><span class="rtag">SHOW HIDDEN</span>
+            <button class="newrow" id="createHdr" type="button">＋ New vault header <span style="font-weight:400;color:#7a8694;">· on this machine</span></button>
           </div>
         </div>
-      </section>
 
-      <!-- Activity -->
-      <section>
-        <h2>Activity</h2>
-        <div class="card"><ul class="feed" id="feed"><li class="muted">Nothing yet.</li></ul></div>
-      </section>
-    </main>
+        <div class="fld hidden" id="folderFld">Sync folder — set automatically
+          <div id="autoFolder"></div>
+          <div class="hint" id="folderHint">Chosen by the server — the space's name under your sync folder. Nothing to pick; renaming the space does not move it.</div>
+          <div id="editFolders"></div>
+          <div class="hgroup" id="gFolders"><span class="rtag">SHOW HIDDEN</span>
+            <div class="addf" id="addFolder" role="button">＋ Add another folder</div>
+          </div>
+        </div>
 
-    <script type="module">
-      const { invoke } = window.__TAURI__.core;
+        <div class="fld hidden" id="hdrFld">Vault header folder
+          <input id="vaultDir" type="text" placeholder="~/.syncbox/&lt;space id&gt;" spellcheck="false" />
+          <div class="hint">Where this computer keeps the vault's own header. The app derives it from the space id; only change it if you know why.</div>
+        </div>
+
+        <p class="msg" id="unlock-msg"></p>
+      </div>
+
+      <div class="mid">
+        <h3>Vaults <span class="cnt" id="passCnt"></span></h3>
+        <ul class="vlist" id="vlist"></ul>
+        <details class="feedbox" id="feedbox">
+          <summary>Recent activity</summary>
+          <ul class="feed" id="feed"><li>No passes yet.</li></ul>
+        </details>
+      </div>
+
+      <div class="bottom">
+        <div class="usage"><span id="usageLeft">—</span><span class="r" id="usageRight"></span></div>
+        <button class="setup-btn" id="setupBtn" type="button" disabled>Connect</button>
+        <div class="footerbar">
+          <label><input id="hiddenToggle" type="checkbox" /> Show hidden features</label>
+          <label><input id="autostart" type="checkbox" /> Start at login</label>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // Outside Tauri (a plain browser with ?demo=…), every invoke answers
+      // from fixtures — the mock's demo idiom, for looking at the window
+      // without the shell. Inside Tauri this whole branch is unreachable.
+      const DEMO =
+        !window.__TAURI__ && new URLSearchParams(location.search).get("demo") || "";
+      const demoState = () => (DEMO && DEMO !== "setup" ? DEMO : "");
+      // The fixtures speak exactly the backend's words, so the demo exercises
+      // the real mapping and not a dialect of its own. `step2` is not a main
+      // state — it parks on the setup card, connected to the demo vaults.
+      const DEMO_STATE = { idle: "idle", sync: "syncing", err: "error" };
+      const DEMO_FOLDER = { idle: "idle", sync: "syncing", err: "error" };
+      function demoInvoke(cmd, args) {
+        const main = DEMO_STATE[demoState()];
+        const S = {
+          status: () =>
+            main
+              ? {
+                  state: main,
+                  unlocked: true,
+                  vaultId: "demo",
+                  lastSyncUnix: Math.floor(Date.now() / 1000) - 320,
+                  lastError: demoState() === "err" ? "Connection refused: sync.example.org" : null,
+                  passes: 57,
+                  folders: [
+                    { folder: "/home/you/Syncbox/Files synced", state: DEMO_FOLDER[demoState()], lastSyncUnix: 1760000000 },
+                    { folder: "/home/you/LaptopMirror/Files synced", state: "idle", lastSyncUnix: 1760000000 },
+                  ],
+                }
+              : { state: "locked", unlocked: false, vaultId: null, lastSyncUnix: null, lastError: null, passes: 0, folders: [] },
+          usage: () => ({ files: 824, bytes: 3_600_000_000, folders: [
+            { folder: "/home/you/Syncbox/Files synced", files: 412, bytes: 1_800_000_000 },
+            { folder: "/home/you/LaptopMirror/Files synced", files: 412, bytes: 1_800_000_000 },
+          ] }),
+          activity: () => [
+            { folder: "/home/you/Syncbox/Files synced", kind: "done", atUnix: Math.floor(Date.now() / 1000) - 320, error: null, report: { uploaded: 2, downloaded: 1, conflicts: 0, deleted: 0, skipped: 0, chunksUploaded: 3, bytesUploaded: 4096, quiet: false } },
+            { folder: "/home/you/Syncbox/Files synced", kind: "failed", atUnix: Math.floor(Date.now() / 1000) - 1200, error: "Connection reset", report: null },
+          ],
+          list_vaults: () => [
+            { id: "demo", name: "Files synced", mode: "vault", location: "Syncbox/Files synced", defaultFolder: "/home/you/Syncbox/Files synced", headerDir: "/home/you/.syncbox/demo", archived: false },
+            { id: "demo2", name: "Studio archive", mode: "sync", location: "Syncbox/Studio archive", defaultFolder: "/home/you/Syncbox/Studio archive", headerDir: "/home/you/.syncbox/demo2", archived: false },
+          ],
+          get_prefs: () => ({ showHidden: false }),
+          get_autostart: () => false,
+        };
+        return Promise.resolve((S[cmd] || (() => undefined))());
+      }
+      const invoke = DEMO ? demoInvoke : window.__TAURI__.core.invoke;
+
       const $ = (id) => document.getElementById(id);
+      const win = $("win");
 
-      // The server's names for its vaults, keyed by id. The id is the server's
-      // handle, not the vault's name — so wherever the UI would print an id it
-      // prints the operator's name instead, and the id itself only where this
-      // session never learned one (an id typed by hand).
-      const vaultNames = new Map();
-      // The folder the operator set for each vault, resolved against this
-      // machine's home. It prefills the folders editor; a vault can still be
-      // kept in more folders than that one.
-      const vaultDefaults = new Map();
+      // The server's facts about its spaces, keyed by id: the id is the
+      // server's handle, never printed where the name exists.
+      const choices = new Map();
+      let step = 1;
+      let lastStatus = null;
+      let lastUsage = null;
+      let openFlash = null;
+      let tick = 0;
+      let byHand = false;
+      let hiddenTier = false;
 
-      const fmtTime = (unix) =>
-        unix ? new Date(unix * 1000).toLocaleString() : "never";
+      const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error", locked: "" };
 
-      function renderStatus(s) {
-        const badge = $("state");
-        badge.textContent = s.state;
-        badge.className = "badge " + s.state;
-        $("locked-view").classList.toggle("hidden", s.unlocked);
-        $("unlocked-view").classList.toggle("hidden", !s.unlocked);
-        if (s.vaultId) $("u-vault").textContent = vaultNames.get(s.vaultId) || s.vaultId;
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+      }
+      const basename = (p) => String(p).split("/").filter(Boolean).pop() || String(p);
+      function fmtBytes(n) {
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        let v = n, i = 0;
+        while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+        return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+      }
+      const fmtFiles = (n) => (n < 1000 ? String(n) : (n / 1000).toFixed(1) + "k");
+      function fmtTime(unix) {
+        return unix ? new Date(unix * 1000).toLocaleString() : "never";
+      }
+      function relTime(unix) {
+        if (!unix) return "never";
+        const s = Math.max(0, Math.floor(Date.now() / 1000) - unix);
+        if (s < 90) return "just now";
+        if (s < 5400) return Math.round(s / 60) + " min ago";
+        if (s < 172800) return Math.round(s / 3600) + " h ago";
+        return Math.round(s / 86400) + " d ago";
+      }
+
+      /* ---------- main view ---------- */
+
+      const VIC = '<svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3" fill="#0b8bd2"/><path d="M4 5v5c0 1.7 3.6 3 8 3s8-1.3 8-3V5z" fill="#3aa3dd"/><path d="M4 11v5c0 1.7 3.6 3 8 3s8-1.3 8-3v-5z" fill="#7cc4e8"/></svg>';
+
+      function rowMeta(folder) {
+        const u = lastUsage && lastUsage.folders.find((f) => f.folder === folder);
+        return u ? ` · ${fmtFiles(u.files)} files · ${fmtBytes(u.bytes)}` : "";
+      }
+
+      // The backend's state words mapped to the mock's `st-*` classes.
+      const WIN_CLASS = { idle: "idle", syncing: "sync", error: "err" };
+
+      function renderMain(s) {
+        win.className = "win st-" + (WIN_CLASS[s.state] || s.state);
+        $("stxt").textContent = TXT[s.state] || s.state;
+        $("passCnt").textContent = s.passes ? `pass ${s.passes}` : "";
+        const banner = $("errBanner");
+        if (s.state === "error" && s.lastError) {
+          banner.textContent = "Last pass failed: " + s.lastError;
+          win.classList.add("st-err");
+        }
         const folders = s.folders || [];
-        $("u-folders").textContent = String(folders.length);
-        $("u-last").textContent = fmtTime(s.lastSyncUnix);
-        $("u-passes").textContent = String(s.passes);
-        // One row per folder: with a vault in several folders, which one is
-        // behind (or failed) is the thing worth showing.
-        $("u-folder-list").innerHTML = folders
+        $("vlist").innerHTML = folders
           .map((f) => {
-            const note = f.lastError
-              ? `failed: ${escapeHtml(f.lastError)}`
-              : `${f.state} · ${fmtTime(f.lastSyncUnix)}`;
-            return `<li><span class="dot ${f.state === "error" ? "failed" : "done"}"></span>
-              <span class="id">${escapeHtml(f.folder)}</span>
-              <span class="muted" style="margin-left:auto">${note}</span></li>`;
+            const right =
+              openFlash === f.folder
+                ? '<span class="chip">opening folder…</span>'
+                : f.state === "syncing"
+                  ? '<span class="chip amber">syncing</span>'
+                  : f.state === "error"
+                    ? '<span class="chip red">error</span>'
+                    : '<span class="chip">synced</span>';
+            return (
+              `<li class="vrow" data-folder="${escapeHtml(f.folder)}" title="${escapeHtml(f.folder)}">` +
+              `<span class="vic">${VIC}</span>` +
+              `<span class="vname">${escapeHtml(basename(f.folder))}</span>` +
+              `<span class="vmeta">${escapeHtml(rowMeta(f.folder))}</span>` +
+              `<span class="vr">${right}</span></li>`
+            );
           })
           .join("");
-        // The one thing the removed "Last pass" panel said that the feed
-        // cannot: whether the state right now is a failed one, and why.
-        const problem = $("u-error");
-        problem.classList.toggle("hidden", !s.lastError);
-        problem.textContent = s.lastError ? "Last pass failed: " + s.lastError : "";
+        const name = (lastStatus && choices.get(lastStatus.vaultId)?.name) || "";
+        $("usageLeft").textContent =
+          lastUsage && lastUsage.folders.length
+            ? `${[name, fmtBytes(lastUsage.bytes), `${lastUsage.folders.length} folder${lastUsage.folders.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}`
+            : "nothing synced yet";
+        $("usageRight").textContent = s.lastSyncUnix ? `last sync ${relTime(s.lastSyncUnix)}` : "";
       }
 
       function renderFeed(events) {
         const el = $("feed");
         if (!events.length) {
-          el.innerHTML = `<li class="muted">Nothing yet.</li>`;
+          el.innerHTML = "<li>No passes yet.</li>";
           return;
         }
         el.innerHTML = events
@@ -247,224 +397,338 @@
                   ? `synced (+${e.report.uploaded}/-${e.report.downloaded})`
                   : "in sync"
                 : `failed: ${escapeHtml(e.error || "")}`;
-            const folder = e.folder ? basename(e.folder) : "";
-            return `<li><span class="dot ${e.kind}"></span>
-              <span class="id">${escapeHtml(folder)}</span>
-              <span>${label}</span>
-              <span class="muted" style="margin-left:auto">${fmtTime(e.atUnix)}</span></li>`;
+            return `<li><span class="fdot ${e.kind}"></span><span>${escapeHtml(basename(e.folder))}</span><span>${label}</span><span class="ftime">${fmtTime(e.atUnix)}</span></li>`;
           })
           .join("");
       }
 
-      function basename(path) {
-        const parts = String(path).split("/");
-        return parts[parts.length - 1] || path;
+      /* ---------- setup card (first run and every locked session) ---------- */
+
+      function renderSetup() {
+        win.className = "win setup";
+        $("setupBtn").textContent = step === 1 ? "Connect" : "Save & unlock";
+        $("setupBtn").disabled =
+          step === 1 && !($("server").value.trim() && $("spw").value.trim());
       }
 
-      async function refresh() {
-        try {
-          const s = await invoke("status");
-          renderStatus(s);
-          const feed = await invoke("activity");
-          renderFeed(feed);
-          $("sync").disabled = !s.unlocked;
-        } catch (err) {
-          $("state").textContent = "ipc unavailable";
-          $("state").className = "badge error";
-          console.error(err);
+      function setMsg(text, kind) {
+        const msg = $("unlock-msg");
+        msg.className = "msg" + (kind ? " " + kind : "");
+        msg.textContent = text || "";
+      }
+
+      function applyHidden() {
+        for (const id of ["gSeg", "gNew", "gFolders", "hdrFld"]) {
+          $(id).classList.toggle("show", hiddenTier && id !== "hdrFld");
         }
+        // The header field is a .fld, not a dashed group: visible on step 2
+        // only, and only for eyes that asked for it.
+        $("hdrFld").classList.toggle("hidden", !(hiddenTier && step === 2));
       }
 
-      function chosenVaultId() {
-        return $("manualId").checked ? $("vaultId").value.trim() : $("vaultPick").value;
+      function chosenId() {
+        if (byHand) return $("vaultId").value.trim();
+        const picked = document.querySelector('#vaultRows input[name="v"]:checked');
+        return picked ? picked.value : "";
       }
 
-      function folderInputs() {
-        return [...document.querySelectorAll("#folderRows .folderInput")];
+      // The chosen space's facts: its server folder, its derived header dir.
+      function chosen() {
+        return choices.get(chosenId()) || null;
       }
 
-      // A folder row is a path and a Remove button. Removing the last one grows
-      // a fresh empty row, so the editor is never a dead end.
-      function addFolderRow(value = "") {
+      function headerDir() {
+        return hiddenTier && $("vaultDir").value.trim() ? $("vaultDir").value.trim() : chosen()?.headerDir || "";
+      }
+
+      // One row of the folder editor: a path input and a Remove button.
+      function addFolderRow(value) {
         const row = document.createElement("div");
-        row.className = "row";
-        row.style.marginTop = "6px";
+        row.className = "frow";
         const input = document.createElement("input");
-        input.className = "folderInput";
+        input.type = "text";
         input.placeholder = "~/Syncbox";
-        input.value = value;
-        const remove = document.createElement("button");
-        remove.type = "button";
-        remove.className = "secondary";
-        remove.textContent = "Remove";
-        remove.addEventListener("click", () => {
-          row.remove();
-          if (folderInputs().length === 0) addFolderRow();
-        });
-        row.append(input, remove);
-        $("folderRows").appendChild(row);
+        input.spellcheck = false;
+        input.value = value || "";
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.textContent = "remove";
+        rm.addEventListener("click", () => row.remove());
+        row.append(input, rm);
+        $("editFolders").appendChild(row);
+        return row;
       }
 
-      // The operator set a folder for this vault; put it in the first row. A
-      // vault with no server location leaves whatever the human typed alone.
-      function applyDefaultFolder() {
-        const def = vaultDefaults.get($("vaultPick").value);
-        if (!def) return;
-        const inputs = folderInputs();
-        if (inputs.length === 0) addFolderRow(def);
-        else inputs[0].value = def;
+      // The sync folder line: the server-derived one, read-only, or — when the
+      // operator left the choice to each client — an editor the human fills.
+      function renderFolderLine() {
+        const c = chosen();
+        const auto = $("autoFolder");
+        $("editFolders").innerHTML = "";
+        if (!chosenId()) {
+          auto.innerHTML = "";
+          $("folderHint").textContent = "Pick a space above first — its folder is the server's business, not yours.";
+        } else if (c && c.defaultFolder) {
+          auto.innerHTML = `<div class="autof">⌂ ${escapeHtml(c.defaultFolder)} <span class="auto">AUTO</span></div>`;
+          $("folderHint").textContent =
+            "Chosen by the server — the space's name under your sync folder. Nothing to pick; renaming the space does not move it.";
+        } else {
+          auto.innerHTML = "";
+          $("folderHint").textContent = byHand
+            ? "This server does not name a folder for a typed id — choose one below."
+            : "The operator left this one to each client — choose a folder below.";
+          addFolderRow("");
+        }
+        $("createHdr").disabled = !headerDir();
       }
 
-      function settings() {
-        return {
-          server: $("server").value.trim(),
-          vaultId: chosenVaultId(),
-          vaultDir: $("vaultDir").value.trim(),
-          folders: folderInputs().map((i) => i.value.trim()).filter(Boolean),
-          password: $("password").value,
-        };
+      function foldersToSend() {
+        const c = chosen();
+        const out = [];
+        if (c && c.defaultFolder && !byHand) out.push(c.defaultFolder);
+        for (const input of document.querySelectorAll("#editFolders input")) {
+          const v = input.value.trim();
+          if (v) out.push(v);
+        }
+        return out;
       }
 
-      $("addFolder").addEventListener("click", () => addFolderRow());
-      $("vaultPick").addEventListener("change", applyDefaultFolder);
+      function showStep2() {
+        step = 2;
+        $("setupCard").classList.add("step2");
+        $("vaultFld").classList.remove("hidden");
+        $("folderFld").classList.remove("hidden");
+        applyHidden();
+        renderSetup();
+      }
 
-      // Pairing: the operator named the vault on the server, so the human
-      // finds and picks the name; the id rides along unseen. One vault means
-      // one option, pre-selected — the home-server case in one click.
-      $("find").addEventListener("click", async () => {
-        const msg = $("unlock-msg");
-        msg.className = "msg muted";
-        msg.textContent = "Asking the server for its vaults…";
-        const pick = $("vaultPick");
+      /* ---------- wiring ---------- */
+
+      $("server").addEventListener("input", renderSetup);
+      $("spw").addEventListener("input", renderSetup);
+
+      $("setupBtn").addEventListener("click", async () => {
+        if (step === 1) {
+          setMsg("Asking the server for its spaces…");
+          const server = $("server").value.trim();
+          try {
+            const vaults = await invoke("list_vaults", { server, password: $("spw").value });
+            const live = vaults.filter((v) => !v.archived);
+            choices.clear();
+            const rows = $("vaultRows");
+            rows.innerHTML = "";
+            for (const v of live) {
+              choices.set(v.id, v);
+              const label = document.createElement("label");
+              const radio = document.createElement("input");
+              radio.type = "radio";
+              radio.name = "v";
+              radio.value = v.id;
+              if (live.length === 1) radio.checked = true;
+              const span = document.createElement("span");
+              // The human picks a name; the id rides along unseen. Mode shows
+              // because it is a fact about the human's privacy.
+              span.innerHTML = `<span class="vn">${escapeHtml(v.name || v.id)}</span>` +
+                `<span class="vm"> · ${v.mode === "sync" ? "sync space — kept in the clear" : "encrypted vault"}</span>`;
+              label.append(radio, span);
+              rows.appendChild(label);
+            }
+            if (live.length === 0) {
+              setMsg("This server has no spaces yet — set one up on its web page first.", "err");
+              return;
+            }
+            $("okTxt").textContent = "Connected to " + server.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+            setMsg("");
+            showStep2();
+            renderFolderLine();
+            return;
+          } catch (err) {
+            setMsg(String(err), "err");
+            return;
+          }
+        }
+        const id = chosenId();
+        if (!id) {
+          setMsg("Pick a space first" + (hiddenTier ? ", or enter an id by hand." : "."), "err");
+          return;
+        }
+        const folders = foldersToSend();
+        if (folders.length === 0) {
+          setMsg("Add at least one folder to keep in sync.", "err");
+          return;
+        }
+        const dir = headerDir();
+        if (!dir) {
+          setMsg("This computer has no home directory to keep the space's state in — the hidden Vault header folder field can name one.", "err");
+          return;
+        }
+        setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
         try {
-          const vaults = await invoke("list_vaults", {
+          const settings = {
             server: $("server").value.trim(),
-            password: $("password").value,
-          });
-          const live = vaults.filter((v) => !v.archived);
-          vaultNames.clear();
-          vaultDefaults.clear();
-          pick.innerHTML = "";
-          for (const v of live) {
-            const option = document.createElement("option");
-            option.value = v.id;
-            // The human picks a name. The id rides along in the value and
-            // stays out of sight — it is the server's handle, not the
-            // vault's name. A vault nobody registered yet has no name, and
-            // then the id is all there is to show.
-            option.textContent = v.name || v.id;
-            vaultNames.set(v.id, v.name || v.id);
-            if (v.defaultFolder) vaultDefaults.set(v.id, v.defaultFolder);
-            pick.appendChild(option);
-          }
-          pick.disabled = live.length === 0 || $("manualId").checked;
-          if (live.length === 0) {
-            msg.className = "msg err";
-            msg.textContent = "This server has no vaults yet — set one up on its web page first.";
-          } else if (live.length === 1) {
-            msg.textContent = "Found the server's only vault: " + (live[0].name || live[0].id);
-          } else {
-            msg.textContent = live.length + " vaults on this server — pick one.";
-          }
-          applyDefaultFolder();
-        } catch (err) {
-          msg.className = "msg err";
-          msg.textContent = String(err);
-        }
-      });
-
-      // The expert's door, still there: a name that never surfaced in the
-      // registry (an old server, a hand-adopted vault) can always be typed.
-      $("manualId").addEventListener("change", () => {
-        const manual = $("manualId").checked;
-        $("vaultId").classList.toggle("hidden", !manual);
-        $("vaultPick").disabled = manual || $("vaultPick").options.length === 0;
-      });
-
-      $("unlock").addEventListener("click", async () => {
-        const msg = $("unlock-msg");
-        msg.className = "msg muted";
-        if (!chosenVaultId()) {
-          msg.className = "msg err";
-          msg.textContent = "Pick a vault first — Find vaults, or tick “enter vault id by hand”.";
-          return;
-        }
-        if (settings().folders.length === 0) {
-          msg.className = "msg err";
-          msg.textContent = "Add at least one folder to keep in sync.";
-          return;
-        }
-        msg.textContent = "Unlocking…";
-        try {
-          const s = await invoke("unlock", { settings: settings() });
-          msg.textContent = "";
+            vaultId: id,
+            vaultDir: dir,
+            folders,
+            mode: chosen()?.mode || "vault",
+            password: $("spw").value,
+          };
+          const s = await invoke("unlock", { settings });
+          setMsg("");
           renderStatus(s);
         } catch (err) {
-          msg.className = "msg err";
-          msg.textContent = String(err);
+          setMsg(String(err), "err");
         }
       });
 
-      $("create").addEventListener("click", async () => {
-        const msg = $("unlock-msg");
-        msg.className = "msg muted";
-        msg.textContent = "Creating vault (this takes a moment)…";
+      $("vaultRows").addEventListener("change", () => renderFolderLine());
+
+      // Hidden tier: the two escape hatches, segmented like the mock.
+      $("segServer").addEventListener("click", () => {
+        byHand = false;
+        $("segServer").classList.add("on");
+        $("segHand").classList.remove("on");
+        $("vaultRows").classList.remove("hidden");
+        $("vaultId").classList.add("hidden");
+        renderFolderLine();
+      });
+      $("segHand").addEventListener("click", () => {
+        byHand = true;
+        $("segHand").classList.add("on");
+        $("segServer").classList.remove("on");
+        $("vaultRows").classList.add("hidden");
+        $("vaultId").classList.remove("hidden");
+        renderFolderLine();
+      });
+      $("vaultId").addEventListener("input", () => renderFolderLine());
+
+      $("addFolder").addEventListener("click", () => addFolderRow(""));
+
+      // Hidden tier's vault creation stays honest: this writes a header on this
+      // machine; creating a space on the server is the console's job.
+      $("createHdr").addEventListener("click", async () => {
+        const dir = headerDir();
+        if (!dir) return;
+        setMsg("Creating the vault header (this takes a moment)…");
         try {
-          const root = await invoke("create_vault", {
-            dir: $("vaultDir").value.trim(),
-            password: $("password").value,
-          });
-          msg.className = "msg ok";
-          msg.textContent = `Vault created. Root id ${root}. Unlock to sync.`;
+          const root = await invoke("create_vault", { dir, password: $("spw").value });
+          setMsg(`Vault header created. Root id ${root}. Unlock to sync.`, "ok");
         } catch (err) {
-          msg.className = "msg err";
-          msg.textContent = String(err);
+          setMsg(String(err), "err");
         }
       });
 
-      $("lock").addEventListener("click", async () => {
-        await invoke("lock");
-        refresh();
+      /* gear click menu — only items that really exist */
+      $("gear").addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (win.classList.contains("setup")) return;
+        $("gmenu").classList.toggle("open");
+      });
+      document.addEventListener("click", (e) => {
+        if (!e.target.closest("#gmenu") && !e.target.closest("#gear")) $("gmenu").classList.remove("open");
+      });
+      $("mSync").addEventListener("click", async () => {
+        $("gmenu").classList.remove("open");
+        try { renderStatus(await invoke("sync_now")); } catch (err) { console.error(err); }
+      });
+      $("mLock").addEventListener("click", async () => {
+        $("gmenu").classList.remove("open");
+        try { renderStatus(await invoke("lock")); } catch (err) { console.error(err); }
+      });
+      $("mQuit").addEventListener("click", () => {
+        $("gmenu").classList.remove("open");
+        invoke("quit").catch(() => {});
       });
 
-      $("sync").addEventListener("click", async () => {
-        try {
-          renderStatus(await invoke("sync_now"));
-        } catch (err) {
-          console.error(err);
-        }
+      // Row click reveals the folder; the flash mirrors the mock.
+      $("vlist").addEventListener("click", async (e) => {
+        const row = e.target.closest("[data-folder]");
+        if (!row) return;
+        const folder = row.dataset.folder;
+        openFlash = folder;
+        renderMain(lastStatus);
+        try { await invoke("open_folder", { path: folder }); } catch (err) { console.error(err); }
+        setTimeout(() => {
+          if (openFlash === folder) { openFlash = null; if (lastStatus) renderMain(lastStatus); }
+        }, 1200);
       });
 
-      function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, (c) => ({
-          "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-        }[c]));
-      }
-
-      // Start at login — a desktop setting, independent of vault state.
-      try {
-        $("autostart").checked = await invoke("get_autostart");
-      } catch (err) {
-        $("autostart-msg").textContent = String(err);
-      }
+      $("hiddenToggle").addEventListener("change", async () => {
+        hiddenTier = $("hiddenToggle").checked;
+        applyHidden();
+        try { await invoke("set_prefs", { settings: { showHidden: hiddenTier } }); } catch (err) { console.error(err); }
+      });
 
       $("autostart").addEventListener("change", async () => {
         const want = $("autostart").checked;
-        try {
-          await invoke("set_autostart", { enabled: want });
-          $("autostart-msg").textContent = "";
-        } catch (err) {
+        try { await invoke("set_autostart", { enabled: want }); } catch (err) {
           $("autostart").checked = !want;
-          $("autostart-msg").textContent = String(err);
+          console.error(err);
         }
       });
 
-      // One folder row to start, so the editor is ready before Find vaults
-      // prefills it with the vault's server-side location.
-      addFolderRow();
+      /* ---------- polling ---------- */
 
-      refresh();
-      setInterval(refresh, 2000);
+      function renderStatus(s) {
+        lastStatus = s;
+        if (s.unlocked) renderMain(s);
+        else { renderSetup(); $("errBanner").textContent = ""; }
+      }
+
+      async function refresh() {
+        tick += 1;
+        try {
+          const s = await invoke("status");
+          if (s.unlocked && (DEMO || tick % 3 === 0)) lastUsage = await invoke("usage");
+          if (s.unlocked && (DEMO || tick % 2 === 0)) renderFeed(await invoke("activity"));
+          renderStatus(s);
+        } catch (err) {
+          $("stxt").textContent = "ipc unavailable";
+          win.className = "win st-err";
+          console.error(err);
+        }
+      }
+
+      async function boot() {
+        try {
+          const p = await invoke("get_prefs");
+          hiddenTier = !!p.showHidden;
+          $("hiddenToggle").checked = hiddenTier;
+        } catch (err) { console.error(err); }
+        try {
+          $("autostart").checked = await invoke("get_autostart");
+        } catch (err) { console.error(err); }
+        applyHidden();
+        renderSetup();
+        if (DEMO) {
+          const params = new URLSearchParams(location.search);
+          if (params.get("hidden")) {
+            hiddenTier = true;
+            $("hiddenToggle").checked = true;
+            applyHidden();
+          }
+          $("server").value = "https://sync.example.org";
+          $("spw").value = "demo-password";
+          renderSetup();
+          if (demoState() === "step2") {
+            $("setupBtn").click();
+            // `pick=1` also ticks the first radio, so the AUTO folder line
+            // shows up in a browser screenshot. The connect handler resolves
+            // in a microtask; this macrotask runs after it.
+            if (params.get("pick")) {
+              setTimeout(() => {
+                const radio = document.querySelector('#vaultRows input[name="v"]');
+                if (radio) {
+                  radio.checked = true;
+                  radio.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+              }, 0);
+            }
+          }
+        }
+        await refresh();
+        setInterval(refresh, 2000);
+      }
+      boot();
     </script>
   </body>
 </html>

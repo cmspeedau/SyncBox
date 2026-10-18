@@ -1,7 +1,9 @@
-# Desktop app (M4)
+# Desktop app
 
-The Tauri v2 desktop client: background sync, vault unlock, sync status, and a
-Backups panel (list snapshots, back up now).
+The Tauri v2 desktop client: background sync, vault unlock, and the agent UI
+built to `docs/reference-agent-ui.html` — a tinted status bar over a per-folder
+sync list, a gear click menu, and a first-run card that connects to the server,
+picks a space, and takes the folder the server derives.
 
 The app is a **member of the client Cargo workspace** — see `client/Cargo.toml` —
 so `cargo check`/`clippy`/`test --workspace` compile the shell and run its tests, and
@@ -14,7 +16,7 @@ them. It is built on the crates that already exist:
 | --- | --- |
 | `syncbox-crypto` | unlock, re-encrypt, key handling |
 | `syncbox-vault` | the on-disk vault and its layout |
-| `syncbox-index` | local state (opened through the agent) |
+| `syncbox-index` | local state (opened through the agent, and read directly for the `usage` line) |
 | `syncbox-sync` | the sync engine and conflict naming |
 | `syncbox-transport` | talking to the server (`UreqHttp`, the `ureq` feature) |
 | `syncbox-agent` | the whole session: unlock, background loop, status, backups |
@@ -29,9 +31,10 @@ agent across the IPC boundary (the DTOs in `src-tauri/src/dto.rs`).
 ```
 src-tauri/         Rust: Tauri window + commands over the Agent; icons; tauri.conf.json
   src/main.rs      window + command registration; the `today()` clock edge
-  src/state.rs     shared state: the SyncWorker handle + re-auth client factory
+  src/state.rs     shared state: the SyncWorker handles + re-auth client factory
   src/commands.rs  the #[tauri::command] surface (thin; blocking work off-thread)
   src/dto.rs       JSON shapes the webview sees, mapped from agent types (tested)
+  src/prefs.rs     the stored switches (prefs.json in the app config dir; tested)
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
 ```
 
@@ -45,36 +48,57 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 | --- | --- |
 | `status` | current state (`locked`/`idle`/`syncing`/`error`), last sync, last pass |
 | `activity` | recent sync outcomes, for the activity feed |
-| `unlock` | unlock a vault and start the background loop (re-auths each pass) |
-| `sync_now` | ask the loop for an immediate pass (non-blocking) |
-| `lock` | stop the loop and drop the keys |
-| `create_vault` | create a vault header, return its root id |
-| `backups` | list the server's snapshots (`not_configured` is explained, not an error) |
-| `back_up_now` | ask the server to snapshot now |
+| `usage` | files and referenced bytes per synced folder (the row meta + usage line) |
+| `unlock` | open a space — deriving keys for a vault, nothing for a sync space — and start one loop per folder |
+| `sync_now` | ask the loops for an immediate pass (non-blocking) |
+| `lock` | stop the loops and drop the keys |
+| `list_vaults` | the server's spaces for the picker: name, mode, derived folder, derived header dir |
+| `create_vault` | create a vault header on this machine, return its root id (hidden tier) |
+| `open_folder` | reveal a synced folder in the OS file manager (the row click) |
+| `quit` | exit the process (the gear menu's Quit) |
+| `get_prefs` / `set_prefs` | the stored switches (Show hidden features) |
+| `get_autostart` / `set_autostart` | the start-at-login entry |
 
-Unlock, create, and the two backups calls run on a blocking thread (Argon2id and the
-network), so the webview never stalls; `status`/`activity`/`sync_now` just read the
-shared snapshot the worker publishes.
+Unlock, create, and the network calls run on a blocking thread (Argon2id and
+ureq), so the webview never stalls; `status`/`activity`/`usage`/`sync_now` just
+read the shared snapshot the workers publish.
 
-## Current state (M4)
+## Current state
 
-The shell is wired end to end: a window with the panels above, driving the
-`Agent`/`SyncWorker` background loop, with the real `UreqHttp` client (shared with the
-CLI via the transport `ureq` feature). `withGlobalTauri` is on so the static frontend
-reaches the commands.
+The shell is wired end to end: the reference UI (M16), driving the
+`Agent`/`SyncWorker` background loops, with the real `UreqHttp` client (shared
+with the CLI via the transport `ureq` feature). `withGlobalTauri` is on so the
+static frontend reaches the commands.
 
-**Built and clippy-clean here, but not launched** — this is a headless box (no
-display), so a window can't be opened on it; treat `cargo build` (links
-webkit/gtk/soup) plus the agent + DTO tests as the verification, and run the binary on
-a real desktop to see the UI.
+**Built and clippy-clean here, but not launched from CI** — the CI runner is
+headless, so a window can't be opened there; `cargo build` (links
+webkit/gtk/soup) plus the agent + DTO + prefs tests are the CI verification,
+and `index.html` carries a browser preview (`?demo=setup|idle|sync|err`,
+`&hidden=1`, `&pick=1`): every invoke answers from fixtures outside Tauri, so
+the window can be screenshotted and checked against the mock without the
+shell. Inside Tauri the parameter is unreachable.
 
-**Shipped since M4:** autostart and single-instance (M6, below). **Still deferred:** the
-**tray icon** — it needs `libappindicator`, which is absent here, so `tauri` is pulled
-with `default-features = false, features = ["wry"]` precisely so the missing lib (and
-image decoders) aren't required to compile; the window is the whole UI until a machine
-carrying the lib builds the app. Mount control shipped with M5 (read-only + writable +
-folderless sync); bundling shipped as M6's first step (see Packaging). A Node/Svelte
-frontend behind `frontendDist` (instead of this static one) and code signing remain open.
+**M16 S1 specifics.** The main window is the reference's, with three honest
+deviations: the row list shows the one space's folders (the client is
+single-space today); the gear menu carries only what exists (Sync now, Lock
+vault, Quit — Pause and Settings… join in S2/S4); and a Recent activity
+disclosure stands under the list until the settings window's Notifications
+page inherits it. Unlock is now mode-aware — the same `open_folders` call the
+CLI uses, so a sync space syncs in the clear from the picker with no vault
+header. The space's local state dir is derived (`~/.syncbox/<id>`), so no
+default screen asks for a path; the hidden tier can override it.
+
+**Shipped since M4:** autostart and single-instance (M6, below), the operator
+pointing at server-named vaults (M10), sync-space modes (M11), and the
+reference main window (M16 S1). **Still deferred:** the separate Unlock and
+Settings windows (M16 S3/S4 — today the main window hosts the unlock form
+itself), the pause concept (S2), and the **tray icon** — it needs
+`libappindicator`, which is absent here, so `tauri` is pulled with
+`default-features = false, features = ["wry"]` precisely so the missing lib
+(and image decoders) aren't required to compile; the window is the whole UI
+until a machine carrying the lib builds the app (S5). A Node/Svelte frontend
+behind `frontendDist` (instead of this static one) and code signing remain
+open.
 
 ## Building the app
 
