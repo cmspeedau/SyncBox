@@ -115,3 +115,28 @@ func TestBackupScheduleNeedsATarget(t *testing.T) {
 		t.Errorf("setSchedule with no target = %d %q, want 409 not_configured", code, errCode)
 	}
 }
+
+// next_due_unix is the loop's armed next fire, so the console can say "next in a
+// moment". A test server runs no loop, so it starts unarmed (0); the point is that
+// whatever the scheduler has armed is what the endpoint reports, and a cadence
+// change clears it until the loop re-arms.
+func TestBackupConfigReportsNextDue(t *testing.T) {
+	sched := backup.NewScheduler(time.Hour)
+	c := newConfigClient(t, sched)
+
+	if got := c.getSchedule(); got.NextDueUnix != 0 {
+		t.Errorf("unarmed next_due = %d, want 0", got.NextDueUnix)
+	}
+
+	due := time.Now().Add(15 * time.Minute).UTC().Truncate(time.Second)
+	sched.Arm(due)
+	if got := c.getSchedule(); got.NextDueUnix != due.Unix() {
+		t.Errorf("armed next_due = %d, want %d", got.NextDueUnix, due.Unix())
+	}
+
+	// A cadence change drops the armed time, so a reader never sees a stale "next".
+	c.setSchedule(3600)
+	if got := c.getSchedule(); got.NextDueUnix != 0 {
+		t.Errorf("next_due after a change = %d, want 0 (cleared until the loop re-arms)", got.NextDueUnix)
+	}
+}

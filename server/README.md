@@ -124,7 +124,9 @@ ciphertext — and would answer `403` if you asked it to try. The Snapshots pane
 takes a snapshot on demand, verifies sealed ones, and sets the snapshot
 **schedule** on the running server — including switching it off; a change there
 applies live, while `SYNCBOX_BACKUP_SCHEDULE` in the environment stays the value
-a restart returns to. An **About this server** list under the live stats reads
+a restart returns to. The panel also answers "is this actually backing up?"
+before you open the list — how old the newest snapshot is, and how soon the next
+scheduled one lands. An **About this server** list under the live stats reads
 back the facts the environment set — storage backend, data directory, backup
 target, share-link lifetime, recycle retention — so they are legible in the
 browser without grepping the process.
@@ -160,7 +162,7 @@ The surface, all under a bearer header:
 | `GET /api/v1/shares/{token}` | that one file's bytes with no credential at all, always as an attachment with `nosniff` |
 | `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create (name, location, mode), rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
-| `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
+| `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); `GET` also carries `next_due_unix`, when the running scheduler expects the next snapshot; a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 | `GET /admin/about` | a read-only summary for the console: version, storage backend, data directory, backup target, share TTL, recycle retention (authenticated — the unauthenticated name-card and `healthz` must not name these) |
 

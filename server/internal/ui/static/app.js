@@ -225,6 +225,30 @@ function fmtDuration(seconds) {
   return plural(s, "second");
 }
 
+// fmtAge reads a timestamp backwards — "just now", "12 minutes ago", "3 days ago"
+// — the way an operator gauges whether a backup is fresh. fmtIn reads one
+// forwards, for the next scheduled snapshot. Both round to the coarsest unit,
+// because the exact number only matters to a second, and nobody plans around it.
+function fmtAge(value) {
+  const then = new Date(value).getTime();
+  if (Number.isNaN(then)) return "unknown";
+  const seconds = (Date.now() - then) / 1000;
+  const plural = (n, unit) => n + " " + unit + (n === 1 ? "" : "s") + " ago";
+  if (seconds < 45) return "just now";
+  if (seconds < 5400) return plural(Math.round(seconds / 60), "minute");
+  if (seconds < 172800) return plural(Math.round(seconds / 3600), "hour");
+  return plural(Math.round(seconds / 86400), "day");
+}
+
+function fmtIn(unixSeconds) {
+  const seconds = unixSeconds - Math.floor(Date.now() / 1000);
+  const plural = (n, unit) => "in " + n + " " + unit + (n === 1 ? "" : "s");
+  if (seconds <= 30) return "due now";
+  if (seconds < 5400) return plural(Math.round(seconds / 60), "minute");
+  if (seconds < 172800) return plural(Math.round(seconds / 3600), "hour");
+  return plural(Math.round(seconds / 86400), "day");
+}
+
 // copyText puts text on the clipboard when the browser lets it, and says so when
 // it will not. The console often runs over a plain http tailscale address, which
 // is not a secure context, so the clipboard API is unavailable there; the
@@ -771,6 +795,7 @@ async function renderSnapshots(response) {
     $("take-snapshot").disabled = true;
     $("snapshot-list").textContent = "";
     $("snapshot-note").textContent = "";
+    $("snapshot-status").textContent = "";
     $("snapshots-empty").hidden = false;
     $("snapshots-empty").textContent =
       "No backup target is configured, so there is nowhere to write a snapshot.";
@@ -779,12 +804,20 @@ async function renderSnapshots(response) {
   $("take-snapshot").disabled = false;
   if (!response.ok) {
     $("snapshot-error").textContent = await reason(response);
+    $("snapshot-status").textContent = "";
     return;
   }
   $("snapshot-error").textContent = "";
   const snapshots = await response.json();
   const host = $("snapshot-list");
   host.textContent = "";
+  // An operator's first question is "is this thing actually backing up?", so
+  // answer it before the list: when the newest snapshot was taken.
+  const newest = snapshots.reduce((max, s) => Math.max(max, new Date(s.CreatedAt).getTime() || 0), 0);
+  $("snapshot-status").textContent = snapshots.length
+    ? "Latest snapshot " + fmtAge(newest) + " — " + snapshots.length +
+      (snapshots.length === 1 ? " snapshot" : " snapshots") + " on the target."
+    : "No snapshots yet. Take one now, or set a schedule below.";
   $("snapshots-empty").hidden = snapshots.length > 0;
   if (snapshots.length === 0) {
     $("snapshots-empty").textContent = "No snapshots yet. Take one before you need it.";
@@ -792,13 +825,15 @@ async function renderSnapshots(response) {
   for (const snapshot of snapshots) host.appendChild(snapshotCard(snapshot));
 }
 
-// renderSchedule fills the schedule select from the server's live cadence. With
-// no backup target there is nothing to schedule, so the control is disabled and
-// says why rather than sitting there applying nothing.
+// renderSchedule fills the schedule select from the server's live cadence and
+// reports how soon the next scheduled snapshot lands. With no backup target there
+// is nothing to schedule, so the control is disabled and says why rather than
+// sitting there applying nothing.
 function renderSchedule(response) {
   const select = $("schedule-select");
   const button = $("schedule-form").querySelector("button");
   $("schedule-note").textContent = "";
+  $("next-due").textContent = "";
   if (!response.ok) {
     select.disabled = true;
     button.disabled = true;
@@ -818,9 +853,16 @@ function renderSchedule(response) {
       select.value = String(cfg.interval_seconds);
     } else {
       // A cadence from the environment that is not one of the presets: leave the
-      // select unselected and say what is actually running.
+      // select unselected; the next-due line states what is actually running.
       select.selectedIndex = -1;
-      $("schedule-note").textContent = "Current schedule: " + (cfg.schedule || "off") + ".";
+    }
+    if (cfg.interval_seconds === 0) {
+      $("next-due").textContent = "Scheduled snapshots are off.";
+    } else if (cfg.next_due_unix) {
+      $("next-due").textContent = "Next scheduled snapshot " + fmtIn(cfg.next_due_unix) + ".";
+    } else {
+      // On but not yet re-armed (a change moments ago): promise the cadence, not a time.
+      $("next-due").textContent = "Scheduled every " + fmtDuration(cfg.interval_seconds) + ".";
     }
   });
 }
@@ -840,9 +882,15 @@ $("schedule-form").addEventListener("submit", async (event) => {
     }
     $("snapshot-error").textContent = "";
     const cfg = await response.json();
-    $("schedule-note").textContent = cfg.interval_seconds === 0
-      ? "Scheduled snapshots are off."
-      : "Scheduled snapshots: " + label.toLowerCase() + ".";
+    if (cfg.interval_seconds === 0) {
+      $("schedule-note").textContent = "Scheduled snapshots are off.";
+      $("next-due").textContent = "";
+    } else {
+      $("schedule-note").textContent = "Scheduled snapshots: " + label.toLowerCase() + ".";
+      // The loop re-arms within a moment; until the next read we can only promise
+      // the cadence, not the exact minute, so say it will land "within" one.
+      $("next-due").textContent = "The next one lands within " + fmtDuration(seconds) + ".";
+    }
   } finally {
     button.disabled = false;
   }

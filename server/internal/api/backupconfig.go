@@ -19,6 +19,10 @@ type backupConfigBody struct {
 	Configured      bool   `json:"configured"`
 	IntervalSeconds int    `json:"interval_seconds"`
 	Schedule        string `json:"schedule"`
+	// NextDueUnix is when the running scheduler expects the next snapshot, or 0
+	// when nothing is pending (off, or a change not yet re-armed). omitempty so a
+	// server that has not armed a wait simply omits it.
+	NextDueUnix int64 `json:"next_due_unix,omitempty"`
 }
 
 // minScheduleSeconds mirrors the config floor: a snapshot every few seconds would
@@ -30,11 +34,15 @@ func scheduleConfig(s *Server) backupConfigBody {
 		return backupConfigBody{Configured: false, IntervalSeconds: 0, Schedule: "off"}
 	}
 	every := s.sched.Every()
-	return backupConfigBody{
+	body := backupConfigBody{
 		Configured:      true,
 		IntervalSeconds: int(every / time.Second),
 		Schedule:        scheduleLabel(every),
 	}
+	if due := s.sched.NextDue(); !due.IsZero() {
+		body.NextDueUnix = due.Unix()
+	}
+	return body
 }
 
 func scheduleLabel(every time.Duration) string {

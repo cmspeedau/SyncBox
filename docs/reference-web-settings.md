@@ -57,8 +57,10 @@ ciphertext as stored.
 - **Shipped (server + console):** `GET/PUT /admin/backups/config` reads or changes
   the schedule, or switches it off, on the running server, no restart;
   `SYNCBOX_BACKUP_*` env stays the fallback for headless setup. The embedded
-  console's Snapshots panel drives it today. The *test-then-save a connection*
-  half (the Set-up-S3 card below) is still to come.
+  console's Snapshots panel drives it today; its `GET` also carries
+  `next_due_unix`, so the panel shows the newest snapshot's age and how soon the
+  next scheduled one lands. The *test-then-save a connection* half (the Set-up-S3
+  card below) is still to come.
 - **Not configured:** the snapshot list is replaced by a **Set up S3
   connection** card — bucket (`s3://bucket[/prefix]`), optional custom
   endpoint (MinIO-style), region, access/secret key, compliance-lock days
