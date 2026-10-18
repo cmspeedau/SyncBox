@@ -208,8 +208,9 @@ jobs:
       # `docker build` proves the compiler is happy; a scratch image can still
       # die on boot (wrong user, unwritable volume, broken ENTRYPOINT) and show
       # none of it in the build output. This step runs the very tag built above,
-      # probes it over loopback, and asserts three facts: it answers /healthz, it
-      # refuses strangers, and a space registered as `sync` stays in the clear —
+      # probes it over loopback, and asserts the essentials: it answers /healthz,
+      # boots uninitialized and takes its password through first run, refuses
+      # strangers, and keeps a space registered as `sync` in the clear —
       # a cleartext name and body in, the same out (S2's server-side contract,
       # which the Rust engine's fake server can only approximate). Credentials
       # are not read from anywhere: the probe completes the container's first run
@@ -277,10 +278,19 @@ jobs:
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
+          # Before first run the server has no password, so it says so and lets
+          # nobody in. Both answers are the assertion that a fresh image cannot
+          # be signed into and cannot be scraped for a credential.
+          status=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/v1/auth/status")
+          if [[ $status != *'"initialized":false'* ]]; then
+            echo "::error::a fresh image reported itself initialized: $status"
+            docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
             -X POST -d '{"password":"wrong"}' "http://127.0.0.1:${port}/api/v1/auth/token")
           if [ "$code" != 401 ]; then
-            echo "::error::wrong password got $code, expected 401"
+            echo "::error::token before first run got $code, expected 401"
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
@@ -476,7 +486,7 @@ jobs:
             exit 1
           fi
 
-          # The boot log is the closing evidence: the generated-password and
+          # The boot log is the closing evidence: the first-run and
           # listen-everywhere warnings should be visible — proof the config layer
           # spoke, and that the scratch image ran long enough to speak. Reading it
           # from a file rather than piping `docker logs` into `head` is not
@@ -486,9 +496,9 @@ jobs:
           # 40 lines is boot chatter plus one line per probe request.
           docker logs "$name" >"$boot_log" 2>&1
           head -40 "$boot_log"
-          echo "runtime check passed: served /healthz, refused strangers, kept a sync"
-          echo "space in the clear, browsed it, shared one file to a stranger, emptied"
-          echo "and refilled its recycle bin, and refused a vault three times over"
+          echo "runtime check passed: booted uninitialized, completed first run, refused"
+          echo "strangers, kept a sync space in the clear, browsed it, shared one file to"
+          echo "a stranger, emptied and refilled its recycle bin, and refused a vault thrice"
 
   package:
     name: Package (Linux desktop)
@@ -649,11 +659,14 @@ jobs:
     #
     # With the input left empty, the `if` skips this job, so pushes and PRs never
     # see it and nothing about ordinary CI changes.
-    # The label goes in the name only when there is one. On a push or PR there is no
-    # `inputs` context, and GitHub renders an unevaluated expression literally: every
-    # ordinary run grew a job called `Runner canary (${{ inputs.canary_label }})`,
-    # skipped but confusing. Interpolate it in the expression instead of the string.
-    name: ${{ github.event_name == 'workflow_dispatch' && format('Runner canary ({0})', inputs.canary_label) || 'Runner canary (manual only)' }}
+    # Static, on purpose. The `inputs` context only exists on a workflow_dispatch
+    # run, and referencing it from `name` on a push does not yield an empty string:
+    # the expression fails to compile and GitHub falls back to printing it as text.
+    # That produced `Runner canary (${{ inputs.canary_label }})` for a literal in
+    # #55 and the whole `format(...)` formula for a literal in #56, so nothing that
+    # needs `inputs` goes in this field again. The probe names its label in the log,
+    # where it was always readable.
+    name: Runner canary (manual only)
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.canary_label != '' }}
     runs-on: [self-hosted, '${{ inputs.canary_label }}']
     timeout-minutes: 5
