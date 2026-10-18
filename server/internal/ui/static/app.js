@@ -338,7 +338,10 @@ function renderAbout(body) {
       ["Data directory", about.data_dir || "—"],
       ["Backup target", about.backup_target || "not configured"],
       ["Share links last", fmtDuration(about.share_ttl_seconds)],
+      ["Sign-in tokens last", fmtDuration(about.token_ttl_seconds)],
       ["Deleted files kept", about.recycle_days > 0 ? about.recycle_days + " days" : "until purged by hand"],
+      ["Request rate limit", about.rate_limit_rps > 0 ? about.rate_limit_rps + " req/s (burst " + about.rate_burst + ")" : "unlimited"],
+      ["Commits to unknown vaults", about.require_registered_vaults ? "refused" : "accepted"],
     ]), { id: "about" })
   );
 }

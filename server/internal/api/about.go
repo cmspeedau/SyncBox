@@ -26,6 +26,13 @@ type aboutBody struct {
 	// when no backup target is configured.
 	BackupTarget      string `json:"backup_target"`
 	BackupsConfigured bool   `json:"backups_configured"`
+	// Posture the environment chose that the console would otherwise have no way
+	// to read back: how long a signed-in session lasts, whether calls are throttled
+	// (and how hard), and whether a commit to an unregistered vault is refused.
+	TokenTTLSeconds   int     `json:"token_ttl_seconds"`
+	RateLimitRPS      float64 `json:"rate_limit_rps,omitempty"`
+	RateBurst         int     `json:"rate_burst,omitempty"`
+	RequireRegistered bool    `json:"require_registered_vaults"`
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
@@ -34,11 +41,17 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 		version = "dev"
 	}
 	body := aboutBody{
-		Version:     version,
-		Storage:     s.storage,
-		DataDir:     s.dataDir,
-		ShareTTL:    int(s.shareTTL / time.Second),
-		RecycleDays: s.recycleDays,
+		Version:           version,
+		Storage:           s.storage,
+		DataDir:           s.dataDir,
+		ShareTTL:          int(s.shareTTL / time.Second),
+		RecycleDays:       s.recycleDays,
+		TokenTTLSeconds:   int(s.issuer.TTL() / time.Second),
+		RequireRegistered: s.requireRegisteredVaults,
+	}
+	if s.rateLimit > 0 {
+		body.RateLimitRPS = s.rateLimit
+		body.RateBurst = s.rateBurst
 	}
 	if s.backups != nil {
 		body.BackupsConfigured = true
