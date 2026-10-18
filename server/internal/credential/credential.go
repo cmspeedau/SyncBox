@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -135,6 +136,26 @@ func (a *Authority) Source() string {
 	default:
 		return "unset"
 	}
+}
+
+// ChangedAt reports when the stored credential was last written — the first-run
+// Setup or the most recent Change — as the password file's own modification time,
+// which the filesystem keeps across a restart. It is the durable counterpart to
+// Source's "stored": a console-set schedule reverts on restart, but this does not.
+// There is no such moment to report for a password owned by SYNCBOX_PASSWORD, for
+// one not yet set, or for an in-memory authority that never wrote a file, so each
+// of those returns the zero time.
+func (a *Authority) ChangedAt() time.Time {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.mode != modeStored || a.path == "" {
+		return time.Time{}
+	}
+	info, err := os.Stat(a.path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 // Verify checks a guess against whichever credential is in force. An

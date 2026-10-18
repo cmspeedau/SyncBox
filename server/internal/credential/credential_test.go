@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStoredPasswordSealsAndVerifies(t *testing.T) {
@@ -222,5 +223,58 @@ func TestChangeRefusesEnvAndUninitialized(t *testing.T) {
 	none, _ := NewAuthority("", "")
 	if err := none.Change("whatever", "something-else-12"); !errors.Is(err, ErrNotInitialized) {
 		t.Errorf("Change uninitialized = %v, want ErrNotInitialized", err)
+	}
+}
+
+func TestChangedAtReflectsTheStoredFileMtime(t *testing.T) {
+	none, _ := NewAuthority("", "")
+	if !none.ChangedAt().IsZero() {
+		t.Error("an uninitialized authority reports a change time")
+	}
+
+	// An environment password owns no timestamp, even with a stored file on disk:
+	// the server did not write it and cannot date it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "password")
+	env, _ := NewAuthority(path, "the-env-password")
+	if !env.ChangedAt().IsZero() {
+		t.Error("an env authority reports a change time")
+	}
+
+	// An in-memory stored credential never wrote a file, so it has nothing to date.
+	inMem, _ := NewAuthority("", "")
+	if err := inMem.Setup("a-long-enough-secret"); err != nil {
+		t.Fatalf("in-memory Setup: %v", err)
+	}
+	if !inMem.ChangedAt().IsZero() {
+		t.Error("an in-memory stored authority reports a change time it cannot have")
+	}
+
+	// A real stored credential reports the password file's own mtime: fresh setup
+	// reads as "moments ago"...
+	stored, _ := NewAuthority(path, "")
+	if err := stored.Setup("a-long-enough-secret"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	changed := stored.ChangedAt()
+	if changed.IsZero() {
+		t.Fatal("a stored credential reports no change time")
+	}
+	if delta := time.Since(changed); delta < -time.Minute || delta > time.Minute {
+		t.Errorf("just-set ChangedAt is %v from now, want within a minute", delta)
+	}
+
+	// ...and the value is genuinely the one on disk: plant an instant, reload, and
+	// it comes back — the durable counterpart to Source's "stored".
+	pinned := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, pinned, pinned); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+	reloaded, err := NewAuthority(path, "")
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.ChangedAt(); got.Unix() != pinned.Unix() {
+		t.Errorf("reloaded ChangedAt = %v (unix %d), want unix %d", got, got.Unix(), pinned.Unix())
 	}
 }

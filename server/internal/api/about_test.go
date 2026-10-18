@@ -100,6 +100,10 @@ func TestAboutReportsTheDeployment(t *testing.T) {
 	if body.UptimeSeconds != 5400 {
 		t.Errorf("UptimeSeconds = %d, want 5400 (90 minutes)", body.UptimeSeconds)
 	}
+	// An environment password is not something this server wrote, so it has no age.
+	if body.PasswordChangedUnix != 0 {
+		t.Errorf("PasswordChangedUnix = %d, want 0 for an environment password", body.PasswordChangedUnix)
+	}
 }
 
 func TestAboutWithNoBackupTarget(t *testing.T) {

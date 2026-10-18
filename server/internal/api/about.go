@@ -37,6 +37,10 @@ type aboutBody struct {
 	// "stored", or "unset" — so an operator can tell whether the console's change
 	// password persists or whether SYNCBOX_PASSWORD owns it. Never the secret.
 	PasswordSource string `json:"password_source"`
+	// PasswordChangedUnix is when a stored password was last set or rotated (the
+	// credential file's mtime), so "stored" reads with an age. It is omitted for an
+	// environment password, which the server did not write and so cannot date.
+	PasswordChangedUnix int64 `json:"password_changed_unix,omitempty"`
 	// When this process came up and how long it has been running. Uptime makes the
 	// schedule-drift warning actionable: it says whether the server has restarted
 	// (and so reverted an unpersisted setting) since the operator last looked.
@@ -72,6 +76,9 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 		if up := int64(s.now().Sub(s.started).Seconds()); up > 0 {
 			body.UptimeSeconds = up
 		}
+	}
+	if changed := s.creds.ChangedAt(); !changed.IsZero() {
+		body.PasswordChangedUnix = changed.Unix()
 	}
 	writeJSON(w, http.StatusOK, body)
 }
