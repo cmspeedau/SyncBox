@@ -20,6 +20,11 @@ type Scheduler struct {
 	mu      sync.Mutex
 	every   time.Duration // 0 means snapshots are off
 	changed chan struct{} // capacity 1: one pending nudge is enough
+	// bootEvery is the cadence the environment set when the process started. It
+	// never changes after construction, so the API can compare it against the live
+	// `every` and tell the console whether a change is only temporary — the whole
+	// consequence of not persisting the schedule. See Boot.
+	bootEvery time.Duration
 	// nextDue is when the timer loop expects to fire the next snapshot, armed on
 	// each pass it starts a wait. The zero time means nothing is pending — off, or
 	// the loop has not run yet. It is reported to the console so an operator sees
@@ -28,8 +33,18 @@ type Scheduler struct {
 }
 
 // NewScheduler makes a scheduler with the given boot interval; 0 starts it off.
+// That boot interval is remembered as the value a restart returns to.
 func NewScheduler(every time.Duration) *Scheduler {
-	return &Scheduler{every: every, changed: make(chan struct{}, 1)}
+	return &Scheduler{every: every, bootEvery: every, changed: make(chan struct{}, 1)}
+}
+
+// Boot reports the cadence the environment set at startup, which a restart
+// returns to because the live schedule is not persisted. It never changes, so
+// comparing it with Every tells whether the running cadence is temporary.
+func (s *Scheduler) Boot() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.bootEvery
 }
 
 // Every reports the current cadence; zero means off.

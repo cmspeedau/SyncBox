@@ -162,7 +162,7 @@ The surface, all under a bearer header:
 | `GET /api/v1/shares/{token}` | that one file's bytes with no credential at all, always as an attachment with `nosniff` |
 | `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create (name, location, mode), rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
-| `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); `GET` also carries `next_due_unix`, when the running scheduler expects the next snapshot; a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
+| `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); `GET` also carries `next_due_unix` (when the next snapshot is due) and `boot_interval_seconds`/`boot_schedule`/`drifted` (the cadence the environment set at boot, and whether the live one differs from it); a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 | `GET /admin/about` | a read-only summary for the console: version, storage backend, data directory, backup target, share TTL, recycle retention (authenticated — the unauthenticated name-card and `healthz` must not name these) |
 
