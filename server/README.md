@@ -111,6 +111,13 @@ integrations. Everything under `/api/v1` and `/admin` is bearer-token
 only, with one deliberate exception: `/api/v1/shares/{token}`, whose
 credential *is* the signed link. `/healthz` is open.
 
+The embedded console at `/` drives all of it: sign in with the same
+password, and each **sync space** offers *Browse files* — read its tree,
+hand out a share link to one file (with a copyable URL and its expiry),
+and pull a deletion back from the recycle bin. A **vault's** card says
+plainly that none of that is possible, because the server holds only
+ciphertext — and would answer `403` if you asked it to try.
+
 ```sh
 # buy a token with the password
 TOKEN=$(curl -s localhost:8080/api/v1/auth/token \

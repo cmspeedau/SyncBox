@@ -107,6 +107,34 @@ function fmtTime(unix) {
   return unix ? new Date(unix * 1000).toLocaleString() : "never";
 }
 
+// copyText puts text on the clipboard when the browser lets it, and says so when
+// it will not. The console often runs over a plain http tailscale address, which
+// is not a secure context, so the clipboard API is unavailable there; the
+// fallback selects the text so the operator can copy it themselves.
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch { copied = false; }
+    area.remove();
+    return copied;
+  }
+}
+
+// flashCopy relabels a button for a moment to confirm what the operator just put
+// on their clipboard, then hands the button back.
+function flashCopy(button, label, copied) {
+  const original = button.textContent;
+  button.textContent = copied ? label : "Select and copy";
+  setTimeout(() => { button.textContent = original; }, 1600);
+}
+
 async function refresh() {
   const [vaultsResponse, snapshotsResponse, health, card] = await Promise.all([
     api("GET", "/admin/vaults"),
@@ -205,22 +233,7 @@ function vaultCard(vault) {
   copy.type = "button";
   copy.textContent = "Copy command";
   copy.addEventListener("click", async () => {
-    let copied = false;
-    try {
-      await navigator.clipboard.writeText(command);
-      copied = true;
-    } catch {
-      // Clipboard needs a secure context; a tailscale-http console does not
-      // have one, so fall back to selecting the command for Ctrl+C.
-      const area = document.createElement("textarea");
-      area.value = command;
-      document.body.appendChild(area);
-      area.select();
-      try { copied = document.execCommand("copy"); } catch { copied = false; }
-      area.remove();
-    }
-    copy.textContent = copied ? "Copied" : "Select and copy";
-    setTimeout(() => { copy.textContent = "Copy command"; }, 1600);
+    flashCopy(copy, "Copied", await copyText(command));
   });
   card.appendChild(copy);
 
@@ -265,7 +278,37 @@ function vaultCard(vault) {
   });
 
   actions.append(rename, locate, retire);
+
+  // A sync space is one the server can read, so its files are browsable,
+  // shareable and recoverable from the bin right here. A vault is not: the
+  // server holds only ciphertext, so the honest answer is to say so rather than
+  // offer a button the server would refuse.
+  if (vault.mode === "vault") {
+    card.appendChild(actions);
+    const note = document.createElement("p");
+    note.className = "hint vault-note";
+    note.textContent = "Encrypted end to end: the server keeps only ciphertext, " +
+      "so it cannot browse, share, or recycle this space's files.";
+    card.appendChild(note);
+    return card;
+  }
+
+  const panel = spacePanel(vault);
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.textContent = "Browse files";
+  browse.setAttribute("aria-expanded", "false");
+  browse.addEventListener("click", () => {
+    const open = panel.el.hidden;
+    panel.el.hidden = !open;
+    browse.textContent = open ? "Hide files" : "Browse files";
+    browse.setAttribute("aria-expanded", String(open));
+    if (open) panel.reload();
+  });
+  actions.insertBefore(browse, rename);
+
   card.appendChild(actions);
+  card.appendChild(panel.el);
   return card;
 }
 
@@ -274,6 +317,223 @@ function renderVaults(vaults) {
   host.textContent = "";
   $("vaults-empty").hidden = vaults.length > 0;
   for (const vault of vaults) host.appendChild(vaultCard(vault));
+}
+
+// revealLink swaps a file row's action for a copyable share link and when it
+// dies. The server hands back a relative URL; the console shows the absolute one
+// so the operator sends something a recipient can actually open.
+function revealLink(container, view) {
+  container.textContent = "";
+  const url = location.origin + view.url;
+
+  const box = document.createElement("span");
+  box.className = "share-link";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.readOnly = true;
+  input.value = url;
+  input.setAttribute("aria-label", "Share link for " + view.path);
+
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.textContent = "Copy link";
+  copy.addEventListener("click", async () => {
+    flashCopy(copy, "Copied", await copyText(url));
+  });
+
+  const when = document.createElement("span");
+  when.className = "share-expiry";
+  when.textContent = "expires " + fmtTime(view.expires_unix);
+
+  box.append(input, copy, when);
+  container.appendChild(box);
+}
+
+// spacePanel is a sync space's readable surfaces (M11 S4): browse, share, and
+// the recycle bin. They are reads of what the space stores in the clear, so the
+// console offers them for a sync space and must not for a vault — the server
+// refuses a vault on each with a code, because it holds only ciphertext and so
+// has nothing to show. Every call here hits the same endpoint an operator would
+// curl; nothing here decrypts anything, which is why the console may offer it.
+function spacePanel(vault) {
+  const base = "/api/v1/vaults/" + encodeURIComponent(vault.id);
+
+  const el = document.createElement("div");
+  el.className = "space-panel";
+  el.hidden = true; // stays folded until the operator clicks Browse files
+
+  const filesTab = document.createElement("button");
+  filesTab.type = "button";
+  filesTab.className = "space-tab active";
+  filesTab.textContent = "Files";
+  const binTab = document.createElement("button");
+  binTab.type = "button";
+  binTab.className = "space-tab";
+  binTab.textContent = "Recycle bin";
+
+  const tabs = document.createElement("div");
+  tabs.className = "space-tabs";
+  tabs.append(filesTab, binTab);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = "These files are stored in the clear, so a share link in " +
+    "anyone's hands downloads them. A deleted file stays here until the " +
+    "server's recycle window passes.";
+
+  const status = document.createElement("p");
+  status.className = "ok";
+  status.setAttribute("role", "status");
+
+  const error = document.createElement("p");
+  error.className = "error";
+  error.setAttribute("role", "alert");
+
+  const filesHost = document.createElement("div");
+  filesHost.className = "file-list";
+  const binHost = document.createElement("div");
+  binHost.className = "file-list";
+  binHost.hidden = true;
+
+  let shown = "files";
+
+  function emptyRow(text) {
+    const row = document.createElement("p");
+    row.className = "file-empty";
+    row.textContent = text;
+    return row;
+  }
+
+  function fileRow(file) {
+    const row = document.createElement("div");
+    row.className = "file-row";
+
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = file.path;
+
+    const meta = document.createElement("span");
+    meta.className = "file-meta";
+    meta.textContent = fmtBytes(file.size) + " · " + fmtTime(file.modified_unix);
+
+    const action = document.createElement("span");
+    action.className = "file-action";
+
+    const share = document.createElement("button");
+    share.type = "button";
+    share.textContent = "Share";
+    share.addEventListener("click", async () => {
+      status.textContent = "";
+      error.textContent = "";
+      share.disabled = true;
+      share.textContent = "Sharing…";
+      const response = await api("POST", base + "/shares", {
+        dir_id: file.dir_id, cipher_name: file.cipher_name,
+      });
+      if (!response.ok) {
+        error.textContent = await reason(response);
+        share.disabled = false;
+        share.textContent = "Share";
+        return;
+      }
+      revealLink(action, await response.json());
+    });
+
+    action.appendChild(share);
+    row.append(name, meta, action);
+    return row;
+  }
+
+  function binRow(entry) {
+    const row = document.createElement("div");
+    row.className = "file-row";
+
+    const name = document.createElement("span");
+    name.className = "file-name";
+    name.textContent = entry.path;
+
+    const meta = document.createElement("span");
+    meta.className = "file-meta";
+    meta.textContent = fmtBytes(entry.size) + " · deleted " + fmtTime(entry.deleted_unix);
+
+    const action = document.createElement("span");
+    action.className = "file-action";
+
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", async () => {
+      status.textContent = "";
+      error.textContent = "";
+      restore.disabled = true;
+      restore.textContent = "Restoring…";
+      const response = await api("POST", base + "/recycle/restore", {
+        dir_id: entry.dir_id, cipher_name: entry.cipher_name,
+      });
+      if (!response.ok) {
+        error.textContent = await reason(response);
+        restore.disabled = false;
+        restore.textContent = "Restore";
+        return;
+      }
+      status.textContent = entry.path + " is back. Peers pull it on their next sync.";
+      await loadBin();
+    });
+
+    action.appendChild(restore);
+    row.append(name, meta, action);
+    return row;
+  }
+
+  async function loadFiles() {
+    filesHost.textContent = "";
+    const response = await api("GET", base + "/files");
+    if (!response.ok) {
+      error.textContent = await reason(response);
+      return;
+    }
+    const body = await response.json();
+    const files = (body.files || []).slice().sort((a, b) => a.path.localeCompare(b.path));
+    if (files.length === 0) {
+      filesHost.appendChild(emptyRow("This space has no files yet."));
+      return;
+    }
+    for (const file of files) filesHost.appendChild(fileRow(file));
+  }
+
+  async function loadBin() {
+    binHost.textContent = "";
+    const response = await api("GET", base + "/recycle");
+    if (!response.ok) {
+      error.textContent = await reason(response);
+      return;
+    }
+    const body = await response.json();
+    const deleted = body.deleted || [];
+    if (deleted.length === 0) {
+      binHost.appendChild(emptyRow("The recycle bin is empty."));
+      return;
+    }
+    for (const entry of deleted) binHost.appendChild(binRow(entry));
+  }
+
+  function show(which) {
+    shown = which;
+    status.textContent = "";
+    error.textContent = "";
+    filesTab.classList.toggle("active", which === "files");
+    binTab.classList.toggle("active", which === "bin");
+    filesHost.hidden = which !== "files";
+    binHost.hidden = which !== "bin";
+    (which === "files" ? loadFiles : loadBin)();
+  }
+
+  filesTab.addEventListener("click", () => show("files"));
+  binTab.addEventListener("click", () => show("bin"));
+  el.append(tabs, note, status, error, filesHost, binHost);
+
+  return { el, reload: () => show(shown) };
 }
 
 // Snapshots are whole-server, and the panel drives the same admin routes the
