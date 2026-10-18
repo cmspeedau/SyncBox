@@ -27,8 +27,10 @@ name: CI
 #     that only that box has. `Client (Rust)` is pinned that way, with `desktop`;
 #     `Server (Go)` is deliberately left shareable because the NUC handles it in
 #     seconds. Anything new that compiles Rust belongs on the desktop too.
-#   - Nothing answers `macOS` today, so `Package (macOS x86_64)` queues to its
-#     6-hour timeout rather than failing. Registering the Mini fixes it.
+#   - A label with no runner behind it does not fail. The job sits in the queue for
+#     24 hours — GitHub's limit for self-hosted queue time — and is only cancelled
+#     then, which is why every job below carries an explicit `timeout-minutes` and
+#     why the manual dispatch can fire the `canary` probe below.
 #   - Two runners answer `docker`, so the image job may land on either box.
 #
 # Adding a job? Read the note at the top of the project build plan first; the
@@ -41,10 +43,20 @@ on:
   pull_request:
   # Manual runs exist so runner routing can be checked without inventing a commit:
   # Actions -> CI -> Run workflow, then read "Runner name" in each job's log.
-  # Worth doing after any change to the self-hosted fleet, because a job whose
-  # label has no runner left just queues until the 6h timeout instead of
-  # failing loudly.
+  # Worth doing after any change to the self-hosted fleet, because a job whose label
+  # has no runner left does not fail: it queues for 24 hours and is cancelled then,
+  # which leaves no failed conclusion anywhere. `canary_label` is how to test that
+  # path on purpose — name a label no runner has and watch whether the canary fails
+  # at its own timeout (visible, dated) or simply sits there.
   workflow_dispatch:
+    inputs:
+      canary_label:
+        description: >-
+          Label for the canary job. A label no runner has (e.g. `ghost`) exercises
+          the waiting-for-a-runner path; `desktop`, `docker` or `macOS` probe a real
+          box. Leave empty to skip the canary entirely.
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -62,6 +74,10 @@ jobs:
     # `Server (Go)` below stays unpinned on purpose: the NUC does it in ~25s, and
     # leaving one Linux job shareable keeps the two heavy jobs starting at once.
     runs-on: [self-hosted, Linux, desktop]
+    # Sized from real runs, with room for a cold cache: this job took 4m32s on a
+    # warm cache (run 39104747110). It is also the job most likely to wedge the only
+    # desktop runner, so the rope is short on purpose.
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: client
@@ -90,6 +106,9 @@ jobs:
   go:
     name: Server (Go)
     runs-on: [self-hosted, Linux]
+    # 25s on the NUC with a warm `_work/_tool` (run 39104747110); 10 minutes covers a
+    # cold toolchain download plus `go test -race` on two cores.
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: server
@@ -130,6 +149,10 @@ jobs:
     # be sandpaper. Built, never pushed — publishing stays a deliberate act.
     runs-on: [self-hosted, docker]
     needs: go
+    # 10s warm on the desktop runner. 15 minutes covers a cold layer cache plus the
+    # runtime check's own 30s+30s curl loops, which would otherwise be the only
+    # thing bounding this job.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -406,6 +429,9 @@ jobs:
     # Linux only — see the note on `rust` about the Mac mini.
     runs-on: [self-hosted, desktop]
     needs: rust
+    # 4m18s warm (run 39104747110). 45 minutes: a cold linuxdeploy run plus two
+    # bundles on one box that is also building Rust.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: client/apps/desktop
@@ -474,13 +500,14 @@ jobs:
     # deliberate, like every other publish gate in this project. An Apple
     # Silicon runner would be a second, separate target (aarch64-apple-darwin),
     # not a replacement for this one.
-    # NOT RUNNING, as of 18 Oct 2026: no runner answers `macOS`, so this job sits
-    # in the queue for its full 6-hour timeout instead of failing. The Mini's
-    # install is intact and one registration token (Settings -> Actions) from
-    # coming back. Delete the job rather than leaving it pending forever: a
-    # permanently queued job is how a hole stays hidden behind a mostly-green run.
+    # If this box goes quiet, this job does not fail: it queues for 24 hours and is
+    # cancelled then, leaving no failed conclusion behind (see the canary job). The
+    # tell is a run that simply never finishes.
     runs-on: [self-hosted, macOS]
     needs: rust
+    # 5m32s on a warm target dir (run 39104747110, first run on the re-registered
+    # Mini). 45 minutes because this is the slowest bundle step on the slowest box.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: client/apps/desktop
@@ -525,3 +552,55 @@ jobs:
             client/apps/desktop/src-tauri/target/release/bundle/osx/*.app
             client/apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
+
+  canary:
+    # A deliberate probe of the one failure mode this workflow cannot otherwise see:
+    # a job whose label has no runner behind it. Fire it from Actions -> Run workflow
+    # with `canary_label` set to a label no runner has (`ghost`) and see which of
+    # these two happens:
+    #
+    #   1. it fails at `timeout-minutes` — queue time counts against the timeout, so
+    #      the `timeout-minutes` on every job above is also a hard bound on how long
+    #      a missing runner stays invisible, and the failure is dated and greppable.
+    #      That is the outcome to want.
+    #   2. it sits until the 24-hour queue limit — queue time is excluded from the
+    #      timeout, so a missing runner is only ever visible live, and the real fix
+    #      is an availability check using a token that can read /actions/runners
+    #      (this repo's fine-grained PAT gets 403 there), not a timeout.
+    #
+    # With the input left empty, the `if` skips this job, so pushes and PRs never
+    # see it and nothing about ordinary CI changes.
+    name: Runner canary (${{ inputs.canary_label }})
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.canary_label != '' }}
+    runs-on: [self-hosted, '${{ inputs.canary_label }}']
+    timeout-minutes: 5
+    steps:
+      - name: Who caught me
+        run: |
+          echo "picked up by: ${RUNNER_NAME:-nobody} ($(uname -sr))"
+          echo "at: $(date -u +%FT%TZ)"
+          echo "reaching this line means a runner answers '${{ inputs.canary_label }}'."
+
+      # Informational, and it never fails the job: whether the runner inventory is
+      # readable at all, and with which credential. GITHUB_TOKEN cannot be granted
+      # administration:read, so 403 here is the expected answer until a token that
+      # can read it is stored as RUNNER_ADMIN_TOKEN.
+      - name: Runner inventory
+        env:
+          ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          DEFAULT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tok="${ADMIN_TOKEN:-$DEFAULT_TOKEN}"
+          src="GITHUB_TOKEN"
+          [ -n "$ADMIN_TOKEN" ] && src="RUNNER_ADMIN_TOKEN"
+          code=$(curl -sS -o runners.json -w '%{http_code}' \
+            -H "Authorization: Bearer $tok" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runners") \
+            || code=000
+          echo "  $src -> HTTP $code"
+          if [ "$code" = 200 ]; then
+            python3 -c 'import json; rows=[(r["name"], r["status"], ",".join(l["name"] for l in r["labels"])) for r in json.load(open("runners.json"))["runners"]]; [print("   %-22s %-8s %s" % t) for t in rows]'
+          else
+            echo "  inventory unreadable: runner visibility needs administration:read"
+            echo "  which GITHUB_TOKEN cannot have; store such a token as RUNNER_ADMIN_TOKEN"
+          fi
