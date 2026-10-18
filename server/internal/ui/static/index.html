@@ -99,6 +99,27 @@
       <p id="snapshots-empty" class="hint" hidden></p>
     </section>
 
+    <section id="password">
+      <h2>Password</h2>
+      <p class="hint">Rotate the password you sign in with — the one sync clients
+        use too. The server re-seals it with a fresh Argon2id hash and never keeps
+        the password itself. Confirm it is really you by entering your current
+        password. A deployment that takes its password from the
+        <code>SYNCBOX_PASSWORD</code> environment cannot change it here — set it
+        there and restart instead.</p>
+      <form id="password-form">
+        <input type="password" id="pw-current" autocomplete="current-password"
+               placeholder="Current password" aria-label="Current password">
+        <input type="password" id="pw-next" autocomplete="new-password"
+               placeholder="New password" aria-label="New password">
+        <input type="password" id="pw-confirm" autocomplete="new-password"
+               placeholder="Confirm new password" aria-label="Confirm new password">
+        <button type="submit">Change password</button>
+      </form>
+      <p id="password-error" class="error" role="alert"></p>
+      <p id="password-note" class="ok" role="status"></p>
+    </section>
+
   </section>
 
 </main>

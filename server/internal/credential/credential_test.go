@@ -135,3 +135,68 @@ func TestACorruptStoredPasswordRefusesToBoot(t *testing.T) {
 		t.Fatal("a corrupt password file was accepted; it must be a hard error")
 	}
 }
+
+func TestChangeRotatesAStoredPassword(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "password")
+	a, err := NewAuthority(path, "")
+	if err != nil {
+		t.Fatalf("NewAuthority: %v", err)
+	}
+	if err := a.Setup("first-secret"); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	// A wrong current password is refused and leaves the old one working.
+	if err := a.Change("nope", "brand-new-secret"); !errors.Is(err, ErrWrongPassword) {
+		t.Fatalf("Change(wrong current) = %v, want ErrWrongPassword", err)
+	}
+	if !a.Verify("first-secret") {
+		t.Fatal("a refused change altered the password")
+	}
+
+	// A too-short new password is refused, again leaving the old one in place.
+	if err := a.Change("first-secret", "short"); !errors.Is(err, ErrWeakPassword) {
+		t.Fatalf("Change(short new) = %v, want ErrWeakPassword", err)
+	}
+	if !a.Verify("first-secret") {
+		t.Fatal("a refused change altered the password")
+	}
+
+	// The real rotation: the old stops working, the new works, across a reload.
+	if err := a.Change("first-secret", "brand-new-secret"); err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	if a.Verify("first-secret") {
+		t.Error("the old password still signs in after a change")
+	}
+	if !a.Verify("brand-new-secret") {
+		t.Error("the new password does not sign in")
+	}
+
+	reloaded, err := NewAuthority(path, "")
+	if err != nil {
+		t.Fatalf("NewAuthority after change: %v", err)
+	}
+	if reloaded.Verify("first-secret") {
+		t.Error("the old password survived a restart")
+	}
+	if !reloaded.Verify("brand-new-secret") {
+		t.Error("the new password did not survive a restart")
+	}
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), "brand-new-secret") {
+		t.Error("the password file leaked the new password in the clear")
+	}
+}
+
+func TestChangeRefusesEnvAndUninitialized(t *testing.T) {
+	env, _ := NewAuthority("", "the-env-password")
+	if err := env.Change("the-env-password", "something-else-12"); !errors.Is(err, ErrEnvPassword) {
+		t.Errorf("Change under an env password = %v, want ErrEnvPassword", err)
+	}
+	none, _ := NewAuthority("", "")
+	if err := none.Change("whatever", "something-else-12"); !errors.Is(err, ErrNotInitialized) {
+		t.Errorf("Change uninitialized = %v, want ErrNotInitialized", err)
+	}
+}

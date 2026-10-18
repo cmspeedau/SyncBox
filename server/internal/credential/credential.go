@@ -51,11 +51,14 @@ const (
 )
 
 // Sentinel errors the API maps onto distinct codes, so a client can tell "this
-// server already has a password" from "that password is too short" from a real
-// failure.
+// server already has a password" from "that password is too short" from "you do
+// not know the current one" from a real failure.
 var (
 	ErrAlreadyInitialized = errors.New("the server already has a password")
-	ErrWeakPassword       = fmt.Errorf("a first-run password must be at least %d characters", MinPasswordLength)
+	ErrNotInitialized     = errors.New("the server has no password yet")
+	ErrEnvPassword        = errors.New("the server password comes from SYNCBOX_PASSWORD")
+	ErrWrongPassword      = errors.New("the current password did not match")
+	ErrWeakPassword       = fmt.Errorf("a password must be at least %d characters", MinPasswordLength)
 )
 
 // mode is which authority is in force.
@@ -158,6 +161,48 @@ func (a *Authority) Setup(password string) error {
 	}
 	a.key = encoded
 	a.mode = modeStored
+	return nil
+}
+
+// Change rotates a stored password in place. The caller must already know the
+// current one — Change verifies it before it will re-seal anything — the new one
+// is sealed with a fresh Argon2id salt, and the write is durable before the
+// authority adopts it. It refuses three ways on principle: a server with no
+// password yet has nothing to rotate (that is Setup's job), a password that came
+// from SYNCBOX_PASSWORD belongs to the environment (change it there and restart),
+// and a wrong current password is simply refused. A successful rotation replaces
+// the credential without ever reopening the first-run door, which is the point:
+// the alternative — delete the file and set up again — hands the server back to
+// whoever reaches it first.
+func (a *Authority) Change(current, next string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch a.mode {
+	case modeUninitialized:
+		return ErrNotInitialized
+	case modeEnv:
+		return ErrEnvPassword
+	}
+	ok, err := verify(a.key, current)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrWrongPassword
+	}
+	if len(next) < MinPasswordLength {
+		return ErrWeakPassword
+	}
+	encoded, err := hash(next)
+	if err != nil {
+		return err
+	}
+	if a.path != "" {
+		if err := writeSecret(a.path, encoded); err != nil {
+			return err
+		}
+	}
+	a.key = encoded
 	return nil
 }
 
