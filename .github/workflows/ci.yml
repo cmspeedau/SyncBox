@@ -104,6 +104,12 @@ jobs:
       - name: Runtime check
         run: |
           set -euo pipefail
+          # One rule for everything below: never pipe into `head` or `grep -q`.
+          # Both quit as soon as they have what they came for, the writer then
+          # takes a SIGPIPE, and under pipefail *that* is the step's exit code —
+          # 141, with every assertion above it already green. Test substrings
+          # (`[[ $x == *needle* ]]`) and read from a file instead; a `sed -n` or
+          # `tail` that consumes all its input is fine.
           name="syncbox-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           trap 'docker stop "$name" >/dev/null 2>&1 || true' EXIT
           # --rm plus the trap means no corpse survives this step, failed or
@@ -116,9 +122,12 @@ jobs:
           # over a real interface. The mapping exists once the container runs.
           port=""
           for _ in $(seq 1 10); do
+            # No `| head -1`: this format prints one line for one container, and
+            # a reader that quits early is exactly how a pipe starts failing here
+            # — see the closing evidence step below.
             port=$(docker inspect \
               --format '{{(index .NetworkSettings.Ports "8080/tcp" 0).HostPort}}' \
-              "$name" 2>/dev/null | head -1) || port=""
+              "$name" 2>/dev/null) || port=""
             [ -n "$port" ] && break
             sleep 1
           done
@@ -140,7 +149,7 @@ jobs:
             exit 1
           fi
           echo "healthz answered: $body"
-          if ! echo "$body" | grep -q '"status":"ok"'; then
+          if [[ $body != *'"status":"ok"'* ]]; then
             echo "::error::/healthz answered but not status ok"
             exit 1
           fi
@@ -166,10 +175,16 @@ jobs:
           # serves a space the operator registered as `sync` in the clear,
           # without ever trying to decrypt a name or a byte. The generated
           # password is printed to the boot log for the operator, so the probe
-          # reads it there rather than shipping a credential in the workflow.
-          password=$(docker logs "$name" 2>&1 \
-            | sed -n 's/^config: SYNCBOX_PASSWORD is unset, using the generated password \(.*\)$/\1/p' \
-            | head -1)
+          # reads it there rather than shipping a credential in the workflow —
+          # and it reads the log from a file, because taking "the first match"
+          # out of a pipe needs `head -1`, which is the trap above.
+          boot_log="${RUNNER_TEMP:-.}/syncbox-boot.log"
+          docker logs "$name" >"$boot_log" 2>&1
+          password=$(sed -n \
+            's/^config: SYNCBOX_PASSWORD is unset, using the generated password \(.*\)$/\1/p' \
+            "$boot_log")
+          # First match only, spelled in bash rather than with another reader.
+          password=${password%%$'\n'*}
           if [ -z "$password" ]; then
             echo "::error::could not read the generated password from the boot log"
             docker logs "$name" 2>&1 | tail -40
@@ -188,7 +203,7 @@ jobs:
           created=$(curl -fsS --max-time 3 -X POST -H "$auth" \
             -d '{"name":"Probe","mode":"sync"}' \
             "http://127.0.0.1:${port}/admin/vaults")
-          if ! echo "$created" | grep -q '"mode":"sync"'; then
+          if [[ $created != *'"mode":"sync"'* ]]; then
             echo "::error::a space created with mode=sync did not come back as sync: $created"
             exit 1
           fi
@@ -221,14 +236,14 @@ jobs:
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/revisions" >/dev/null
           revisions=$(curl -fsS --max-time 3 -H "$auth" \
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/revisions?since=0")
-          if ! echo "$revisions" | grep -q '"cipher_name":"hello.txt"'; then
+          if [[ $revisions != *'"cipher_name":"hello.txt"'* ]]; then
             echo "::error::the server did not keep the cleartext name: $revisions"
             exit 1
           fi
 
           # And the registry the client reads agrees that it is a sync space.
           listed=$(curl -fsS --max-time 3 -H "$auth" "http://127.0.0.1:${port}/vaults")
-          if ! echo "$listed" | grep -q '"mode":"sync"'; then
+          if [[ $listed != *'"mode":"sync"'* ]]; then
             echo "::error::the client registry did not list the space as sync: $listed"
             exit 1
           fi
@@ -242,7 +257,7 @@ jobs:
           # easiest to break, so they are asserted here and not only in Go.
           files=$(curl -fsS --max-time 3 -H "$auth" \
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/files")
-          if ! echo "$files" | grep -q '"path":"hello.txt"'; then
+          if [[ $files != *'"path":"hello.txt"'* ]]; then
             echo "::error::browse did not decode the cleartext path: $files"
             exit 1
           fi
@@ -285,7 +300,7 @@ jobs:
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/revisions" >/dev/null
           recycled=$(curl -fsS --max-time 3 -H "$auth" \
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/recycle")
-          if ! echo "$recycled" | grep -q '"path":"hello.txt"'; then
+          if [[ $recycled != *'"path":"hello.txt"'* ]]; then
             echo "::error::the recycle bin lost the deletion: $recycled"
             exit 1
           fi
@@ -306,15 +321,21 @@ jobs:
           body=$(curl -s --max-time 3 -X POST -H "$auth" \
             -d '{"dir_id":"00","cipher_name":"hello.txt"}' \
             "http://127.0.0.1:${port}/api/v1/vaults/${vaulty}/shares")
-          if ! echo "$body" | grep -q '"code":"not_shareable"'; then
+          if [[ $body != *'"code":"not_shareable"'* ]]; then
             echo "::error::sharing a vault did not answer not_shareable: $body"
             exit 1
           fi
 
           # The boot log is the closing evidence: the generated-password and
-          # listen-everywhere warnings should be visible — proof the config
-          # layer spoke, and that the scratch image ran long enough to speak.
-          docker logs "$name" 2>&1 | head -20
+          # listen-everywhere warnings should be visible — proof the config layer
+          # spoke, and that the scratch image ran long enough to speak. Reading it
+          # from a file rather than piping `docker logs` into `head` is not
+          # tidiness: the probe logs a line per request now, so the log outgrew
+          # the truncation, `head` began quitting early, and the writer's SIGPIPE
+          # failed this step with 141 *after* every assertion above had passed.
+          # 40 lines is boot chatter plus one line per probe request.
+          docker logs "$name" >"$boot_log" 2>&1
+          head -40 "$boot_log"
           echo "runtime check passed: served /healthz, refused strangers, kept a sync"
           echo "space in the clear, browsed it, shared one file to a stranger, emptied"
           echo "and refilled its recycle bin, and refused a vault three times over"
