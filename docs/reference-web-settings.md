@@ -6,7 +6,10 @@ no settings rail, no panels. The interactive mockup is
 snapshot*, the schedule *Apply*, per-snapshot *Verify* and *Sign out* all
 work. Supersedes the v1 rail + panels design (commit `7ae1b59`).
 
-Status: design reference only. Nothing in the web frontend implements it yet.
+Status: design reference for the web frontend. The snapshot **schedule** endpoint
+(`GET/PUT /admin/backups/config`) already exists and the embedded console's
+Snapshots panel drives it; the full web settings page (About server, vault-key
+change, Set-up-S3) is not built.
 
 ## Shape
 
@@ -49,10 +52,11 @@ ciphertext as stored.
 - Actions map to real endpoints: **Take a snapshot** →
   `POST /admin/backups`, **Verify** → `POST /admin/backups/{id}/verify`,
   list → `GET /admin/backups`.
-- The schedule select (and the form below) need **one new endpoint**,
-  `PUT /admin/backups/config` — change or switch off the schedule, or
-  test-then-save a connection; applied to the running server, no restart.
-  `SYNCBOX_BACKUP_*` env remains the fallback for headless setup.
+- **Shipped (server + console):** `GET/PUT /admin/backups/config` reads or changes
+  the schedule, or switches it off, on the running server, no restart;
+  `SYNCBOX_BACKUP_*` env stays the fallback for headless setup. The embedded
+  console's Snapshots panel drives it today. The *test-then-save a connection*
+  half (the Set-up-S3 card below) is still to come.
 - **Not configured:** the snapshot list is replaced by a **Set up S3
   connection** card — bucket (`s3://bucket[/prefix]`), optional custom
   endpoint (MinIO-style), region, access/secret key, compliance-lock days

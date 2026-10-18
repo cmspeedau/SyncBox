@@ -163,9 +163,18 @@ func serve(args []string, stdout io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if backups != nil && cfg.BackupSchedule > 0 {
-		go snapshotEvery(ctx, backups, cfg.BackupSchedule)
-		log.Printf("snapshotting every %s", cfg.BackupSchedule)
+	if backups != nil {
+		// The scheduler runs even at a zero interval, so a console change can turn
+		// snapshots on without a restart; SYNCBOX_BACKUP_SCHEDULE is the boot value
+		// and a restart returns to it (the environment stays the durable source).
+		sched := backup.NewScheduler(cfg.BackupSchedule)
+		srv.SetScheduler(sched)
+		go snapshotEvery(ctx, backups, sched)
+		if cfg.BackupSchedule > 0 {
+			log.Printf("snapshotting every %s", cfg.BackupSchedule)
+		} else {
+			log.Printf("scheduled snapshots off; set a schedule in the console or with SYNCBOX_BACKUP_SCHEDULE")
+		}
 	}
 
 	if cfg.RecycleDays > 0 {
@@ -198,19 +207,36 @@ func serve(args []string, stdout io.Writer) error {
 }
 
 // snapshotEvery takes a snapshot on a timer and retires the ones the retention
-// policy has aged out.
+// policy has aged out. The cadence comes from sched and can change while this
+// loop runs — a shorter interval, a switch off, or a switch back on from the
+// console — so it waits on a timer it re-arms each pass alongside the scheduler's
+// change signal and the shutdown context, rather than on a fixed ticker.
 //
 // Errors are logged rather than returned: a backup that fails once should not take
 // the server down with it, and the next tick tries again.
-func snapshotEvery(ctx context.Context, manager *backup.Manager, every time.Duration) {
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-
+func snapshotEvery(ctx context.Context, manager *backup.Manager, sched *backup.Scheduler) {
 	for {
+		every := sched.Every()
+		if every <= 0 {
+			// Off: park until the cadence changes or the server stops, then re-read.
+			select {
+			case <-ctx.Done():
+				return
+			case <-sched.Changed():
+			}
+			continue
+		}
+
+		timer := time.NewTimer(every)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-sched.Changed():
+			// The cadence moved or switched off: drop this wait and re-read it.
+			timer.Stop()
+			continue
+		case <-timer.C:
 		}
 
 		policy := backup.DefaultPolicy()

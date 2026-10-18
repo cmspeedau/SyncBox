@@ -92,6 +92,24 @@
         the whole server, not one space.</p>
 
       <p><button type="button" id="take-snapshot">Take snapshot</button></p>
+
+      <p class="hint">Scheduled snapshots run on this cadence. Changing it applies
+        to the running server only; a restart returns to
+        <code>SYNCBOX_BACKUP_SCHEDULE</code> in the environment.</p>
+      <form id="schedule-form">
+        <label for="schedule-select">Schedule:</label>
+        <select id="schedule-select">
+          <option value="0">Off</option>
+          <option value="900">Every 15 minutes</option>
+          <option value="3600">Every hour</option>
+          <option value="21600">Every 6 hours</option>
+          <option value="43200">Every 12 hours</option>
+          <option value="86400">Every day</option>
+        </select>
+        <button type="submit">Apply</button>
+      </form>
+      <p id="schedule-note" class="ok" role="status"></p>
+
       <p id="snapshot-error" class="error" role="alert"></p>
       <p id="snapshot-note" class="ok" role="status"></p>
 

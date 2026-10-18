@@ -120,7 +120,11 @@ that lets you set one — and each **sync space** offers *Browse files* — read
 its tree, hand out a share link to one file (with a copyable URL and its
 expiry), and pull a deletion back from the recycle bin. A **vault's** card
 says plainly that none of that is possible, because the server holds only
-ciphertext — and would answer `403` if you asked it to try.
+ciphertext — and would answer `403` if you asked it to try. The Snapshots panel
+takes a snapshot on demand, verifies sealed ones, and sets the snapshot
+**schedule** on the running server — including switching it off; a change there
+applies live, while `SYNCBOX_BACKUP_SCHEDULE` in the environment stays the value
+a restart returns to.
 
 ```sh
 # buy a token with the password
@@ -153,6 +157,7 @@ The surface, all under a bearer header:
 | `GET /api/v1/shares/{token}` | that one file's bytes with no credential at all, always as an attachment with `nosniff` |
 | `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create (name, location, mode), rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
+| `GET/PUT /admin/backups/config` | read or change the snapshot schedule on the running server (`{interval_seconds}`, `0` = off; `409` with no backup target); a restart reverts to `SYNCBOX_BACKUP_SCHEDULE` |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 
 Every non-2xx reply is `{"code": …, "reason": …}`. PUTs are
