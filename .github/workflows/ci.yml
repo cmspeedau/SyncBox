@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual runs exist so runner routing can be checked without inventing a commit:
+  # Actions -> CI -> Run workflow, then read "Runner name" in each job's log.
+  # Worth doing after any change to the self-hosted fleet, because a job whose
+  # label has no runner left just queues until the 6h timeout instead of
+  # failing loudly.
+  workflow_dispatch:
 
 permissions:
   contents: read
