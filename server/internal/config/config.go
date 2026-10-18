@@ -72,6 +72,13 @@ type Config struct {
 	// at a registered vault — so no old client breaks the moment the registry
 	// lands.
 	RequireRegisteredVaults bool
+	// ShareTTL is the longest a minted share link stays valid, for sync spaces.
+	// A mint may ask for a shorter life; nothing extends one. Default 168h.
+	ShareTTL time.Duration
+	// RecycleDays is how long a deleted file stays restorable in a sync space's
+	// recycle bin before the retention sweep drops the recoverable history
+	// behind it. Default 30; zero disables the sweep, keeping everything.
+	RecycleDays int
 }
 
 // Defaults returns the settings a server runs with when the environment says
@@ -84,6 +91,8 @@ func Defaults() Config {
 		MaxChunkBytes:  8 << 20,
 		BackupSchedule: 0,
 		RateBurst:      100,
+		ShareTTL:       168 * time.Hour,
+		RecycleDays:    30,
 	}
 }
 
@@ -169,6 +178,27 @@ func FromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("SYNCBOX_RATE_BURST must be at least 1, got %d", burst)
 		}
 		cfg.RateBurst = burst
+	}
+
+	if value := strings.TrimSpace(os.Getenv("SYNCBOX_SHARE_TTL")); value != "" {
+		ttl, err := time.ParseDuration(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("SYNCBOX_SHARE_TTL %q is not a duration: %w", value, err)
+		}
+		if ttl <= 0 {
+			return Config{}, fmt.Errorf("SYNCBOX_SHARE_TTL must be positive, got %s", ttl)
+		}
+		cfg.ShareTTL = ttl
+	}
+
+	// Zero is a value, not an absence: it turns the recycle sweep off, so the bin
+	// keeps every deletion. Only something that is not a number at all falls back.
+	if value := strings.TrimSpace(os.Getenv("SYNCBOX_RECYCLE_DAYS")); value != "" {
+		days, err := strconv.Atoi(value)
+		if err != nil || days < 0 {
+			return Config{}, fmt.Errorf("SYNCBOX_RECYCLE_DAYS %q is not a non-negative number of days", value)
+		}
+		cfg.RecycleDays = days
 	}
 
 	requireRegistered, err := parseSwitch("SYNCBOX_REQUIRE_REGISTERED_VAULTS", os.Getenv("SYNCBOX_REQUIRE_REGISTERED_VAULTS"))

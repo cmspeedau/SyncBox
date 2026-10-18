@@ -210,8 +210,12 @@ jobs:
             exit 1
           fi
 
-          # A cleartext name is committed and read back through the log.
-          manifest=$(printf 'SBXSYNC1 cleartext manifest' | base64 | tr -d '\n')
+          # A cleartext name is committed and read back through the log. The
+          # manifest is the real sync-space record rather than a placeholder,
+          # because the share download below has to read it to find the chunks:
+          # SBXSYNC1 || size:u64 || count:u32 || (stored_len:u32 || id_len:u16 || id).
+          manifest=$(printf 'SBXSYNC1\x12\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x12\x00\x00\x00\x11\x00%s' "$chunk" \
+            | base64 | tr -d '\n')
           curl -fsS --max-time 3 -X POST -H "$auth" \
             -d "{\"parent\":0,\"revision\":{\"revision\":0,\"parent\":0,\"dir_id\":\"00\",\"cipher_name\":\"hello.txt\",\"manifest\":\"${manifest}\",\"size\":18,\"modified_unix\":0,\"deleted\":false}}" \
             "http://127.0.0.1:${port}/api/v1/vaults/${space}/revisions" >/dev/null
@@ -229,11 +233,91 @@ jobs:
             exit 1
           fi
 
+          # ---- what a space the server can read is now good for -------------
+          # S3's three surfaces, against the deployed image. Browse decodes the
+          # cleartext path, a signed link hands ONE file to a caller holding no
+          # credential, the recycle bin sees a deletion and a restore takes it
+          # back — and a space registered as `vault` refuses all of it by code.
+          # These are the routes where the "we never read a vault" promise is
+          # easiest to break, so they are asserted here and not only in Go.
+          files=$(curl -fsS --max-time 3 -H "$auth" \
+            "http://127.0.0.1:${port}/api/v1/vaults/${space}/files")
+          if ! echo "$files" | grep -q '"path":"hello.txt"'; then
+            echo "::error::browse did not decode the cleartext path: $files"
+            exit 1
+          fi
+
+          shared=$(curl -fsS --max-time 3 -X POST -H "$auth" \
+            -d '{"dir_id":"00","cipher_name":"hello.txt"}' \
+            "http://127.0.0.1:${port}/api/v1/vaults/${space}/shares")
+          share=$(echo "$shared" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+          if [ -z "$share" ]; then
+            echo "::error::minting a share returned no token: $shared"
+            exit 1
+          fi
+          # No "$auth" header on purpose: the link is the credential. A share that
+          # needed the operator's token would not be a link anyone could open.
+          got=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/v1/shares/${share}")
+          if [ "$got" != "hello in the clear" ]; then
+            echo "::error::the share link served '$got' instead of the file's own bytes"
+            exit 1
+          fi
+          # The server hands out content it did not author from the origin the
+          # console lives on, so it must arrive as a download, never as a page.
+          disposition=$(curl -fsS --max-time 3 -D - -o /dev/null \
+            "http://127.0.0.1:${port}/api/v1/shares/${share}" \
+            | tr -d '\r' | sed -n 's/^[Cc]ontent-[Dd]isposition: attachment.*/attachment/p')
+          if [ "$disposition" != "attachment" ]; then
+            echo "::error::a shared file was not served as an attachment"
+            exit 1
+          fi
+          # A link edited by anyone is refused rather than half-honoured.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            "http://127.0.0.1:${port}/api/v1/shares/${share}x")
+          if [ "$code" != 401 ]; then
+            echo "::error::a forged share link got $code, expected 401"
+            exit 1
+          fi
+
+          # The bin sees the deletion, and a restore is a commit that brings it back.
+          curl -fsS --max-time 3 -X POST -H "$auth" \
+            -d '{"parent":1,"revision":{"revision":0,"parent":1,"dir_id":"00","cipher_name":"hello.txt","manifest":"","size":0,"modified_unix":0,"deleted":true}}' \
+            "http://127.0.0.1:${port}/api/v1/vaults/${space}/revisions" >/dev/null
+          recycled=$(curl -fsS --max-time 3 -H "$auth" \
+            "http://127.0.0.1:${port}/api/v1/vaults/${space}/recycle")
+          if ! echo "$recycled" | grep -q '"path":"hello.txt"'; then
+            echo "::error::the recycle bin lost the deletion: $recycled"
+            exit 1
+          fi
+          curl -fsS --max-time 3 -X POST -H "$auth" \
+            -d '{"dir_id":"00","cipher_name":"hello.txt"}' \
+            "http://127.0.0.1:${port}/api/v1/vaults/${space}/recycle/restore" >/dev/null
+
+          # And a vault is refused, with a code rather than prose.
+          vaulty=$(curl -fsS --max-time 3 -X POST -H "$auth" \
+            -d '{"name":"Vaulty","mode":"vault"}' "http://127.0.0.1:${port}/admin/vaults" \
+            | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "$auth" \
+            "http://127.0.0.1:${port}/api/v1/vaults/${vaulty}/files")
+          if [ "$code" != 403 ]; then
+            echo "::error::browsing a vault got $code, expected 403"
+            exit 1
+          fi
+          body=$(curl -s --max-time 3 -X POST -H "$auth" \
+            -d '{"dir_id":"00","cipher_name":"hello.txt"}' \
+            "http://127.0.0.1:${port}/api/v1/vaults/${vaulty}/shares")
+          if ! echo "$body" | grep -q '"code":"not_shareable"'; then
+            echo "::error::sharing a vault did not answer not_shareable: $body"
+            exit 1
+          fi
+
           # The boot log is the closing evidence: the generated-password and
           # listen-everywhere warnings should be visible — proof the config
           # layer spoke, and that the scratch image ran long enough to speak.
           docker logs "$name" 2>&1 | head -20
-          echo "runtime check passed: served /healthz, refused strangers, kept a sync space in the clear"
+          echo "runtime check passed: served /healthz, refused strangers, kept a sync"
+          echo "space in the clear, browsed it, shared one file to a stranger, emptied"
+          echo "and refilled its recycle bin, and refused a vault three times over"
 
   package:
     name: Package (Linux desktop)

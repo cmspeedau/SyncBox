@@ -82,6 +82,8 @@ host can run two servers). `syncboxd serve -h` lists the flags.
 | `SYNCBOX_RATE_LIMIT` | off | sustained requests per second per caller IP |
 | `SYNCBOX_RATE_BURST` | `100` | how many requests an IP may spend at once before the sustained rate takes over |
 | `SYNCBOX_REQUIRE_REGISTERED_VAULTS` | off | refuse commits to a vault the registry does not know (`403 unknown_vault`); turn on once every client targets a console-created vault |
+| `SYNCBOX_SHARE_TTL` | `168h` | how long a share link of a sync-space file stays open (any Go duration). It is also the ceiling: a mint may ask for a shorter link, never a longer one |
+| `SYNCBOX_RECYCLE_DAYS` | `30` | days a deleted sync-space file stays restorable. An hourly pass then drops the dead history behind the tombstone and keeps the tombstone; `0` switches the pass off |
 
 One number is fixed rather than configured: a chunk may be at most 8 MiB,
 which is what bounds a single upload.
@@ -106,7 +108,8 @@ of a backup.
 
 The desktop client and CLI use this API; curl is for poking and for
 integrations. Everything under `/api/v1` and `/admin` is bearer-token
-only; `/healthz` is open.
+only, with one deliberate exception: `/api/v1/shares/{token}`, whose
+credential *is* the signed link. `/healthz` is open.
 
 ```sh
 # buy a token with the password
@@ -131,6 +134,10 @@ The surface, all under a bearer header:
 | `POST /api/v1/vaults/{id}/chunks/exists` | "which of these chunk IDs do you already have" — dedup before upload |
 | `HEAD/GET/PUT /api/v1/vaults/{id}/chunks/{id}` | presence check, download, upload |
 | `GET /vaults` | the vault registry in client shape (id, name, location, mode, archived) |
+| `GET /api/v1/vaults/{id}/files` | browse a **sync space** — the newest revision per file, with its cleartext path decoded. A vault answers `403 not_browsable` |
+| `GET /api/v1/vaults/{id}/recycle` · `POST …/recycle/restore` | a sync space's deletions inside the retention window, and a restore, which is a commit at the head. A vault answers `403 not_recyclable` |
+| `POST /api/v1/vaults/{id}/shares` | mint a link to one sync-space file, optionally shorter than the TTL. A vault answers `403 not_shareable` |
+| `GET /api/v1/shares/{token}` | that one file's bytes with no credential at all, always as an attachment with `nosniff` |
 | `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create (name, location, mode), rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
@@ -162,6 +169,17 @@ an object is never read (docs/backup.md).
   every client points at a vault created in the console, set
   `SYNCBOX_REQUIRE_REGISTERED_VAULTS`: commits to anything else are then
   refused `403 unknown_vault` instead of quietly minting a namespace.
+- **A share link is a credential with no revocation.** Nothing is stored behind
+  it, so the only levers are its lifetime (`SYNCBOX_SHARE_TTL`, a week by
+  default) and the file itself — delete it and every link to it stops answering
+  at once. Anyone who has the URL has the file, so mint one over TLS.
+- **The recycle sweep drops history, not tombstones.** Once an hour it removes
+  the dead revisions behind a deletion older than `SYNCBOX_RECYCLE_DAYS`, which
+  is what bounds how far back a deletion can be undone — the chunk blobs outlive
+  it, since the server has no blob garbage collection yet. It keeps each
+  tombstone, so a client that was away through the sweep still learns the file is
+  gone instead of writing it back. A vault's revisions are never touched: they
+  are the only copy there is, and the server does not know what any of them are.
 - **Backups off means no `/admin` routes.** That is the safe default:
   the endpoint that says "copy everything off this box" should require a
   stated destination.

@@ -306,3 +306,66 @@ func containsAllText(t *testing.T, joined string, needles ...string) {
 		}
 	}
 }
+
+// The sync-space settings (M11 S3) both have a default worth stating out loud:
+// a week for a share link, a month in the recycle bin. And the bin's zero is a
+// value — it turns the sweep off — rather than an absence to fall back from.
+func TestShareAndRecycleDefaults(t *testing.T) {
+	cfg := Defaults()
+	if cfg.ShareTTL != 168*time.Hour {
+		t.Errorf("ShareTTL = %s, want a week", cfg.ShareTTL)
+	}
+	if cfg.RecycleDays != 30 {
+		t.Errorf("RecycleDays = %d, want 30", cfg.RecycleDays)
+	}
+}
+
+func TestShareAndRecycleReadFromTheEnvironment(t *testing.T) {
+	t.Setenv("SYNCBOX_SHARE_TTL", "45m")
+	t.Setenv("SYNCBOX_RECYCLE_DAYS", "7")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.ShareTTL != 45*time.Minute {
+		t.Errorf("ShareTTL = %s, want 45m", cfg.ShareTTL)
+	}
+	if cfg.RecycleDays != 7 {
+		t.Errorf("RecycleDays = %d, want 7", cfg.RecycleDays)
+	}
+}
+
+func TestRecycleDaysZeroDisablesTheSweepRatherThanFallingBack(t *testing.T) {
+	t.Setenv("SYNCBOX_RECYCLE_DAYS", "0")
+
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatalf("FromEnv: %v", err)
+	}
+	if cfg.RecycleDays != 0 {
+		t.Errorf("RecycleDays = %d, want the sweep switched off", cfg.RecycleDays)
+	}
+}
+
+func TestShareAndRecycleRejectNonsense(t *testing.T) {
+	tests := []struct {
+		key, value string
+	}{
+		{"SYNCBOX_SHARE_TTL", "a week"},
+		{"SYNCBOX_SHARE_TTL", "0"},
+		{"SYNCBOX_SHARE_TTL", "-1h"},
+		{"SYNCBOX_RECYCLE_DAYS", "thirty"},
+		{"SYNCBOX_RECYCLE_DAYS", "-1"},
+	}
+	for _, test := range tests {
+		t.Run(test.key+"="+test.value, func(t *testing.T) {
+			t.Setenv(test.key, test.value)
+			if _, err := FromEnv(); err == nil {
+				t.Fatalf("%s = %q accepted", test.key, test.value)
+			} else if !strings.Contains(err.Error(), test.key) {
+				t.Errorf("error %q does not name the setting", err)
+			}
+		})
+	}
+}

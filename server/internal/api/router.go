@@ -56,11 +56,22 @@ type Server struct {
 	hub      *hub
 	limiter  *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
 	now      func() time.Time
+	// shareTTL is the longest a share link stays valid. A mint may ask for a
+	// shorter life; nothing may ask for a longer one.
+	shareTTL time.Duration
+	// recycleDays is how long a deleted file stays restorable in a sync space's
+	// recycle bin. Zero disables the sweep, so the bin keeps everything.
+	recycleDays int
 	// requireRegisteredVaults makes a commit to a vault the registry does not
 	// know a refusal rather than a nameless birth. Off unless a deployment
 	// turns it on, after its clients have moved to registered vaults.
 	requireRegisteredVaults bool
 }
+
+// DefaultShareTTL is how long a share link lives when the deployment sets
+// nothing: long enough to send a file to someone, short enough that a leaked
+// link is not a permanent door.
+const DefaultShareTTL = 7 * 24 * time.Hour
 
 // New returns a server over a store. backups may be nil, in which case the
 // administrative endpoints report that backups are not configured.
@@ -72,6 +83,7 @@ func New(st store.Store, backups *backup.Manager, issuer *auth.Issuer, password 
 		password: password,
 		hub:      newHub(),
 		now:      time.Now,
+		shareTTL: DefaultShareTTL,
 	}
 }
 
@@ -101,6 +113,25 @@ func (s *Server) SetRequireRegisteredVaults(require bool) {
 	s.requireRegisteredVaults = require
 }
 
+// SetShareTTL sets the longest life a minted share link may have. A non-positive
+// value is ignored, because a share that never expires is not a share and a
+// share that expires instantly is not a link.
+func (s *Server) SetShareTTL(ttl time.Duration) {
+	if ttl > 0 {
+		s.shareTTL = ttl
+	}
+}
+
+// SetRecycleDays sets the recycle bin's retention window in days. A Server
+// starts at zero, which disables the sweep so nothing a client deleted is ever
+// dropped from the bin; a deployment sets a window from its config, and the
+// server binary's is 30.
+func (s *Server) SetRecycleDays(days int) {
+	if days >= 0 {
+		s.recycleDays = days
+	}
+}
+
 // Routes builds the handler tree.
 //
 // Health is the only route that needs no token: a reverse proxy and a container
@@ -128,6 +159,16 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("HEAD /api/v1/vaults/{vaultID}/chunks/{chunkID}", s.requireToken(http.HandlerFunc(s.handleChunkHead)))
 	mux.Handle("GET /api/v1/vaults/{vaultID}/chunks/{chunkID}", s.requireToken(http.HandlerFunc(s.handleChunkGet)))
 	mux.Handle("PUT /api/v1/vaults/{vaultID}/chunks/{chunkID}", s.requireToken(http.HandlerFunc(s.handleChunkPut)))
+
+	// The sync-space surfaces (M11 S3). Browse, share and the recycle bin read
+	// what a space stored in the clear holds and refuse a vault with a code.
+	mux.Handle("GET /api/v1/vaults/{vaultID}/files", s.requireToken(http.HandlerFunc(s.handleFilesList)))
+	mux.Handle("GET /api/v1/vaults/{vaultID}/recycle", s.requireToken(http.HandlerFunc(s.handleRecycleList)))
+	mux.Handle("POST /api/v1/vaults/{vaultID}/recycle/restore", s.requireToken(http.HandlerFunc(s.handleRecycleRestore)))
+	mux.Handle("POST /api/v1/vaults/{vaultID}/shares", s.requireToken(http.HandlerFunc(s.handleShareCreate)))
+	// A share link resolves without a bearer token: the signed link is the
+	// credential, and it names one file until it expires.
+	mux.HandleFunc("GET /api/v1/shares/{token}", s.handleShareGet)
 
 	mux.Handle("GET /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupsList)))
 	mux.Handle("POST /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupCreate)))
