@@ -241,15 +241,17 @@ function flashCopy(button, label, copied) {
 }
 
 async function refresh() {
-  const [vaultsResponse, snapshotsResponse, health, card] = await Promise.all([
+  const [vaultsResponse, snapshotsResponse, scheduleResponse, health, card] = await Promise.all([
     api("GET", "/admin/vaults"),
     api("GET", "/admin/backups"),
+    api("GET", "/admin/backups/config"),
     fetch("/healthz").then((r) => (r.ok ? r.json() : null)),
     fetch("/", { headers: { Accept: "application/json" } }).then((r) => (r.ok ? r.json() : null)),
   ]);
   $("version").textContent = card ? "syncbox " + card.version : "";
   if (health) renderStats(health);
   await renderSnapshots(snapshotsResponse);
+  renderSchedule(scheduleResponse);
   if (!vaultsResponse.ok) {
     $("vault-error").textContent = await reason(vaultsResponse);
     return;
@@ -756,6 +758,62 @@ async function renderSnapshots(response) {
   }
   for (const snapshot of snapshots) host.appendChild(snapshotCard(snapshot));
 }
+
+// renderSchedule fills the schedule select from the server's live cadence. With
+// no backup target there is nothing to schedule, so the control is disabled and
+// says why rather than sitting there applying nothing.
+function renderSchedule(response) {
+  const select = $("schedule-select");
+  const button = $("schedule-form").querySelector("button");
+  $("schedule-note").textContent = "";
+  if (!response.ok) {
+    select.disabled = true;
+    button.disabled = true;
+    return;
+  }
+  response.json().then((cfg) => {
+    if (!cfg.configured) {
+      select.disabled = true;
+      button.disabled = true;
+      $("schedule-note").textContent = "Scheduled snapshots need a backup target first.";
+      return;
+    }
+    select.disabled = false;
+    button.disabled = false;
+    const preset = Array.from(select.options).some((o) => Number(o.value) === cfg.interval_seconds);
+    if (preset) {
+      select.value = String(cfg.interval_seconds);
+    } else {
+      // A cadence from the environment that is not one of the presets: leave the
+      // select unselected and say what is actually running.
+      select.selectedIndex = -1;
+      $("schedule-note").textContent = "Current schedule: " + (cfg.schedule || "off") + ".";
+    }
+  });
+}
+
+$("schedule-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("schedule-note").textContent = "";
+  const button = $("schedule-form").querySelector("button");
+  const seconds = Number($("schedule-select").value);
+  const label = $("schedule-select").selectedOptions[0].textContent;
+  button.disabled = true;
+  try {
+    const response = await api("PUT", "/admin/backups/config", { interval_seconds: seconds });
+    if (!response.ok) {
+      $("snapshot-error").textContent = await reason(response);
+      return;
+    }
+    $("snapshot-error").textContent = "";
+    const cfg = await response.json();
+    $("schedule-note").textContent = cfg.interval_seconds === 0
+      ? "Scheduled snapshots are off."
+      : "Scheduled snapshots: " + label.toLowerCase() + ".";
+  } finally {
+    button.disabled = false;
+  }
+});
 
 $("take-snapshot").addEventListener("click", async () => {
   const button = $("take-snapshot");

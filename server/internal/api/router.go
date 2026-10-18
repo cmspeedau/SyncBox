@@ -51,7 +51,11 @@ const (
 type Server struct {
 	store   store.Store
 	backups *backup.Manager
-	issuer  *auth.Issuer
+	// sched is the snapshot cadence controller, present only when a backup target
+	// is configured (nil otherwise). The console reads and sets the schedule
+	// through it; see internal/backup.Scheduler.
+	sched  *backup.Scheduler
+	issuer *auth.Issuer
 	// creds is the single server password's authority: whether anything can sign
 	// in yet, a guess check, and the one-time first run.
 	creds   *credential.Authority
@@ -151,6 +155,14 @@ func (s *Server) SetRecycleDays(days int) {
 	}
 }
 
+// SetScheduler hands the server the snapshot cadence controller, which it exposes
+// as a read/set schedule over the admin API. main calls it only when a backup
+// target is configured; without it the schedule endpoints report that snapshots
+// are not set up.
+func (s *Server) SetScheduler(sched *backup.Scheduler) {
+	s.sched = sched
+}
+
 // Routes builds the handler tree.
 //
 // Health is the only route that needs no token: a reverse proxy and a container
@@ -199,6 +211,10 @@ func (s *Server) Routes() http.Handler {
 
 	mux.Handle("GET /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupsList)))
 	mux.Handle("POST /admin/backups", s.requireToken(http.HandlerFunc(s.handleBackupCreate)))
+	// The snapshot schedule is read and set here, live, without a restart; the
+	// durable fallback stays SYNCBOX_BACKUP_SCHEDULE in the environment.
+	mux.Handle("GET /admin/backups/config", s.requireToken(http.HandlerFunc(s.handleBackupConfigGet)))
+	mux.Handle("PUT /admin/backups/config", s.requireToken(http.HandlerFunc(s.handleBackupConfigPut)))
 	mux.Handle("POST /admin/backups/{id}/verify", s.requireToken(http.HandlerFunc(s.handleBackupVerify)))
 	mux.Handle("POST /admin/backups/{id}/restore", s.requireToken(http.HandlerFunc(s.handleBackupRestore)))
 
