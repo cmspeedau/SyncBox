@@ -1,11 +1,13 @@
 # syncboxd — the Syncbox server
 
 One static binary: it serves the sync API, stores what clients have
-uploaded, and seals snapshots of its own state. It is the server half of
-the zero-knowledge promise — it holds opaque, content-addressed chunks and
-metadata it can never read (no keys, no filenames, no plaintext). This is
-the operator's manual; the wire format lives in
-[docs/protocol.md](../docs/protocol.md), the vault format in
+uploaded, and seals snapshots of its own state. Every space it holds is one
+of two kinds (M11): a **vault**, where it holds opaque, content-addressed
+chunks and metadata it can never read (no keys, no filenames, no plaintext),
+or a **sync** space, kept in the clear so the server can index and serve it.
+Only the vault half is the zero-knowledge promise — a sync space is trusted
+to the server on purpose. This is the operator's manual; the wire format
+lives in [docs/protocol.md](../docs/protocol.md), the vault format in
 [docs/format.md](../docs/format.md), and the snapshot engine in
 [docs/backup.md](../docs/backup.md).
 
@@ -128,8 +130,8 @@ The surface, all under a bearer header:
 | `GET /api/v1/vaults/{id}/events` | long-poll-style wakeups when a vault changes |
 | `POST /api/v1/vaults/{id}/chunks/exists` | "which of these chunk IDs do you already have" — dedup before upload |
 | `HEAD/GET/PUT /api/v1/vaults/{id}/chunks/{id}` | presence check, download, upload |
-| `GET /vaults` | the vault registry in client shape (id, name, location, archived) |
-| `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create, rename/locate, retire |
+| `GET /vaults` | the vault registry in client shape (id, name, location, mode, archived) |
+| `GET/POST /admin/vaults` · `PATCH /admin/vaults/{id}` · `POST …/archive` | the console's vault registry: list, create (name, location, mode), rename/locate, retire |
 | `GET/POST /admin/backups` | list snapshots (the console's Snapshots panel); take one now |
 | `POST /admin/backups/{id}/verify` · `/restore` | verify a sealed snapshot's pins; restore it into a running store |
 
@@ -154,8 +156,9 @@ an object is never read (docs/backup.md).
   `SYNCBOX_RATE_LIMIT` if the server faces the internet, and still put
   TLS in front of it.
 - **Vault enforcement is opt-in too.** By default a commit may name a vault
-  the registry has never heard of, and the server adopts it nameless — that
-  is what keeps a pre-registry client working against a fresh console. Once
+  the registry has never heard of, and the server adopts it nameless — as a
+  vault, so it keeps claiming it cannot read what nothing registered. That is
+  what keeps a pre-registry client working against a fresh console. Once
   every client points at a vault created in the console, set
   `SYNCBOX_REQUIRE_REGISTERED_VAULTS`: commits to anything else are then
   refused `403 unknown_vault` instead of quietly minting a namespace.

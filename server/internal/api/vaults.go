@@ -17,7 +17,7 @@ import (
 // to gate them behind.
 //
 //	GET    /admin/vaults                          every vault with its bookkeeping
-//	POST   /admin/vaults   {name, location}       register one; the server mints the id
+//	POST   /admin/vaults   {name, location, mode} register one; the server mints the id
 //	PATCH  /admin/vaults/{id} {name?, location?}  rename, or point at a folder
 //	POST   /admin/vaults/{id}/archive {archived}  retire, or bring back
 //
@@ -25,6 +25,13 @@ import (
 // relative to each client's home, so one server-side fact covers a laptop, a
 // desktop and a NAS. It defaults to the vault's name and may be left empty for
 // a vault whose clients are told where to put it by hand.
+//
+// The mode (M11 S1) is what the space is: `sync` — stored in the clear, so the
+// server can index and serve it — or `vault` — encrypted on the client, so the
+// server never sees a name or a byte. It is set once, at registration, and has
+// no PATCH: changing it later would leave a space half ciphertext and half
+// cleartext, which is neither of the two things it promises. A request that
+// omits it gets the new-registration default, `sync`.
 
 // maxVaultNameRunes bounds what an operator may type. Generous for a label,
 // small enough that no one mistakes it for a document.
@@ -34,10 +41,12 @@ const maxVaultNameRunes = 120
 // enough for the folder trees people actually use.
 const maxVaultLocationRunes = 1024
 
-// vaultCreateBody is the create request.
+// vaultCreateBody is the create request. Mode is optional; empty means the
+// server's default for a new registration, sync.
 type vaultCreateBody struct {
 	Name     string `json:"name"`
 	Location string `json:"location"`
+	Mode     string `json:"mode"`
 }
 
 // vaultPatchBody is the rename and/or locate request. Pointers so "absent" and
@@ -75,6 +84,24 @@ func cleanVaultLocation(raw string) (string, bool) {
 		return "", false
 	}
 	return location, true
+}
+
+// newSpaceMode resolves the mode a registration asked for. Empty is the
+// server's default for a new space — sync — and anything that is neither sync
+// nor vault is refused, so a typo cannot leave the registry with a mode no
+// reader knows how to interpret. There is deliberately no way to change a
+// space's mode after creation: a space whose earlier revisions are ciphertext
+// and later ones cleartext would be neither of the two things the mode
+// promises.
+func newSpaceMode(raw string) (store.Mode, bool) {
+	mode := store.Mode(strings.TrimSpace(raw))
+	if mode == "" {
+		return store.ModeSync, true
+	}
+	if !mode.Valid() {
+		return "", false
+	}
+	return mode, true
 }
 
 // handleIndex answers the bare root. Browsers get the embedded console;
@@ -117,21 +144,23 @@ func (s *Server) handleAsset(name string) http.HandlerFunc {
 }
 
 // clientVault is the registry as a sync client needs it: which vaults exist,
-// what they are called, where each one's files land, and which are retired. No
-// bookkeeping — a client resolves a name or auto-selects the sole vault; it has
-// no business auditing the server, and every extra field is one more thing to
-// keep stable.
+// what they are called, where each one's files land, which are retired, and
+// whether the space is stored in the clear or encrypted. No bookkeeping — a
+// client resolves a name or auto-selects the sole vault; it has no business
+// auditing the server, and every extra field is one more thing to keep stable.
 type clientVault struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Location string `json:"location"`
-	Archived bool   `json:"archived"`
+	ID       string     `json:"id"`
+	Name     string     `json:"name"`
+	Location string     `json:"location"`
+	Mode     store.Mode `json:"mode"`
+	Archived bool       `json:"archived"`
 }
 
 // handleVaultsListClient is the client-facing registry read behind
 // `--vault-name` and sole-vault auto-select (S3). Archived vaults are listed
 // so a client can answer "that vault is retired" rather than "no such
-// vault" — and refuses either way to sync into one by name.
+// vault" — and refuses either way to sync into one by name. The mode tells a
+// client whether to encrypt (vault) or write cleartext names and bytes (sync).
 func (s *Server) handleVaultsListClient(w http.ResponseWriter, r *http.Request) {
 	vaults, err := s.store.ListVaults(r.Context())
 	if err != nil {
@@ -144,6 +173,7 @@ func (s *Server) handleVaultsListClient(w http.ResponseWriter, r *http.Request) 
 			ID:       vault.ID,
 			Name:     vault.Name,
 			Location: vault.Location,
+			Mode:     vault.Mode,
 			Archived: vault.Archived,
 		})
 	}
@@ -183,8 +213,14 @@ func (s *Server) handleAdminVaultsCreate(w http.ResponseWriter, r *http.Request)
 	if location == "" {
 		location = name
 	}
+	mode, ok := newSpaceMode(request.Mode)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid_mode",
+			`a space's mode is "sync" (stored in the clear) or "vault" (encrypted)`)
+		return
+	}
 
-	id, err := s.store.CreateVault(r.Context(), name, location)
+	id, err := s.store.CreateVault(r.Context(), name, location, mode)
 	if err != nil {
 		writeErrorFrom(w, err)
 		return
@@ -196,6 +232,7 @@ func (s *Server) handleAdminVaultsCreate(w http.ResponseWriter, r *http.Request)
 		ID:        id,
 		Name:      name,
 		Location:  location,
+		Mode:      mode,
 		CreatedAt: s.now().Unix(),
 	})
 }

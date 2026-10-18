@@ -10,7 +10,8 @@
 
 <header>
   <h1>Syncbox</h1>
-  <p class="tagline">The server cannot read your files. Neither can this page.</p>
+  <p class="tagline">Vaults stay encrypted: the server cannot read them. Sync
+    spaces are stored in the clear, so it can.</p>
   <button type="button" id="theme">Theme: system</button>
   <div id="session"></div>
 </header>
@@ -38,18 +39,24 @@
 
     <section id="vaults">
       <h2>Vaults</h2>
-      <p class="hint">Vaults live here, on the server. Set one up, then point
-        clients at this address with <code>--vault-id</code>. Encryption keys
-        are made and kept on each client — setting a vault up here does not
-        hand anyone the ability to read it. The folder below is where a vault's
-        files land on every client, relative to that client's home directory.</p>
+      <p class="hint">Spaces live here, on the server. A <strong>sync</strong>
+        space is stored in the clear — the server can index and serve it
+        (browsing and sharing arrive next). A <strong>vault</strong> is
+        encrypted end to end: its keys are made and kept on each client, and
+        this server can never read it. Either way, the folder below is where a
+        space's files land on every client, relative to that client's home
+        directory.</p>
 
       <form id="create-form">
         <input type="text" id="vault-name" maxlength="120"
                placeholder="Name the vault (for example: Photos)" aria-label="Vault name">
+        <select id="vault-mode" aria-label="Space mode">
+          <option value="sync" selected>Sync — stored in the clear</option>
+          <option value="vault">Vault — end-to-end encrypted</option>
+        </select>
         <input type="text" id="vault-location" maxlength="1024"
                placeholder="Folder (defaults to the name)" aria-label="Vault folder">
-        <button type="submit">Create vault</button>
+        <button type="submit">Create</button>
       </form>
       <p id="vault-error" class="error" role="alert"></p>
 
@@ -61,10 +68,12 @@
     <section id="snapshots">
       <h2>Snapshots</h2>
       <p class="hint">A snapshot is a complete, sealed copy of everything this
-        server holds — every vault's chunks and the bookkeeping — written to the
-        configured backup target. It stays ciphertext: taking one never touches a
-        key, and a stolen snapshot is no more readable than a stolen server.
-        Snapshots cover the whole server, not one vault.</p>
+        server holds — every space's chunks and the bookkeeping — written to the
+        configured backup target. Taking one never touches a key, and every
+        object is checksummed as it is written, so a snapshot is tamper-evident
+        rather than tamper-proof. A vault's contents stay ciphertext; a sync
+        space's files are readable to whoever holds the target. Snapshots cover
+        the whole server, not one space.</p>
 
       <p><button type="button" id="take-snapshot">Take snapshot</button></p>
       <p id="snapshot-error" class="error" role="alert"></p>

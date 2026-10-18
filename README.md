@@ -1,18 +1,19 @@
 # Syncbox
 
-A lightweight, zero-knowledge Dropbox alternative.
+A lightweight file sync server, with an encrypted vault as a choice.
 
 A Linux desktop client (AppImage / .deb), a headless CLI, and a FUSE mount sync
-to a single Go server — one binary, Docker deployment included. Everything is
-encrypted on the client before it leaves the machine, so the server stores
-opaque blobs and bookkeeping it can never read.
+to a single Go server — one binary, Docker deployment included. A space is
+either a **sync** space, kept in the clear so the server can index and serve
+it, or a **vault**, encrypted on the client before anything leaves the machine,
+so the server stores opaque blobs and bookkeeping it can never read.
 
 ## How it works
 
 ```
-Tauri v2 desktop client · CLI · FUSE mount   (Rust core, zero-knowledge)
+Tauri v2 desktop client · CLI · FUSE mount   (Rust core; vaults client-side encrypted)
    crypto core  ·  sync engine  ·  vault/mount layer  ·  local chunk store
-         |  HTTPS: REST + WebSocket  (client-side encrypted)
+         |  HTTPS: REST + WebSocket  (vaults encrypted in flight)
          v
 Go server (single binary; Dockerfile + compose provided)
    API  ·  metadata DB  ·  content-addressed chunk store  ·  rate limiter
@@ -21,8 +22,9 @@ Go server (single binary; Dockerfile + compose provided)
    Docker volume / NAS   +   snapshot target (local dir or S3 object-lock)
 ```
 
-The client does all encryption. The server never holds keys, real filenames, or
-plaintext — which is what makes the vault hidden.
+For a vault the client does all encryption and the server never holds keys, real
+filenames, or plaintext — which is what makes the vault hidden. A sync space
+trades that away on purpose, for a server that can index, browse and share it.
 
 Read [docs/format.md](docs/format.md) for the vault format,
 [docs/protocol.md](docs/protocol.md) for the wire protocol, and

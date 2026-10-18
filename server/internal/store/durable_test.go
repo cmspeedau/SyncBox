@@ -77,13 +77,13 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 			t.Fatalf("Commit: %v", err)
 		}
 	}
-	// Operator facts the import must carry across: a minted name, an empty
-	// vault that no client has touched yet, and a retired flag.
-	photosID, err := src.CreateVault(ctx, "Photos", "")
+	// Operator facts the import must carry across: a minted name, a mode, an
+	// empty vault that no client has touched yet, and a retired flag.
+	photosID, err := src.CreateVault(ctx, "Photos", "", ModeSync)
 	if err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
-	retiredID, err := src.CreateVault(ctx, "Retired", "Archive/Retired")
+	retiredID, err := src.CreateVault(ctx, "Retired", "Archive/Retired", ModeVault)
 	if err != nil {
 		t.Fatalf("CreateVault: %v", err)
 	}
@@ -138,15 +138,21 @@ func TestDurableDumpImportRoundTrip(t *testing.T) {
 		t.Errorf("imported Photos vault = %+v, want name Photos at id %s with no revisions", photos, photosID)
 	} else if photos.Location != "Photos" {
 		t.Errorf("imported Photos location = %q, want the name it defaulted to", photos.Location)
+	} else if photos.Mode != ModeSync {
+		t.Errorf("imported Photos mode = %q, want the sync it was created as", photos.Mode)
 	}
 	retired := byID[retiredID]
 	if !retired.Archived || retired.Name != "Retired" {
 		t.Errorf("imported retired vault = %+v", retired)
 	} else if retired.Location != "Archive/Retired" {
 		t.Errorf("imported retired location = %q, want Archive/Retired", retired.Location)
+	} else if retired.Mode != ModeVault {
+		t.Errorf("imported retired mode = %q, want the vault it was created as", retired.Mode)
 	}
 	if commitBorn := byID["vault"]; commitBorn.Name != "" || commitBorn.Revisions != 3 {
 		t.Errorf("imported commit-born vault = %+v, want nameless with 3 revisions", commitBorn)
+	} else if commitBorn.Mode != ModeVault {
+		t.Errorf("imported commit-born mode = %q, want vault (nothing registered it)", commitBorn.Mode)
 	}
 
 	// Importing the same document again is idempotent: nothing doubles.
@@ -210,8 +216,63 @@ func TestDurableImportsPreRegistryDocument(t *testing.T) {
 	if len(vaults) != 1 || vaults[0].ID != "OLDVAULT" || vaults[0].Name != "" || vaults[0].Archived {
 		t.Fatalf("imported pre-registry vaults = %+v, want one nameless OLDVAULT", vaults)
 	}
+	// A document from before modes has no mode to read; its spaces were all
+	// encrypted, so they import as vaults and nothing claims otherwise.
+	if vaults[0].Mode != ModeVault {
+		t.Errorf("pre-mode vault mode = %q, want vault", vaults[0].Mode)
+	}
 	if vaults[0].Revisions != 1 || vaults[0].LiveFiles != 1 || vaults[0].Bytes != 5 {
 		t.Errorf("bookkeeping after legacy import = %+v", vaults[0])
+	}
+}
+
+// TestDurableMigrationAdoptsExistingVaultsAsVaults pins M11 S1's migration: a
+// database written before the mode column existed opens at the new schema with
+// every pre-existing space reading as a vault. That is the only kind there was,
+// so nothing the operator already had is suddenly claimed to be readable.
+func TestDurableMigrationAdoptsExistingVaultsAsVaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "syncbox.sqlite")
+
+	// Build the schema as it stood before 0004 and stamp that version, so Open
+	// sees a genuine pre-mode database rather than a fresh one.
+	db, err := openSQLite(path)
+	if err != nil {
+		t.Fatalf("openSQLite: %v", err)
+	}
+	for _, name := range []string{"0001_init.sql", "0002_vault_registry.sql", "0003_vault_location.sql"} {
+		body, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatalf("applying %s: %v", name, err)
+		}
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 3`); err != nil {
+		t.Fatalf("stamping version 3: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO vault (id, name, location, created_at) VALUES ('OLDSPACE', 'Photos', 'Photos', 1000)`); err != nil {
+		t.Fatalf("seeding a pre-mode vault: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("closing pre-mode database: %v", err)
+	}
+
+	st := openDurable(t, dir, 1<<20)
+	vaults, err := st.ListVaults(context.Background())
+	if err != nil {
+		t.Fatalf("ListVaults after migration: %v", err)
+	}
+	if len(vaults) != 1 || vaults[0].ID != "OLDSPACE" {
+		t.Fatalf("migrated vaults = %+v, want one OLDSPACE", vaults)
+	}
+	if vaults[0].Mode != ModeVault {
+		t.Errorf("pre-mode space migrated to mode %q, want vault", vaults[0].Mode)
+	}
+	if vaults[0].Name != "Photos" || vaults[0].Location != "Photos" {
+		t.Errorf("migration disturbed the row: %+v", vaults[0])
 	}
 }
 

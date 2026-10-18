@@ -42,6 +42,11 @@ var (
 	// being pointed at. Two vaults sharing one folder would shred each other's
 	// index, so the second is refused rather than silently allowed.
 	ErrLocationTaken = errors.New("location already in use")
+	// ErrBadMode means a space was asked for a mode that is not one of the two
+	// a space may have. The API refuses an unknown mode with a code before the
+	// store is reached, but the store guards itself too, so no caller can write
+	// a mode the registry would then have to guess about.
+	ErrBadMode = errors.New("unknown space mode")
 )
 
 // Chunk is one stored object.
@@ -77,9 +82,35 @@ type Stats struct {
 	LargestChunk int64 `json:"largest_chunk"`
 }
 
+// Mode is what a space is. A sync space is stored in the clear server-side, so
+// the server can index, browse and share it; a vault is encrypted on the client,
+// so the server holds only an opaque blob and never a key. One column decides
+// which, and nothing else about a space changes with it: the commit protocol,
+// the chunk store and the registry read the same in both modes.
+//
+// Only a vault is encrypted. A sync space relies on TLS in flight and on
+// whatever encryption the operator put under the disk, not on us — which is the
+// product decision S1's honesty pass makes every sentence agree with.
+type Mode string
+
+const (
+	// ModeSync is a space the server can read: cleartext names and bytes.
+	ModeSync Mode = "sync"
+	// ModeVault is a space only a client can read: ciphertext names and bytes.
+	ModeVault Mode = "vault"
+)
+
+// Valid reports whether m is a mode a space may have. The empty string is not
+// valid; a caller that wants the new-registration default must say so with
+// ModeSync, so "unset" can never be mistaken for a mode.
+func (m Mode) Valid() bool {
+	return m == ModeSync || m == ModeVault
+}
+
 // VaultInfo is one row of the vault registry: everything the server can know
 // about a vault while holding no key. Name and Location are metadata an
-// operator typed; the rest is bookkeeping counted from revisions. LiveFiles and
+// operator typed; Mode says whether the space is stored in the clear or
+// encrypted; the rest is bookkeeping counted from revisions. LiveFiles and
 // Bytes count only each file's newest revision when that revision is not a
 // tombstone, so a deleted-then-reuploaded file counts once and at its current
 // size.
@@ -87,6 +118,7 @@ type VaultInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Location    string `json:"location"`
+	Mode        Mode   `json:"mode"`
 	CreatedAt   int64  `json:"created_at"`
 	Archived    bool   `json:"archived"`
 	Revisions   int    `json:"revisions"`
@@ -119,15 +151,20 @@ type Store interface {
 	// chunk content.
 	DumpMetadata(ctx context.Context) ([]byte, error)
 
-	// The vault registry (M10). Vaults are becoming server-side facts an
-	// operator creates in the console and points clients at, rather than
-	// namespaces a client invents silently. Registration through the registry
-	// is not yet required — commits still birth vaults implicitly, and the
-	// registry reports those too, nameless — until enforcement lands.
+	// The vault registry (M10, and the mode column M11 S1 adds). Vaults are
+	// server-side facts an operator creates in the console and points clients
+	// at, rather than namespaces a client invents silently. Since M11 each
+	// space also carries a mode — sync (server-readable) or vault (encrypted)
+	// — set when it is registered. Registration through the registry is not yet
+	// required — commits still birth vaults implicitly, and the registry
+	// reports those too, nameless — until enforcement lands.
 	//
-	// CreateVault mints a fresh id and registers it under name, in location.
-	// An empty location means the vault's name is the default.
-	CreateVault(ctx context.Context, name, location string) (string, error)
+	// CreateVault mints a fresh id and registers it under name, in location,
+	// with mode. An empty location means the vault's name is the default; an
+	// empty mode means ModeSync, the default a new registration gets — the
+	// everyday case is a space the server can index, and encryption is the
+	// deliberate choice. A mode that is neither sync nor vault is ErrBadMode.
+	CreateVault(ctx context.Context, name, location string, mode Mode) (string, error)
 	// ListVaults returns every vault, registry-created or implied by stored
 	// revisions, with per-vault bookkeeping. Order is by creation, then id.
 	ListVaults(ctx context.Context) ([]VaultInfo, error)
@@ -161,6 +198,7 @@ type Memory struct {
 type memoryVault struct {
 	name      string
 	location  string
+	mode      Mode
 	createdAt int64
 	archived  bool
 }
@@ -287,8 +325,11 @@ func (m *Memory) Commit(ctx context.Context, rev Revision) (uint64, error) {
 
 	// Mirror the durable store: a commit is also where an unregistered vault
 	// enters the registry, nameless, until enforcement requires registration.
+	// It enters as a vault, not a sync space: nothing registered it, so the
+	// server keeps claiming it cannot read it rather than exposing names and
+	// bytes it was never handed in the clear.
 	if _, ok := m.vaults[rev.VaultID]; !ok {
-		m.vaults[rev.VaultID] = &memoryVault{createdAt: rev.StoredAt.Unix()}
+		m.vaults[rev.VaultID] = &memoryVault{createdAt: rev.StoredAt.Unix(), mode: ModeVault}
 	}
 	return next, nil
 }
@@ -343,15 +384,21 @@ func (m *Memory) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
-// CreateVault mints a fresh id and registers it under name, in location. An
-// empty location defaults to the vault's name, and a location another live
-// vault already claims is refused.
-func (m *Memory) CreateVault(ctx context.Context, name, location string) (string, error) {
+// CreateVault mints a fresh id and registers it under name, in location, with
+// mode. An empty location defaults to the vault's name, an empty mode to
+// ModeSync, and a location another live vault already claims is refused.
+func (m *Memory) CreateVault(ctx context.Context, name, location string, mode Mode) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("creating vault: %w", err)
 	}
 	if location == "" {
 		location = name
+	}
+	if mode == "" {
+		mode = ModeSync
+	}
+	if !mode.Valid() {
+		return "", fmt.Errorf("%w: %q", ErrBadMode, mode)
 	}
 	id, err := newVaultID()
 	if err != nil {
@@ -363,7 +410,7 @@ func (m *Memory) CreateVault(ctx context.Context, name, location string) (string
 	if locationLiveInMemory(m.vaults, location, "") {
 		return "", fmt.Errorf("%w: %s", ErrLocationTaken, location)
 	}
-	m.vaults[id] = &memoryVault{name: name, location: location, createdAt: m.now().Unix()}
+	m.vaults[id] = &memoryVault{name: name, location: location, mode: mode, createdAt: m.now().Unix()}
 	return id, nil
 }
 
@@ -411,6 +458,7 @@ func (m *Memory) ListVaults(ctx context.Context) ([]VaultInfo, error) {
 		if registered, ok := m.vaults[id]; ok {
 			info.Name = registered.name
 			info.Location = registered.location
+			info.Mode = registered.mode
 			info.CreatedAt = registered.createdAt
 			info.Archived = registered.archived
 		}
@@ -577,6 +625,7 @@ func (m *Memory) DumpMetadata(ctx context.Context) ([]byte, error) {
 			ID:        id,
 			Name:      registered.name,
 			Location:  registered.location,
+			Mode:      registered.mode,
 			CreatedAt: registered.createdAt,
 			Archived:  registered.archived,
 		})
@@ -599,9 +648,10 @@ type Metadata struct {
 	Vaults    []string              `json:"vaults"`
 	Revisions map[string][]Revision `json:"revisions"`
 	// VaultRegistry carries what the operator set in the console (names,
-	// locations, retired flags, minting times) so a restore keeps a named
-	// vault named and pointed. Documents from before the registry simply lack
-	// the key, and their vaults import nameless, which is what they were.
+	// modes, locations, retired flags, minting times) so a restore keeps a
+	// named vault named, pointed and in the mode it was created in. Documents
+	// from before the registry — or before modes — simply lack the key, and
+	// their vaults import nameless and as vaults, which is what they were.
 	VaultRegistry []VaultRecord `json:"vault_registry,omitempty"`
 }
 
@@ -609,10 +659,15 @@ type Metadata struct {
 // an operator (or the minting) established. The counted halves of VaultInfo —
 // revision counts, live bytes — are re-derived from the revisions a snapshot
 // already carries, so they are not stored twice and cannot drift.
+//
+// Mode is the M11 S1 addition. A document written before it simply lacks the
+// key, and its vaults import as ModeVault — which is what they were: the era
+// before modes had one kind of space, and it was encrypted.
 type VaultRecord struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Location  string `json:"location,omitempty"`
+	Mode      Mode   `json:"mode,omitempty"`
 	CreatedAt int64  `json:"created_at"`
 	Archived  bool   `json:"archived,omitempty"`
 }

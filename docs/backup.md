@@ -7,9 +7,12 @@ and this file are written together.
 ## What a snapshot is
 
 A snapshot is **self-contained**: a consistent copy of the bookkeeping plus every
-chunk the server held at that moment. Restoring one needs nothing else. It stays
-ciphertext the whole way — the backup path never touches a key, so a stolen backup is
-no more readable than a stolen server.
+chunk the server held at that moment. Restoring one needs nothing else. The backup
+path never touches a key and never decrypts anything — but what a stolen backup
+gives an attacker now depends on a space's mode (M11). A **vault**'s chunks are
+ciphertext, so a stolen backup is no more readable than a stolen server; a **sync**
+space's chunks are cleartext, so a stolen backup is the files. Object lock and the
+seal below prevent destruction, never disclosure.
 
 Layout inside the target:
 
@@ -62,6 +65,12 @@ On the local filesystem that means mode `0550`/`0440`, owned by the backup ident
 That stops the server process and stops accidents. **It does not stop root**, and this
 is stated rather than glossed so nobody deploys a local target believing they have WORM
 storage.
+
+Immutability is not confidentiality, and the two are worth telling apart here: once a
+sync space exists (M11), the target holds that space's files in the clear. Whoever can
+read the target — root, the bucket owner, anyone the bucket is shared with — can read
+those files. A vault's target is still only ciphertext. Treat the backup target as a
+sensitive location accordingly.
 
 On an `s3://` target the promise is the service's own: sealing issues
 `PutObjectRetention` — `COMPLIANCE` mode, `SYNCBOX_BACKUP_LOCK_DAYS` (default 400) —

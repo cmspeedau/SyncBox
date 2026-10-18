@@ -11,9 +11,23 @@ deletions, and nested directories.
 
 ## What the server is
 
-A store of opaque chunks and a ledger of revisions. It never holds a key and never
+A store of chunks and a ledger of revisions. It never holds a key and never
 decrypts anything, so the useful mental model is "a content-addressed blob store with
 a per-file version log bolted on".
+
+Since M11 a space has a **mode**, and it decides what a chunk and a `dir_id` /
+`cipher_name` actually are:
+
+| Mode | Stored as | The server |
+| --- | --- | --- |
+| `vault` | ciphertext — names and bytes encrypted on the client | stores and serves it opaquely; never reads a name or a byte |
+| `sync` | cleartext — names, paths and bytes as the client sees them | may index, browse, serve and share it (S3); TLS protects it in flight and the operator's disk protects it at rest |
+
+That is the whole of the encryption promise, stated once: **only a vault is
+encrypted.** A sync space is trusted to the server on purpose, which is what lets it
+do the things the vault-era sections below say it cannot. Those sections describe the
+`vault` case; the table there is true of a vault and deliberately not of a sync
+space:
 
 | The server can see | The server cannot see |
 | --- | --- |
@@ -21,6 +35,12 @@ a per-file version log bolted on".
 | Revision numbers and parentage | Real filenames or the folder tree |
 | Plaintext file size and mtime | What a manifest says |
 | When a vault was written to | Which vault belongs to whom |
+
+Two honest consequences of sync mode, recorded rather than discovered: the **backup
+target becomes a sensitive location** (a sync space's snapshot is readable to whoever
+holds it), and the server **sees names, sizes and mtimes** — the metadata a vault
+deliberately withholds, and exactly what makes indexing, browsing and search possible
+(S3). Fine on your own box; not private metadata.
 
 ## Authentication
 
@@ -83,6 +103,9 @@ of the blob store.
 
 A revision is one committed state of one file. The client owns the plaintext path; the
 server only ever sees `dir_id` and `cipher_name`, and only compares them for equality.
+In a vault those two are ciphertext; in a sync space they are the cleartext path, and
+while this route still only compares them, the browse and share surfaces (S3) read
+them as paths — which is the point of the mode.
 
 ```
 POST /api/v1/vaults/{vaultID}/revisions
@@ -200,7 +223,7 @@ blocks.
 ## Vault registry
 
 ```
-GET /vaults → 200 { "vaults": [ { "id", "name", "location", "archived" } ] }
+GET /vaults → 200 { "vaults": [ { "id", "name", "location", "mode", "archived" } ] }
 ```
 
 Every vault the server knows, in the small shape a sync client needs: to
@@ -211,6 +234,11 @@ omitted. Archived vaults are listed so a client can say "retired" instead of
 explicit `--vault-id` needs no lookup at all, which is also why a client
 keeps working against a server too old to answer this route.
 
+`mode` is `sync` or `vault` (M11 S1): a `vault` client encrypts names and bytes
+before it sends them, a `sync` client sends them in the clear so the server can
+index and serve them. It is set when the space is registered and never changes;
+a server too old to send it means the old, vault-only world.
+
 `location` is where the vault's files land on each client, relative to that
 client's home directory (`Syncbox/Photos`); a `~`-prefixed or absolute value
 is used as typed, for a single-machine setup. It defaults to the vault's name
@@ -218,16 +246,21 @@ and is empty when the operator left the choice to each client. Older servers
 predate the field and send nothing, which a client reads as empty.
 
 The operator's console reads and writes a richer view under `/admin/vaults`
-(create with `{name, location}`, rename and locate with `{name?, location?}`,
-archive, bookkeeping); clients never need it. The server refuses a `location`
-another live vault already claims (`409 location_taken`), because two vaults
-writing one folder would shred each other's index. Both views share the one
-bearer token — until per-vault credentials exist there is no separate admin
-role to divide them by. A commit into an unregistered vault still registers
-it nameless rather than failing; set `SYNCBOX_REQUIRE_REGISTERED_VAULTS` to
-turn that into a refusal — `403 unknown_vault` — which is the right move once
-every client has been pointed at a registered vault, and safe to leave off
-until then.
+(create with `{name, location, mode}`, rename and locate with
+`{name?, location?}`, archive, bookkeeping); clients never need it. `mode` is
+accepted on create only — empty means the new-registration default, `sync`, and
+anything else is `400 invalid_mode`; there is no route that changes a space's
+mode afterwards, because a space whose earlier revisions are ciphertext and
+later ones cleartext would be neither of the two things a mode promises. The
+server refuses a `location` another live vault already claims
+(`409 location_taken`), because two vaults writing one folder would shred each
+other's index. Both views share the one bearer token — until per-vault
+credentials exist there is no separate admin role to divide them by. A commit
+into an unregistered vault still registers it nameless — and as a `vault`, so
+the server keeps claiming it cannot read what nothing handed it in the clear —
+rather than failing; set `SYNCBOX_REQUIRE_REGISTERED_VAULTS` to turn that into
+a refusal — `403 unknown_vault` — which is the right move once every client has
+been pointed at a registered vault, and safe to leave off until then.
 
 ## Backups
 
