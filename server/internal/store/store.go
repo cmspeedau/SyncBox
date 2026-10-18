@@ -127,6 +127,32 @@ type VaultInfo struct {
 	LastWriteAt int64  `json:"last_write_at"`
 }
 
+// File is one live file in a sync space as the server can read it: the
+// (dir_id, cipher_name) that name it, the plaintext size and modification time
+// the client committed, and the revision that is currently newest for its key.
+// A vault has rows of the same shape, but its dir_id and cipher_name are
+// ciphertext, so the API never reads one out of a vault — the browse, share and
+// recycle surfaces are gated on mode before they reach here.
+type File struct {
+	DirID      string `json:"dir_id"`
+	CipherName string `json:"cipher_name"`
+	Size       int64  `json:"size"`
+	ModifiedAt int64  `json:"modified_unix"`
+	Revision   uint64 `json:"revision"`
+}
+
+// RecycleEntry is one deleted file still in a sync space's recycle bin: a key
+// whose newest revision is a tombstone. DeletedAt is when that tombstone was
+// stored, and Size is what the file measured before it was deleted (the
+// tombstone itself carries no content, so its own size is zero).
+type RecycleEntry struct {
+	DirID      string `json:"dir_id"`
+	CipherName string `json:"cipher_name"`
+	Size       int64  `json:"size"`
+	DeletedAt  int64  `json:"deleted_unix"`
+	Revision   uint64 `json:"revision"`
+}
+
 // Store is what the API and the backup engine need.
 type Store interface {
 	// PutChunk stores body under id, returning the bytes written. Storing the
@@ -180,6 +206,37 @@ type Store interface {
 	// before enforcement. Enforcement refuses a commit to an id this answers
 	// false for, rather than birthing a vault nameless.
 	VaultRegistered(ctx context.Context, id string) (bool, error)
+	// VaultMode returns a space's mode, or ErrNotFound if the registry does not
+	// know the id. The browse, share and recycle surfaces gate on it: a sync
+	// space may be read, a vault may not.
+	VaultMode(ctx context.Context, id string) (Mode, error)
+
+	// The sync-space read surface (M11 S3): what a space stored in the clear
+	// looks like to the server that holds it. Each answers only for the vault
+	// id it is given, and each is meaningless for a vault — its rows are
+	// ciphertext — so the API checks the mode before calling one.
+	//
+	// LiveFiles returns the newest revision per (dir_id, cipher_name) whose
+	// revision is not a tombstone: the space's current files, oldest key first.
+	LiveFiles(ctx context.Context, vaultID string) ([]File, error)
+	// LiveFile returns the newest non-tombstone revision for one key, or
+	// ErrNotFound. It is what a share download reads to find the file's chunks.
+	LiveFile(ctx context.Context, vaultID, dirID, cipherName string) (Revision, error)
+	// RecycleBin returns the keys whose newest revision is a tombstone stored at
+	// or after since — the bin's contents, most recently deleted first. since 0
+	// keeps everything, which is how a server with retention disabled reads it.
+	RecycleBin(ctx context.Context, vaultID string, since int64) ([]RecycleEntry, error)
+	// RestoreRecycled takes a key out of the bin by committing a fresh copy of
+	// its last live revision against the current head, so every client pulls the
+	// file back. It returns the restored file, or ErrNotFound when the key is not
+	// a tombstone or has no live revision left to copy.
+	RestoreRecycled(ctx context.Context, vaultID, dirID, cipherName string) (File, error)
+	// SweepRecycle expires tombstones older than before (seconds since the Unix
+	// epoch) by dropping every older revision for those keys and keeping the
+	// tombstone itself — a client that returns later still learns the file was
+	// deleted, and only the recoverable history is gone. It touches sync spaces
+	// only and returns the number of revisions dropped.
+	SweepRecycle(ctx context.Context, before int64) (int, error)
 }
 
 // Memory is an in-RAM Store.
@@ -483,11 +540,7 @@ func (m *Memory) ListVaults(ctx context.Context) ([]VaultInfo, error) {
 // liveTally counts each file's newest revision, skipping tombstones. Revision
 // histories are in commit order, so the last entry per (dir, name) wins.
 func liveTally(history []Revision) (files int, bytes int64) {
-	type fileKey struct{ dirID, cipherName string }
-	latest := make(map[fileKey]Revision, len(history))
-	for _, rev := range history {
-		latest[fileKey{rev.DirID, rev.CipherName}] = rev
-	}
+	latest := newestPerKey(history)
 	for _, rev := range latest {
 		if rev.Deleted {
 			continue
@@ -565,6 +618,219 @@ func (m *Memory) VaultRegistered(ctx context.Context, id string) (bool, error) {
 	defer m.mu.RUnlock()
 	_, ok := m.vaults[id]
 	return ok, nil
+}
+
+// VaultMode returns a space's mode, or ErrNotFound.
+func (m *Memory) VaultMode(ctx context.Context, id string) (Mode, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("reading vault %s: %w", id, err)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	registered, ok := m.vaults[id]
+	if !ok {
+		return "", fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	return registered.mode, nil
+}
+
+// fileKey is what a revision is filed under: the pair the server only ever
+// compares. The newest revision for one key is that file's current state.
+type fileKey struct {
+	dirID      string
+	cipherName string
+}
+
+// newestPerKey folds a revision history down to the newest revision for each
+// file key. Histories are in commit order, so the last entry wins.
+func newestPerKey(history []Revision) map[fileKey]Revision {
+	latest := make(map[fileKey]Revision, len(history))
+	for _, rev := range history {
+		latest[fileKey{rev.DirID, rev.CipherName}] = rev
+	}
+	return latest
+}
+
+// LiveFiles returns the space's current files, ordered by key.
+func (m *Memory) LiveFiles(ctx context.Context, vaultID string) ([]File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing files for vault %s: %w", vaultID, err)
+	}
+
+	m.mu.RLock()
+	latest := newestPerKey(m.revisions[vaultID])
+	m.mu.RUnlock()
+
+	out := make([]File, 0, len(latest))
+	for _, rev := range latest {
+		if rev.Deleted {
+			continue
+		}
+		out = append(out, File{
+			DirID:      rev.DirID,
+			CipherName: rev.CipherName,
+			Size:       rev.Size,
+			ModifiedAt: rev.ModifiedAt,
+			Revision:   rev.Revision,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DirID != out[j].DirID {
+			return out[i].DirID < out[j].DirID
+		}
+		return out[i].CipherName < out[j].CipherName
+	})
+	return out, nil
+}
+
+// LiveFile returns the newest non-tombstone revision for one key.
+func (m *Memory) LiveFile(ctx context.Context, vaultID, dirID, cipherName string) (Revision, error) {
+	if err := ctx.Err(); err != nil {
+		return Revision{}, fmt.Errorf("reading file in vault %s: %w", vaultID, err)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rev, ok := newestPerKey(m.revisions[vaultID])[fileKey{dirID, cipherName}]
+	if !ok || rev.Deleted {
+		return Revision{}, fmt.Errorf("%w: %s/%s in vault %s", ErrNotFound, dirID, cipherName, vaultID)
+	}
+	rev.VaultID = vaultID
+	return rev, nil
+}
+
+// RecycleBin returns the space's tombstones stored at or after since.
+func (m *Memory) RecycleBin(ctx context.Context, vaultID string, since int64) ([]RecycleEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing recycle bin for vault %s: %w", vaultID, err)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// The tombstone is the newest revision for a deleted key, and the size shown
+	// is the last live revision's — the file's size before it was removed.
+	latest := newestPerKey(m.revisions[vaultID])
+	lastLive := make(map[fileKey]int64)
+	for _, rev := range m.revisions[vaultID] {
+		if !rev.Deleted {
+			lastLive[fileKey{rev.DirID, rev.CipherName}] = rev.Size
+		}
+	}
+
+	out := make([]RecycleEntry, 0, len(latest))
+	for key, rev := range latest {
+		if !rev.Deleted || rev.StoredAt.Unix() < since {
+			continue
+		}
+		out = append(out, RecycleEntry{
+			DirID:      key.dirID,
+			CipherName: key.cipherName,
+			Size:       lastLive[key],
+			DeletedAt:  rev.StoredAt.Unix(),
+			Revision:   rev.Revision,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DeletedAt != out[j].DeletedAt {
+			return out[i].DeletedAt > out[j].DeletedAt
+		}
+		if out[i].DirID != out[j].DirID {
+			return out[i].DirID < out[j].DirID
+		}
+		return out[i].CipherName < out[j].CipherName
+	})
+	return out, nil
+}
+
+// RestoreRecycled commits a fresh copy of a deleted file's last live revision.
+func (m *Memory) RestoreRecycled(ctx context.Context, vaultID, dirID, cipherName string) (File, error) {
+	if err := ctx.Err(); err != nil {
+		return File{}, fmt.Errorf("restoring file in vault %s: %w", vaultID, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	history := m.revisions[vaultID]
+	newest, ok := newestPerKey(history)[fileKey{dirID, cipherName}]
+	if !ok || !newest.Deleted {
+		return File{}, fmt.Errorf("%w: %s/%s is not in the recycle bin", ErrNotFound, dirID, cipherName)
+	}
+	// The content to copy is the last revision that was not a tombstone.
+	var live Revision
+	found := false
+	for _, rev := range history {
+		if rev.DirID == dirID && rev.CipherName == cipherName && !rev.Deleted {
+			live = rev
+			found = true
+		}
+	}
+	if !found {
+		return File{}, fmt.Errorf("%w: %s/%s has no live revision left to restore", ErrNotFound, dirID, cipherName)
+	}
+
+	// A restore is an ordinary commit, so it chains from the space's head —
+	// which histories reach with their last entry — not from the revision the
+	// file was last seen at.
+	head := live.Revision
+	if len(history) > 0 {
+		head = history[len(history)-1].Revision
+	}
+	restored := live
+	restored.Revision = head + 1
+	restored.Parent = head
+	restored.Deleted = false
+	restored.StoredAt = m.now()
+	m.revisions[vaultID] = append(history, restored)
+
+	return File{
+		DirID:      dirID,
+		CipherName: cipherName,
+		Size:       restored.Size,
+		ModifiedAt: restored.ModifiedAt,
+		Revision:   restored.Revision,
+	}, nil
+}
+
+// SweepRecycle drops the recoverable history behind old tombstones in sync
+// spaces, keeping each tombstone itself.
+func (m *Memory) SweepRecycle(ctx context.Context, before int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("sweeping recycle bins: %w", err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	dropped := 0
+	for vaultID, history := range m.revisions {
+		if registered, ok := m.vaults[vaultID]; !ok || registered.mode != ModeSync {
+			continue
+		}
+		latest := newestPerKey(history)
+		expired := make(map[fileKey]bool)
+		for key, rev := range latest {
+			if rev.Deleted && rev.StoredAt.Unix() < before {
+				expired[key] = true
+			}
+		}
+		if len(expired) == 0 {
+			continue
+		}
+		kept := make([]Revision, 0, len(history))
+		for _, rev := range history {
+			key := fileKey{rev.DirID, rev.CipherName}
+			if expired[key] && rev.Revision != latest[key].Revision {
+				dropped++
+				continue
+			}
+			kept = append(kept, rev)
+		}
+		m.revisions[vaultID] = kept
+	}
+	return dropped, nil
 }
 
 // newVaultID mints a short, typeable vault id: five random bytes as base32,

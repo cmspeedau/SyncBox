@@ -128,6 +128,13 @@ func serve(args []string, stdout io.Writer) error {
 		srv.SetRequireRegisteredVaults(true)
 		log.Printf("requiring commits to target a vault the registry knows; unknown vault ids are refused")
 	}
+	srv.SetShareTTL(cfg.ShareTTL)
+	srv.SetRecycleDays(cfg.RecycleDays)
+	if cfg.RecycleDays > 0 {
+		log.Printf("share links live at most %s; a deleted file stays restorable for %d days", cfg.ShareTTL, cfg.RecycleDays)
+	} else {
+		log.Printf("share links live at most %s; recycle retention is off, so deletions stay restorable", cfg.ShareTTL)
+	}
 	if cfg.RatePerSecond > 0 {
 		srv.SetRateLimit(cfg.RatePerSecond, cfg.RateBurst)
 		log.Printf("throttling each address to %.1f requests/s (burst %d)", cfg.RatePerSecond, cfg.RateBurst)
@@ -145,6 +152,10 @@ func serve(args []string, stdout io.Writer) error {
 	if backups != nil && cfg.BackupSchedule > 0 {
 		go snapshotEvery(ctx, backups, cfg.BackupSchedule)
 		log.Printf("snapshotting every %s", cfg.BackupSchedule)
+	}
+
+	if cfg.RecycleDays > 0 {
+		go recycleEvery(ctx, st, cfg.RecycleDays, recycleSweepInterval)
 	}
 
 	errs := make(chan error, 1)
@@ -206,6 +217,51 @@ func snapshotEvery(ctx context.Context, manager *backup.Manager, every time.Dura
 		}
 		if len(dropped) > 0 {
 			log.Printf("retired %d snapshots, %d remain", len(dropped), len(kept))
+		}
+	}
+}
+
+// recycleSweepInterval is how often the server ages out its sync spaces' recycle
+// bins. The sweep is one pass over the revision log, so an hour is cheap and it
+// keeps an expired deletion no longer than an hour past its window.
+const recycleSweepInterval = time.Hour
+
+// recycleEvery is the retention pass for deleted files: once an hour it drops
+// the recoverable history behind tombstones older than the window, so a sync
+// space's recycle bin holds what it promises and nothing older. Each tombstone
+// itself stays, which is what keeps a client that was away through the sweep
+// from writing the file back.
+//
+// Errors are logged rather than returned, for snapshotEvery's reason: one pass
+// that fails should not take the server down, and the next tick tries again. A
+// shutdown is not a failure, so it passes quietly.
+func recycleEvery(ctx context.Context, st *store.Durable, days int, every time.Duration) {
+	sweep := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		before := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+		dropped, err := st.SweepRecycle(ctx, before)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("recycle sweep failed: %v", err)
+			}
+			return
+		}
+		if dropped > 0 {
+			log.Printf("recycle sweep dropped %d expired revisions", dropped)
+		}
+	}
+
+	sweep()
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sweep()
 		}
 	}
 }

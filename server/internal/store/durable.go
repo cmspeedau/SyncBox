@@ -627,6 +627,251 @@ func (d *Durable) VaultRegistered(ctx context.Context, id string) (bool, error) 
 	return true, nil
 }
 
+// VaultMode returns a space's mode, or ErrNotFound.
+func (d *Durable) VaultMode(ctx context.Context, id string) (Mode, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("reading vault %s: %w", id, err)
+	}
+	var mode Mode
+	err := d.db.QueryRowContext(ctx, `SELECT mode FROM vault WHERE id = ?`, id).Scan(&mode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("%w: vault %s", ErrNotFound, id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading vault %s: %w", id, err)
+	}
+	return mode, nil
+}
+
+// LiveFiles SQL: the newest revision per (dir_id, cipher_name) that is not a
+// tombstone — the same window M10's registry tally uses, read out in full.
+const liveFilesQuery = `
+WITH latest AS (
+    SELECT dir_id, cipher_name, size, modified_unix, deleted, revision,
+           ROW_NUMBER() OVER (PARTITION BY dir_id, cipher_name ORDER BY revision DESC) AS rn
+    FROM revision
+    WHERE vault_id = ?
+)
+SELECT dir_id, cipher_name, size, modified_unix, revision
+FROM latest
+WHERE rn = 1 AND deleted = 0
+ORDER BY dir_id, cipher_name`
+
+// LiveFiles returns the space's current files, ordered by key.
+func (d *Durable) LiveFiles(ctx context.Context, vaultID string) ([]File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing files for vault %s: %w", vaultID, err)
+	}
+	rows, err := d.db.QueryContext(ctx, liveFilesQuery, vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing files for vault %s: %w", vaultID, err)
+	}
+	defer rows.Close()
+
+	var out []File
+	for rows.Next() {
+		var file File
+		if err := rows.Scan(&file.DirID, &file.CipherName, &file.Size, &file.ModifiedAt, &file.Revision); err != nil {
+			return nil, fmt.Errorf("listing files for vault %s: %w", vaultID, err)
+		}
+		out = append(out, file)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing files for vault %s: %w", vaultID, err)
+	}
+	return out, nil
+}
+
+// LiveFile returns the newest non-tombstone revision for one key.
+func (d *Durable) LiveFile(ctx context.Context, vaultID, dirID, cipherName string) (Revision, error) {
+	if err := ctx.Err(); err != nil {
+		return Revision{}, fmt.Errorf("reading file in vault %s: %w", vaultID, err)
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		WITH latest AS (
+		    SELECT revision, parent, dir_id, cipher_name, manifest, size, modified_unix, deleted, stored_at,
+		           ROW_NUMBER() OVER (PARTITION BY dir_id, cipher_name ORDER BY revision DESC) AS rn
+		    FROM revision
+		    WHERE vault_id = ? AND dir_id = ? AND cipher_name = ?
+		)
+		SELECT revision, parent, dir_id, cipher_name, manifest, size, modified_unix, deleted, stored_at
+		FROM latest
+		WHERE rn = 1 AND deleted = 0`,
+		vaultID, dirID, cipherName)
+	if err != nil {
+		return Revision{}, fmt.Errorf("reading file in vault %s: %w", vaultID, err)
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return Revision{}, fmt.Errorf("reading file in vault %s: %w", vaultID, err)
+		}
+		return Revision{}, fmt.Errorf("%w: %s/%s in vault %s", ErrNotFound, dirID, cipherName, vaultID)
+	}
+	rev, err := scanRevision(rows)
+	if err != nil {
+		return Revision{}, fmt.Errorf("reading file in vault %s: %w", vaultID, err)
+	}
+	rev.VaultID = vaultID
+	return rev, nil
+}
+
+// RecycleBin returns the space's tombstones stored at or after since. The size
+// shown is the last live revision's, since a tombstone carries no content.
+func (d *Durable) RecycleBin(ctx context.Context, vaultID string, since int64) ([]RecycleEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("listing recycle bin for vault %s: %w", vaultID, err)
+	}
+	rows, err := d.db.QueryContext(ctx, `
+		WITH latest AS (
+		    SELECT dir_id, cipher_name, deleted, stored_at, revision,
+		           ROW_NUMBER() OVER (PARTITION BY dir_id, cipher_name ORDER BY revision DESC) AS rn
+		    FROM revision
+		    WHERE vault_id = ?
+		)
+		SELECT l.dir_id, l.cipher_name, l.stored_at, l.revision,
+		       COALESCE((
+		           SELECT r2.size FROM revision r2
+		           WHERE r2.vault_id = ? AND r2.dir_id = l.dir_id AND r2.cipher_name = l.cipher_name
+		             AND r2.deleted = 0
+		           ORDER BY r2.revision DESC LIMIT 1), 0) AS live_size
+		FROM latest l
+		WHERE l.rn = 1 AND l.deleted = 1 AND l.stored_at >= ?
+		ORDER BY l.stored_at DESC, l.dir_id, l.cipher_name`,
+		vaultID, vaultID, since)
+	if err != nil {
+		return nil, fmt.Errorf("listing recycle bin for vault %s: %w", vaultID, err)
+	}
+	defer rows.Close()
+
+	var out []RecycleEntry
+	for rows.Next() {
+		var entry RecycleEntry
+		if err := rows.Scan(&entry.DirID, &entry.CipherName, &entry.DeletedAt, &entry.Revision, &entry.Size); err != nil {
+			return nil, fmt.Errorf("listing recycle bin for vault %s: %w", vaultID, err)
+		}
+		out = append(out, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing recycle bin for vault %s: %w", vaultID, err)
+	}
+	return out, nil
+}
+
+// RestoreRecycled commits a fresh copy of a deleted file's last live revision.
+// The whole read-and-append runs in one transaction, so a restore cannot land
+// against a head another commit has already moved.
+func (d *Durable) RestoreRecycled(ctx context.Context, vaultID, dirID, cipherName string) (File, error) {
+	if err := ctx.Err(); err != nil {
+		return File{}, fmt.Errorf("restoring file in vault %s: %w", vaultID, err)
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return File{}, fmt.Errorf("beginning restore for vault %s: %w", vaultID, err)
+	}
+	defer tx.Rollback()
+
+	// The key must currently be a tombstone, or it is not in the bin.
+	var deleted int
+	err = tx.QueryRowContext(ctx, `
+		SELECT deleted FROM revision
+		WHERE vault_id = ? AND dir_id = ? AND cipher_name = ?
+		ORDER BY revision DESC LIMIT 1`, vaultID, dirID, cipherName).Scan(&deleted)
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, fmt.Errorf("%w: %s/%s is not in the recycle bin", ErrNotFound, dirID, cipherName)
+	}
+	if err != nil {
+		return File{}, fmt.Errorf("reading recycle bin for vault %s: %w", vaultID, err)
+	}
+	if deleted == 0 {
+		return File{}, fmt.Errorf("%w: %s/%s is not in the recycle bin", ErrNotFound, dirID, cipherName)
+	}
+
+	// The content to copy is the last revision that was not a tombstone.
+	var (
+		liveManifest []byte
+		liveSize     int64
+		liveModified int64
+	)
+	err = tx.QueryRowContext(ctx, `
+		SELECT manifest, size, modified_unix
+		FROM revision
+		WHERE vault_id = ? AND dir_id = ? AND cipher_name = ? AND deleted = 0
+		ORDER BY revision DESC LIMIT 1`, vaultID, dirID, cipherName).
+		Scan(&liveManifest, &liveSize, &liveModified)
+	if errors.Is(err, sql.ErrNoRows) {
+		return File{}, fmt.Errorf("%w: %s/%s has no live revision left to restore", ErrNotFound, dirID, cipherName)
+	}
+	if err != nil {
+		return File{}, fmt.Errorf("reading last live revision for vault %s: %w", vaultID, err)
+	}
+
+	// A restore is an ordinary commit, so it chains from the space's head — not
+	// from the revision the file was last seen at, which another client may have
+	// passed by long ago.
+	var head uint64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(revision), 0) FROM revision WHERE vault_id = ?`, vaultID).Scan(&head); err != nil {
+		return File{}, fmt.Errorf("reading head for vault %s: %w", vaultID, err)
+	}
+	next := head + 1
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO revision
+			(vault_id, revision, parent, dir_id, cipher_name, manifest, size, modified_unix, deleted, stored_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+		vaultID, next, head, dirID, cipherName, manifestBytes(liveManifest),
+		liveSize, liveModified, d.now().Unix()); err != nil {
+		return File{}, fmt.Errorf("restoring file in vault %s: %w", vaultID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return File{}, fmt.Errorf("committing restore for vault %s: %w", vaultID, err)
+	}
+	return File{
+		DirID:      dirID,
+		CipherName: cipherName,
+		Size:       liveSize,
+		ModifiedAt: liveModified,
+		Revision:   next,
+	}, nil
+}
+
+// SweepRecycle drops the recoverable history behind old tombstones in sync
+// spaces, keeping each tombstone itself so a client returning later still
+// learns the file was deleted. It never touches a vault: a vault's rows are its
+// only copy, and the server cannot tell a safe deletion from a broken history.
+func (d *Durable) SweepRecycle(ctx context.Context, before int64) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("sweeping recycle bins: %w", err)
+	}
+	res, err := d.db.ExecContext(ctx, `
+		WITH keyed AS (
+		    SELECT r.id, r.vault_id, r.dir_id, r.cipher_name, r.revision, r.deleted, r.stored_at,
+		           ROW_NUMBER() OVER (PARTITION BY r.vault_id, r.dir_id, r.cipher_name ORDER BY r.revision DESC) AS rn,
+		           MAX(r.revision) OVER (PARTITION BY r.vault_id, r.dir_id, r.cipher_name) AS newest
+		    FROM revision r
+		    JOIN vault v ON v.id = r.vault_id AND v.mode = 'sync'
+		),
+		expired AS (
+		    SELECT vault_id, dir_id, cipher_name FROM keyed
+		    WHERE rn = 1 AND deleted = 1 AND stored_at < ?
+		)
+		DELETE FROM revision WHERE id IN (
+		    SELECT k.id FROM keyed k
+		    JOIN expired e ON e.vault_id = k.vault_id AND e.dir_id = k.dir_id AND e.cipher_name = k.cipher_name
+		    WHERE k.revision < k.newest
+		)`, before)
+	if err != nil {
+		return 0, fmt.Errorf("sweeping recycle bins: %w", err)
+	}
+	dropped, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("confirming recycle sweep: %w", err)
+	}
+	return int(dropped), nil
+}
+
 // ChunkIDs lists stored chunk ids, sorted.
 func (d *Durable) ChunkIDs(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {

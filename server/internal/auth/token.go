@@ -114,6 +114,85 @@ func (i *Issuer) Verify(token string, now time.Time) (*Claims, error) {
 	return &claims, nil
 }
 
+// ShareClaims is what a share link asserts: one file in one space, until a
+// time. It is a second claim set, not a bearer token with extra fields — a link
+// is held by whoever was handed it, often outside the account, so it must not
+// be usable as (or forged from) one.
+type ShareClaims struct {
+	// VaultID is the space the shared file lives in.
+	VaultID string `json:"vault"`
+	// DirID and CipherName locate the file in that space, exactly as a revision
+	// names it. In a sync space they are the cleartext path parts.
+	DirID      string `json:"dir"`
+	CipherName string `json:"name"`
+	// IssuedAt and ExpiresAt are seconds since the Unix epoch.
+	IssuedAt  int64 `json:"iat"`
+	ExpiresAt int64 `json:"exp"`
+}
+
+// shareTag domain-separates a share link's signature from a bearer token's, so
+// neither can be replayed as the other even though one secret signs both: the
+// message actually signed is the tag plus the encoded payload.
+const shareTag = "syncbox-share-v1\n"
+
+// IssueShare mints a signed link to one file in one space, valid for ttl from
+// now. It is deliberately narrow: the link names one item and one expiry, and
+// carries nothing that would let its holder ask the server for anything else.
+func (i *Issuer) IssueShare(vaultID, dirID, cipherName string, ttl time.Duration, now time.Time) (string, error) {
+	if ttl <= 0 {
+		return "", errors.New("a share needs a positive lifetime")
+	}
+	// A link that names no file could only mean "everything in the space", which
+	// is not what a share is — and VerifyShare would refuse it anyway, so
+	// minting one would hand out a credential that cannot be used.
+	if vaultID == "" || dirID == "" || cipherName == "" {
+		return "", errors.New("a share must name one file in one space")
+	}
+	claims := ShareClaims{
+		VaultID:    vaultID,
+		DirID:      dirID,
+		CipherName: cipherName,
+		IssuedAt:   now.Unix(),
+		ExpiresAt:  now.Add(ttl).Unix(),
+	}
+	payload, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("encoding share claims: %w", err)
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(payload)
+	return encoded + "." + i.signature(shareTag+encoded), nil
+}
+
+// VerifyShare returns the claims a valid share link carries.
+//
+// It reports ErrInvalidToken for every way the link can fail — malformed,
+// unsigned by this server, or expired — so a holder cannot tell "wrong secret"
+// from "too late", which would only help someone probing.
+func (i *Issuer) VerifyShare(token string, now time.Time) (*ShareClaims, error) {
+	encoded, signature, found := strings.Cut(token, ".")
+	if !found || encoded == "" || signature == "" {
+		return nil, fmt.Errorf("%w: wrong shape", ErrInvalidToken)
+	}
+	if !hmac.Equal([]byte(signature), []byte(i.signature(shareTag+encoded))) {
+		return nil, fmt.Errorf("%w: signature mismatch", ErrInvalidToken)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("%w: payload is not base64url: %v", ErrInvalidToken, err)
+	}
+	var claims ShareClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("%w: malformed claims: %v", ErrInvalidToken, err)
+	}
+	if claims.VaultID == "" || claims.DirID == "" || claims.CipherName == "" {
+		return nil, fmt.Errorf("%w: a share must name a file", ErrInvalidToken)
+	}
+	if now.Unix() >= claims.ExpiresAt {
+		return nil, fmt.Errorf("%w: expired", ErrInvalidToken)
+	}
+	return &claims, nil
+}
+
 // signature is the base64url HMAC-SHA256 of the encoded payload.
 func (i *Issuer) signature(encoded string) string {
 	mac := hmac.New(sha256.New, i.secret)

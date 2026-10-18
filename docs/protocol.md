@@ -21,7 +21,7 @@ Since M11 a space has a **mode**, and it decides what a chunk and a `dir_id` /
 | Mode | Stored as | The server |
 | --- | --- | --- |
 | `vault` | ciphertext — names and bytes encrypted on the client | stores and serves it opaquely; never reads a name or a byte |
-| `sync` | cleartext — names, paths and bytes as the client sees them | may index, browse, serve and share it (S3); TLS protects it in flight and the operator's disk protects it at rest |
+| `sync` | cleartext — names, paths and bytes as the client sees them | may index, browse, serve and share it; TLS protects it in flight and the operator's disk protects it at rest |
 
 That is the whole of the encryption promise, stated once: **only a vault is
 encrypted.** A sync space is trusted to the server on purpose, which is what lets it
@@ -68,8 +68,9 @@ Every non-2xx response has the same body:
 
 | Status | `code` | Client should |
 | --- | --- | --- |
-| 400 | `bad_request`, `bad_chunk_id` | Bug or bad input; do not retry |
-| 401 | `unauthorized` | Re-authenticate, then retry once |
+| 400 | `bad_request`, `bad_chunk_id`, `invalid_request`, `unreadable_manifest` | Bug or bad input; do not retry |
+| 401 | `unauthorized` | Re-authenticate, then retry once. A refused share link says this too, and re-authenticating does not help |
+| 403 | `unknown_vault`, `not_browsable`, `not_shareable`, `not_recyclable` | Off-limits on purpose. A space registered as a `vault` has no browsable files, nothing to share and no recycle bin; do not retry |
 | 404 | `not_found`, `incomplete_snapshot` | Chunk collected, vault unknown, or a half-written snapshot |
 | 409 | `conflict`, `restore_target_occupied` | Someone else committed. Re-fetch, keep both copies |
 | 413 | `too_large` | Chunk exceeds the server's limit |
@@ -110,9 +111,11 @@ them as paths — which is the point of the mode.
 The same split runs through the rest of a revision. A vault's `manifest` is an
 authenticated, encrypted chunk list and its chunk bodies are sealed, so the server can
 size them but not read them; a sync space's `manifest` is the same chunk list in a
-small cleartext record (`SBXSYNC1 || size || count || (stored_len, id)*`) and its chunk
-bodies are the file's own bytes. The server stores each form verbatim and never parses
-either — it only ever has to hand them back.
+small cleartext record (`SBXSYNC1 || size || count || (stored_len, id)*`, spelled out in
+[Browsing, sharing and the recycle bin](#browsing-sharing-and-the-recycle-bin)) and its
+chunk bodies are the file's own bytes. The server stores both forms verbatim, and reads a
+sync one only when it is handing a shared file back in order to find its chunks. It
+never parses a vault's, and could not.
 
 ```
 POST /api/v1/vaults/{vaultID}/revisions
@@ -268,6 +271,102 @@ the server keeps claiming it cannot read what nothing handed it in the clear —
 rather than failing; set `SYNCBOX_REQUIRE_REGISTERED_VAULTS` to turn that into
 a refusal — `403 unknown_vault` — which is the right move once every client has
 been pointed at a registered vault, and safe to leave off until then.
+
+## Browsing, sharing and the recycle bin
+
+Three surfaces exist because a sync space is readable: someone wants to see a folder's
+files without a client, hand one file to someone, and take back a deletion. They are the
+reason the mode table is at the top of this file rather than in a footnote — on a vault
+there is nothing to serve, so a vault refuses all three, by code:
+
+```
+GET  /api/v1/vaults/{vaultID}/files    → 200 { "vault_id", "files": [ { file } ] }
+GET  /api/v1/vaults/{vaultID}/recycle  → 200 { "vault_id", "deleted": [ { entry } ], "retention_days" }
+POST /api/v1/vaults/{vaultID}/recycle/restore
+     { "dir_id", "cipher_name" }       → 201 { file }
+POST /api/v1/vaults/{vaultID}/shares
+     { "dir_id", "cipher_name", "expires_in_seconds"? }  → 201 { share }
+GET  /api/v1/shares/{token}            → the file's bytes, with no credential
+```
+
+A space registered as `vault` answers `403` with `not_browsable`, `not_recyclable` or
+`not_shareable` — one code per surface, because a client that asked to browse wants a
+different message from one that asked to share. A space nothing ever registered answers
+`404`, which is a different fact: there is no space here to refuse.
+
+### What a listing says about a file
+
+Browse reads the log rather than keeping a second index: the newest revision per
+`(dir_id, cipher_name)`, tombstones skipped. It therefore cannot disagree with what a
+client would pull, and there is nothing to invalidate. Each entry carries the key it is
+stored under — that is what a commit or a share names — next to a decoded `path`:
+
+```json
+{ "dir_id": "01J6YRVK5WS30CHP", "cipher_name": "plan.md", "path": "docs/2026/plan.md",
+  "size": 6, "modified_unix": 1760000100, "revision": 2 }
+```
+
+`path` is the server's own decoding of those two fields, which makes a sync space's
+naming part of the protocol. That coupling is accepted on purpose, so it is written down
+rather than discovered later:
+
+- `dir_id` is `BASE32(0x00 || relative_path)` in Crockford's alphabet
+  (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`), unpadded, with the leftover bits shifted left
+  into a final symbol. The leading `0x00` marks the record as a path rather than a key
+  digest, so the root folder is `00`. Decoding tolerates lowercase and the `I`/`L`→`1`
+  and `U`→`V` spellings the client tolerates, and refuses anything the client could not
+  have written: another first byte, `..`, an empty or `.` segment, a backslash. A
+  directory whose id decodes to nothing browses under its raw id rather than a guess.
+- A sync manifest is `SBXSYNC1 || size:u64 || count:u32 || (stored_len:u32 || id_len:u16
+  || chunk_id)*`, little-endian. `stored_len` is the bytes the chunk holds — the
+  plaintext's own length — so a download can state a `Content-Length` its body meets
+  rather than trusting the size a revision happened to report. A manifest that lies about
+  its own length, or names more chunks than its bytes hold, is refused rather than
+  allocated: the count is never trusted before the record vouches for it.
+
+### A share link
+
+Minting is an authenticated call; opening one is not. The link *is* the credential: a
+base64url claim set naming one space, one key and an expiry, signed with the same secret
+as a bearer token but over a message prefixed `syncbox-share-v1\n`. The prefix is the
+whole of the domain separation, and it earns its keep in both directions — a share link
+presented as a bearer token and a bearer token presented at `/api/v1/shares/{token}` are
+both signature failures, checked before anything is read.
+
+Nothing is stored, so a link has no state to revoke. Two things take its place: the
+lifetime is short by default (`SYNCBOX_SHARE_TTL`, a week), and the route re-reads the
+*file* rather than a copy of its bytes, so a link stops answering the moment the file is
+deleted. `expires_in_seconds` may shorten a link; it cannot lengthen one past the
+server's ceiling. An expired, edited or foreign-signed link is a `401`, a link to a file
+the space no longer holds is a `404`, and a file whose stored record is not a sync
+manifest — a revision some other client wrote — is refused at the mint with `400
+unreadable_manifest`, because a link that fails on the first try is worse than no link.
+
+Every download says `Content-Disposition: attachment` and `X-Content-Type-Options:
+nosniff`. The reason is the console: a shared `.html` arrives from the same origin the
+console's session lives on, so it must reach the browser as a file it saves, never as a
+page that runs there.
+
+### The recycle bin, and what expiring means
+
+The bin is the same log read the other way: each key whose newest revision is a tombstone
+reports the size its file last had. `retention_days` is the configured window
+(`SYNCBOX_RECYCLE_DAYS`, default 30); `0` switches the sweep off, and a deletion then
+stays restorable until the operator says otherwise.
+
+A restore is the one commit the server itself writes: it appends a copy of the last live
+revision *at the space's head* — not at the revision that file was last seen at, which a
+peer may have passed by — and then wakes any long-poll, so clients pull the file back. A
+restore of a live or unknown key is a `404`, not a silent no-op.
+
+Once a deletion is past the window an hourly pass drops the dead revisions behind it —
+the chunks they named stay, since the server has no blob collector yet, so expiring a
+deletion bounds how far back a file can be undone rather than reclaiming its bytes. It
+keeps the tombstone itself, and that asymmetry is the point: the tombstone is what tells a
+client that was away through the sweep that the file is gone, so dropping it would let a
+settled client write the purged bytes straight back. A vault's history is never swept —
+its revisions are the only copy there is, and the server does not know what any of them
+are.
 
 ## Backups
 

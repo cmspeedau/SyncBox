@@ -457,3 +457,142 @@ func TestConformVaultRegistry(t *testing.T) {
 		}
 	})
 }
+
+// commitRevision commits one revision against the head it is given and returns
+// the number the store assigned.
+func commitRevision(t *testing.T, st Store, vaultID string, parent uint64, dirID, name string, size int64, deleted bool) uint64 {
+	t.Helper()
+
+	next, err := st.Commit(context.Background(), Revision{
+		VaultID:    vaultID,
+		Parent:     parent,
+		DirID:      dirID,
+		CipherName: name,
+		Manifest:   []byte("manifest for " + name),
+		Size:       size,
+		ModifiedAt: 1760000000,
+		Deleted:    deleted,
+	})
+	if err != nil {
+		t.Fatalf("commit %s/%s: %v", dirID, name, err)
+	}
+	return next
+}
+
+func TestConformSyncSpaceReads(t *testing.T) {
+	runPerStore(t, func(t *testing.T, st Store) {
+		ctx := context.Background()
+
+		space, err := st.CreateVault(ctx, "Docs", "", ModeSync)
+		if err != nil {
+			t.Fatalf("CreateVault: %v", err)
+		}
+		// A commit into an id nothing registered births a vault, so the mode a
+		// reader gets back for it must stay "vault".
+		const born = "COMMITBE"
+
+		// Browse reads the newest revision per key and skips tombstones.
+		head := commitRevision(t, st, space, 0, "DIRA", "one.txt", 11, false)
+		head = commitRevision(t, st, space, head, "DIRA", "two.txt", 22, false)
+		head = commitRevision(t, st, space, head, "DIRA", "one.txt", 33, false) // an edit
+		head = commitRevision(t, st, space, head, "DIRA", "one.txt", 0, true)   // a deletion
+
+		if mode, err := st.VaultMode(ctx, space); err != nil || mode != ModeSync {
+			t.Errorf("VaultMode(sync space) = %q, %v; want sync", mode, err)
+		}
+		if _, err := st.VaultMode(ctx, born); !errors.Is(err, ErrNotFound) {
+			t.Errorf("VaultMode(unknown) = %v, want ErrNotFound", err)
+		}
+
+		files, err := st.LiveFiles(ctx, space)
+		if err != nil {
+			t.Fatalf("LiveFiles: %v", err)
+		}
+		if len(files) != 1 || files[0].CipherName != "two.txt" {
+			t.Fatalf("LiveFiles = %+v, want only two.txt", files)
+		}
+		if files[0].Revision != 2 {
+			t.Errorf("two.txt reported revision %d, want the revision that made it live", files[0].Revision)
+		}
+
+		if _, err := st.LiveFile(ctx, space, "DIRA", "one.txt"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("LiveFile of a deleted key = %v, want ErrNotFound", err)
+		}
+		rev, err := st.LiveFile(ctx, space, "DIRA", "two.txt")
+		if err != nil {
+			t.Fatalf("LiveFile: %v", err)
+		}
+		if rev.Size != 22 || rev.VaultID != space {
+			t.Errorf("LiveFile = %+v, want size 22 in space %s", rev, space)
+		}
+
+		// The bin holds the tombstone, and reports the size the file had.
+		bin, err := st.RecycleBin(ctx, space, 0)
+		if err != nil {
+			t.Fatalf("RecycleBin: %v", err)
+		}
+		if len(bin) != 1 || bin[0].CipherName != "one.txt" || bin[0].Size != 33 {
+			t.Fatalf("RecycleBin = %+v, want one.txt at its last live size 33", bin)
+		}
+		// A window that has already closed shows nothing.
+		empty, err := st.RecycleBin(ctx, space, 1<<62)
+		if err != nil {
+			t.Fatalf("RecycleBin with a closed window: %v", err)
+		}
+		if len(empty) != 0 {
+			t.Errorf("RecycleBin past the window = %+v, want nothing", empty)
+		}
+
+		// Restore is a commit: the file comes back at the head with its content.
+		// A peer commit in between is what proves it chains from the space's
+		// head rather than from the revision this file was last seen at.
+		head = commitRevision(t, st, space, head, "DIRA", "peer.txt", 7, false)
+		restored, err := st.RestoreRecycled(ctx, space, "DIRA", "one.txt")
+		if err != nil {
+			t.Fatalf("RestoreRecycled: %v", err)
+		}
+		if restored.Revision != head+1 || restored.Size != 33 {
+			t.Errorf("restored = %+v, want revision %d and size 33", restored, head+1)
+		}
+		if bin, err = st.RecycleBin(ctx, space, 0); err != nil || len(bin) != 0 {
+			t.Errorf("RecycleBin after a restore = %+v, %v; want empty", bin, err)
+		}
+		if _, err := st.RestoreRecycled(ctx, space, "DIRA", "two.txt"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("restoring a live key = %v, want ErrNotFound", err)
+		}
+		if _, err := st.RestoreRecycled(ctx, space, "DIRA", "never.txt"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("restoring an unknown key = %v, want ErrNotFound", err)
+		}
+
+		// Re-delete one.txt, and give the vault space a tombstone too: the sweep
+		// expires only the sync space, and it keeps each tombstone so a client
+		// that was away still learns the file is gone.
+		commitRevision(t, st, space, restored.Revision, "DIRA", "one.txt", 0, true)
+		commitRevision(t, st, born, 0, "DIRA", "secret.txt", 44, false)
+		commitRevision(t, st, born, 1, "DIRA", "secret.txt", 0, true)
+
+		if dropped, err := st.SweepRecycle(ctx, 0); err != nil || dropped != 0 {
+			t.Errorf("SweepRecycle(epoch) = %d, %v; want nothing dropped", dropped, err)
+		}
+		if dropped, err := st.SweepRecycle(ctx, 1<<62); err != nil || dropped == 0 {
+			t.Errorf("SweepRecycle(far future) = %d, %v; want the dead history dropped", dropped, err)
+		}
+
+		if bin, err := st.RecycleBin(ctx, space, 0); err != nil || len(bin) != 1 {
+			t.Errorf("the sync space lost its tombstone: %+v, %v", bin, err)
+		}
+		if _, err := st.LiveFile(ctx, space, "DIRA", "one.txt"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a swept file became restorable again: %v", err)
+		}
+		if _, err := st.LiveFile(ctx, born, "DIRA", "secret.txt"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("the swept space was not a vault: %v", err)
+		}
+		if rows, _, err := st.RevisionsSince(ctx, born, 0, 100); err != nil || len(rows) != 2 {
+			t.Errorf("a vault's history was swept: %d rows, %v; want both revisions", len(rows), err)
+		}
+		// The tombstone still answers for the space, so the sweep is idempotent.
+		if dropped, err := st.SweepRecycle(ctx, 1<<62); err != nil || dropped != 0 {
+			t.Errorf("second SweepRecycle = %d, %v; want nothing left to drop", dropped, err)
+		}
+	})
+}
