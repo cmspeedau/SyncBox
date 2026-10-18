@@ -494,8 +494,10 @@ jobs:
           # the truncation, `head` began quitting early, and the writer's SIGPIPE
           # failed this step with 141 *after* every assertion above had passed.
           # 40 lines is boot chatter plus one line per probe request.
+          boot_log="$(mktemp)"
           docker logs "$name" >"$boot_log" 2>&1
           head -40 "$boot_log"
+          rm -f "$boot_log"
           echo "runtime check passed: booted uninitialized, completed first run, refused"
           echo "strangers, kept a sync space in the clear, browsed it, shared one file to"
           echo "a stranger, emptied and refilled its recycle bin, and refused a vault thrice"
