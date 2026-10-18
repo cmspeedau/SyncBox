@@ -23,6 +23,13 @@ type backupConfigBody struct {
 	// when nothing is pending (off, or a change not yet re-armed). omitempty so a
 	// server that has not armed a wait simply omits it.
 	NextDueUnix int64 `json:"next_due_unix,omitempty"`
+	// BootIntervalSeconds and BootSchedule are the cadence the environment set at
+	// startup, which a restart returns to; Drifted says whether the live cadence
+	// differs from it. Because the schedule is deliberately not persisted, this is
+	// the only way the console can warn that a change made here is temporary.
+	BootIntervalSeconds int    `json:"boot_interval_seconds"`
+	BootSchedule        string `json:"boot_schedule"`
+	Drifted             bool   `json:"drifted"`
 }
 
 // minScheduleSeconds mirrors the config floor: a snapshot every few seconds would
@@ -31,13 +38,17 @@ const minScheduleSeconds = 60
 
 func scheduleConfig(s *Server) backupConfigBody {
 	if s.sched == nil {
-		return backupConfigBody{Configured: false, IntervalSeconds: 0, Schedule: "off"}
+		return backupConfigBody{Configured: false, IntervalSeconds: 0, Schedule: "off", BootSchedule: "off"}
 	}
 	every := s.sched.Every()
+	boot := s.sched.Boot()
 	body := backupConfigBody{
-		Configured:      true,
-		IntervalSeconds: int(every / time.Second),
-		Schedule:        scheduleLabel(every),
+		Configured:          true,
+		IntervalSeconds:     int(every / time.Second),
+		Schedule:            scheduleLabel(every),
+		BootIntervalSeconds: int(boot / time.Second),
+		BootSchedule:        scheduleLabel(boot),
+		Drifted:             every != boot,
 	}
 	if due := s.sched.NextDue(); !due.IsZero() {
 		body.NextDueUnix = due.Unix()

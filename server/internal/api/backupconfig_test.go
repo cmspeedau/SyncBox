@@ -140,3 +140,34 @@ func TestBackupConfigReportsNextDue(t *testing.T) {
 		t.Errorf("next_due after a change = %d, want 0 (cleared until the loop re-arms)", got.NextDueUnix)
 	}
 }
+
+// The schedule is not persisted, so the endpoint must show the boot cadence and
+// whether the running one differs: the only way the console can say a change is
+// temporary. Boot stays fixed while drift appears when they differ and clears when
+// the live value is set back to it.
+func TestBackupConfigReportsDriftFromBoot(t *testing.T) {
+	sched := backup.NewScheduler(time.Hour) // boot at 1h
+	c := newConfigClient(t, sched)
+
+	if got := c.getSchedule(); !got.Configured || got.Drifted || got.BootIntervalSeconds != 3600 || got.BootSchedule != "1h0m0s" {
+		t.Fatalf("initial config = %+v, want configured, not drifted, boot 3600/1h0m0s", got)
+	}
+
+	// A live change reads as drift; the boot value is untouched.
+	c.setSchedule(900)
+	if got := c.getSchedule(); !got.Drifted || got.IntervalSeconds != 900 || got.BootIntervalSeconds != 3600 {
+		t.Errorf("after change = %+v, want drifted with live 900 and boot 3600", got)
+	}
+
+	// Setting the cadence back to boot clears the drift.
+	c.setSchedule(3600)
+	if got := c.getSchedule(); got.Drifted {
+		t.Errorf("back at the boot cadence still reports drift: %+v", got)
+	}
+
+	// With no backup target the boot cadence is reported off and nothing drifts.
+	noTarget := newConfigClient(t, nil)
+	if got := noTarget.getSchedule(); got.Configured || got.Drifted || got.BootSchedule != "off" {
+		t.Errorf("no-target config = %+v, want unconfigured, no drift, boot off", got)
+	}
+}

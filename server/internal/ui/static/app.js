@@ -825,6 +825,16 @@ async function renderSnapshots(response) {
   for (const snapshot of snapshots) host.appendChild(snapshotCard(snapshot));
 }
 
+// driftNote explains a live schedule change that a restart will undo. The cadence
+// is deliberately not persisted, so once it differs from the boot (environment)
+// value the console must say so: the change is running-server-only. Empty when the
+// live cadence still matches what the environment set at boot.
+function driftNote(cfg) {
+  if (!cfg.drifted) return "";
+  const boot = cfg.boot_interval_seconds > 0 ? fmtDuration(cfg.boot_interval_seconds) : "off";
+  return "Running on this server only — it was " + boot + " at boot. A restart reverts to " + boot + ", because the schedule is not saved.";
+}
+
 // renderSchedule fills the schedule select from the server's live cadence and
 // reports how soon the next scheduled snapshot lands. With no backup target there
 // is nothing to schedule, so the control is disabled and says why rather than
@@ -864,6 +874,8 @@ function renderSchedule(response) {
       // On but not yet re-armed (a change moments ago): promise the cadence, not a time.
       $("next-due").textContent = "Scheduled every " + fmtDuration(cfg.interval_seconds) + ".";
     }
+    const note = driftNote(cfg);
+    if (note) $("schedule-note").textContent = note;
   });
 }
 
@@ -882,15 +894,14 @@ $("schedule-form").addEventListener("submit", async (event) => {
     }
     $("snapshot-error").textContent = "";
     const cfg = await response.json();
-    if (cfg.interval_seconds === 0) {
-      $("schedule-note").textContent = "Scheduled snapshots are off.";
-      $("next-due").textContent = "";
-    } else {
-      $("schedule-note").textContent = "Scheduled snapshots: " + label.toLowerCase() + ".";
-      // The loop re-arms within a moment; until the next read we can only promise
-      // the cadence, not the exact minute, so say it will land "within" one.
-      $("next-due").textContent = "The next one lands within " + fmtDuration(seconds) + ".";
-    }
+    // The drift caveat outranks the plain confirmation: it is the fact that matters
+    // most after a change, and next-due still shows the cadence taking effect.
+    const confirm = cfg.interval_seconds === 0
+      ? "Scheduled snapshots are off."
+      : "Scheduled snapshots: " + label.toLowerCase() + ".";
+    $("schedule-note").textContent = driftNote(cfg) || confirm;
+    $("next-due").textContent =
+      cfg.interval_seconds === 0 ? "" : "The next one lands within " + fmtDuration(seconds) + ".";
   } finally {
     button.disabled = false;
   }

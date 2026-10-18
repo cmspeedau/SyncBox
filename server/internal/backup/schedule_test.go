@@ -85,6 +85,27 @@ func TestSchedulerArmsTheNextFire(t *testing.T) {
 	}
 }
 
+// Boot is the cadence a restart returns to, so it must survive live changes.
+func TestSchedulerRemembersItsBootInterval(t *testing.T) {
+	s := NewScheduler(time.Hour)
+	if got := s.Boot(); got != time.Hour {
+		t.Fatalf("NewScheduler(1h).Boot = %v, want 1h", got)
+	}
+
+	// Live changes move Every but never the remembered boot value.
+	s.SetInterval(0)
+	s.SetInterval(15 * time.Minute)
+	if got := s.Boot(); got != time.Hour {
+		t.Errorf("Boot after live changes = %v, want the original 1h", got)
+	}
+
+	// A scheduler that booted off reports boot as off, so any live cadence reads
+	// as a difference from what a restart will bring back.
+	if got := NewScheduler(0).Boot(); got != 0 {
+		t.Errorf("NewScheduler(0).Boot = %v, want 0", got)
+	}
+}
+
 // received reports whether a nudge is waiting and consumes it if so.
 func received(ch <-chan struct{}) bool {
 	select {
