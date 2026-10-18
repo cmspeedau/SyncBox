@@ -225,6 +225,17 @@ function fmtDuration(seconds) {
   return plural(s, "second");
 }
 
+// fmtUp renders how long a process has been running, rounded to the coarsest
+// sensible unit and with no trailing "ago" — the way uptime is read, not an age.
+function fmtUp(seconds) {
+  const s = Number(seconds) || 0;
+  const plural = (n, unit) => n + " " + unit + (n === 1 ? "" : "s");
+  if (s < 60) return "under a minute";
+  if (s < 5400) return plural(Math.round(s / 60), "minute");
+  if (s < 172800) return plural(Math.round(s / 3600), "hour");
+  return plural(Math.round(s / 86400), "day");
+}
+
 // fmtAge reads a timestamp backwards — "just now", "12 minutes ago", "3 days ago"
 // — the way an operator gauges whether a backup is fresh. fmtIn reads one
 // forwards, for the next scheduled snapshot. Both round to the coarsest unit,
@@ -343,6 +354,8 @@ function renderAbout(body) {
       ["Request rate limit", about.rate_limit_rps > 0 ? about.rate_limit_rps + " req/s (burst " + about.rate_burst + ")" : "unlimited"],
       ["Commits to unknown vaults", about.require_registered_vaults ? "refused" : "accepted"],
       ["Server password", about.password_source === "stored" ? "stored — set in the console, survives restarts" : about.password_source === "environment" ? "from SYNCBOX_PASSWORD — change it in the environment" : "not set up"],
+      ["Started", fmtTime(about.started_unix)],
+      ["Uptime", fmtUp(about.uptime_seconds)],
     ]), { id: "about" })
   );
 }

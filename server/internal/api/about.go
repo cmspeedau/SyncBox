@@ -37,6 +37,11 @@ type aboutBody struct {
 	// "stored", or "unset" — so an operator can tell whether the console's change
 	// password persists or whether SYNCBOX_PASSWORD owns it. Never the secret.
 	PasswordSource string `json:"password_source"`
+	// When this process came up and how long it has been running. Uptime makes the
+	// schedule-drift warning actionable: it says whether the server has restarted
+	// (and so reverted an unpersisted setting) since the operator last looked.
+	StartedUnix   int64 `json:"started_unix"`
+	UptimeSeconds int64 `json:"uptime_seconds"`
 }
 
 func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
@@ -61,6 +66,12 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 	if s.backups != nil {
 		body.BackupsConfigured = true
 		body.BackupTarget = s.backups.Location()
+	}
+	if !s.started.IsZero() {
+		body.StartedUnix = s.started.Unix()
+		if up := int64(s.now().Sub(s.started).Seconds()); up > 0 {
+			body.UptimeSeconds = up
+		}
 	}
 	writeJSON(w, http.StatusOK, body)
 }
