@@ -24,6 +24,7 @@ pub mod chunker;
 pub mod conflict;
 pub mod engine;
 pub mod error;
+mod plain;
 pub mod store;
 pub mod vault;
 

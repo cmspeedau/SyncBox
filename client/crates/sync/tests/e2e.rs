@@ -20,6 +20,7 @@ use syncbox_crypto::names::DirId;
 use syncbox_crypto::{ChunkId, MasterKey, MasterKeys};
 use syncbox_index::{FileEntry, Index, MemoryIndex};
 use syncbox_sync::{ContentStore, Engine, PullStore, SyncError, Vault};
+use syncbox_transport::dto::SpaceMode;
 use syncbox_transport::{Client, Http, Request, Response, Result as TResult, TransportError};
 
 // ---- the fake server ---------------------------------------------------------
@@ -261,9 +262,37 @@ fn client(shared: &Shared) -> Client<Shared> {
     client
 }
 
-fn engine(client_root: &Path) -> Engine<MemoryIndex> {
-    let vault = Vault::new(keys(), "vault", client_root).expect("vault");
-    Engine::new(MemoryIndex::new(), vault)
+/// A space of the given mode over a fresh in-memory index.
+fn engine(client_root: &Path, mode: SpaceMode) -> Engine<MemoryIndex> {
+    Engine::new(MemoryIndex::new(), space(client_root, mode))
+}
+
+/// The codec for `mode`: the encrypted vault, or the cleartext sync space.
+fn space(client_root: &Path, mode: SpaceMode) -> Vault {
+    match mode {
+        SpaceMode::Sync => Vault::sync_space("vault", client_root),
+        _ => Vault::new(keys(), "vault", client_root).expect("vault"),
+    }
+}
+
+/// Runs `body` once per space mode, so every engine test proves the two codecs
+/// share one spine — S2's core promise. A failure says which mode it failed in.
+///
+/// Panics are caught and re-raised with the mode named rather than letting the
+/// second iteration hide behind the first: without this, a `Vault`-mode failure
+/// reported by the harness would stop before the sync space ever ran.
+fn both_modes(body: impl Fn(SpaceMode)) {
+    for mode in [SpaceMode::Vault, SpaceMode::Sync] {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(mode)));
+        if let Err(payload) = outcome {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_owned())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "test panicked".to_owned());
+            panic!("{mode:?} mode failed: {detail}");
+        }
+    }
 }
 
 fn read_client(root: &Path, rel: &str) -> Option<Vec<u8>> {
@@ -278,119 +307,125 @@ fn write_client(root: &Path, rel: &str, bytes: &[u8]) {
 
 #[test]
 fn push_then_pull_reproduces_the_file() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
 
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "hello.txt", b"hello from a");
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.uploaded, 1);
-    assert!(report.chunks_uploaded >= 1);
-    assert!(!report.is_quiet(), "an upload is not a quiet pass");
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "hello.txt", b"hello from a");
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.uploaded, 1);
+        assert!(report.chunks_uploaded >= 1);
+        assert!(!report.is_quiet(), "an upload is not a quiet pass");
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        read_client(b_root.path(), "hello.txt").as_deref(),
-        Some(&b"hello from a"[..]),
-        "B reproduces A's bytes"
-    );
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            read_client(b_root.path(), "hello.txt").as_deref(),
+            Some(&b"hello from a"[..]),
+            "B reproduces A's bytes"
+        );
 
-    // A settled vault now has nothing to do.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "no drift on a settled pass: {report:?}");
+        // A settled vault now has nothing to do.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "no drift on a settled pass: {report:?}");
+    });
 }
 
 #[test]
 fn an_early_edit_uploads_only_the_chunks_that_changed() {
-    use syncbox_crypto::content::{CHUNK_MIN, CHUNK_TARGET};
+    both_modes(|mode| {
+        use syncbox_crypto::content::{CHUNK_MIN, CHUNK_TARGET};
 
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
 
-    // Several chunks' worth of high-entropy bytes; content-defined splitting gives
-    // roughly one chunk per ~128 KiB here, so this lands on a dozen or more.
-    let original = pseudorandom(CHUNK_TARGET * 16);
-    write_client(a_root.path(), "big.bin", &original);
-    let first = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert!(first.chunks_uploaded >= 4, "a multi-chunk file uploaded");
+        // Several chunks' worth of high-entropy bytes; content-defined splitting gives
+        // roughly one chunk per ~128 KiB here, so this lands on a dozen or more.
+        let original = pseudorandom(CHUNK_TARGET * 16);
+        write_client(a_root.path(), "big.bin", &original);
+        let first = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert!(first.chunks_uploaded >= 4, "a multi-chunk file uploaded");
 
-    // Insert a chunk-sized blob near the front, shifting every later byte.
-    let mut edited = original.clone();
-    edited.splice(1..1, pseudorandom(CHUNK_MIN));
-    write_client(a_root.path(), "big.bin", &edited);
+        // Insert a chunk-sized blob near the front, shifting every later byte.
+        let mut edited = original.clone();
+        edited.splice(1..1, pseudorandom(CHUNK_MIN));
+        write_client(a_root.path(), "big.bin", &edited);
 
-    let second = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(second.uploaded, 1, "one file re-committed");
-    assert!(
-        second.chunks_uploaded < first.chunks_uploaded,
-        "delta: uploaded {} of {} chunks, later chunks were reused",
-        second.chunks_uploaded,
-        first.chunks_uploaded
-    );
+        let second = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(second.uploaded, 1, "one file re-committed");
+        assert!(
+            second.chunks_uploaded < first.chunks_uploaded,
+            "delta: uploaded {} of {} chunks, later chunks were reused",
+            second.chunks_uploaded,
+            first.chunks_uploaded
+        );
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(
-        read_client(b_root.path(), "big.bin").as_deref(),
-        Some(&edited[..]),
-        "B rebuilds the edited file byte for byte"
-    );
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            read_client(b_root.path(), "big.bin").as_deref(),
+            Some(&edited[..]),
+            "B rebuilds the edited file byte for byte"
+        );
+    });
 }
 
 #[test]
 fn a_both_sides_edit_becomes_a_conflicted_copy() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
 
-    // Both start from the same synced content.
-    write_client(a_root.path(), "notes.txt", b"base");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        // Both start from the same synced content.
+        write_client(a_root.path(), "notes.txt", b"base");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // Then both diverge before either syncs.
-    write_client(a_root.path(), "notes.txt", b"a's version");
-    write_client(b_root.path(), "notes.txt", b"b's version");
+        // Then both diverge before either syncs.
+        write_client(a_root.path(), "notes.txt", b"a's version");
+        write_client(b_root.path(), "notes.txt", b"b's version");
 
-    // A wins the canonical name.
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        // A wins the canonical name.
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    // B, behind on the server but with its own edits, keeps them as a copy.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 1, "B recorded one conflict");
+        // B, behind on the server but with its own edits, keeps them as a copy.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 1, "B recorded one conflict");
 
-    assert_eq!(
-        read_client(b_root.path(), "notes.txt").as_deref(),
-        Some(&b"a's version"[..]),
-        "the server's winner takes the canonical name"
-    );
-    let copy = "notes (conflicted copy 2026-10-16).txt";
-    assert_eq!(
-        read_client(b_root.path(), copy).as_deref(),
-        Some(&b"b's version"[..]),
-        "B's own bytes survive under a conflicted name"
-    );
+        assert_eq!(
+            read_client(b_root.path(), "notes.txt").as_deref(),
+            Some(&b"a's version"[..]),
+            "the server's winner takes the canonical name"
+        );
+        let copy = "notes (conflicted copy 2026-10-16).txt";
+        assert_eq!(
+            read_client(b_root.path(), copy).as_deref(),
+            Some(&b"b's version"[..]),
+            "B's own bytes survive under a conflicted name"
+        );
 
-    // A eventually learns about B's copy as a new file.
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(
-        read_client(a_root.path(), copy).as_deref(),
-        Some(&b"b's version"[..]),
-        "A pulls B's conflicted copy too, so nothing is lost"
-    );
+        // A eventually learns about B's copy as a new file.
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(
+            read_client(a_root.path(), copy).as_deref(),
+            Some(&b"b's version"[..]),
+            "A pulls B's conflicted copy too, so nothing is lost"
+        );
+    });
 }
 
 // ---- a head that moves between pull and push (409 recovery) -------------------
@@ -437,154 +472,164 @@ fn blind_client(shared: &Shared) -> (Client<BlindFirstPull>, Rc<Cell<bool>>) {
 
 #[test]
 fn a_peer_committing_the_same_bytes_converges_without_a_conflict() {
-    // A vault kept in two folders whose bytes already match: the second folder's
-    // first pass races the first folder's, and its commit lands against a head
-    // that moved. Identical bytes are not a conflict.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
+    both_modes(|mode| {
+        // A vault kept in two folders whose bytes already match: the second folder's
+        // first pass races the first folder's, and its commit lands against a head
+        // that moved. Identical bytes are not a conflict.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
 
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "hello.txt", b"same bytes");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(shared.0.borrow().head(), 1);
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "hello.txt", b"same bytes");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(shared.0.borrow().head(), 1);
 
-    let mut b = engine(b_root.path());
-    write_client(b_root.path(), "hello.txt", b"same bytes");
-    let (mut b_client, blind) = blind_client(&shared);
+        let mut b = engine(b_root.path(), mode);
+        write_client(b_root.path(), "hello.txt", b"same bytes");
+        let (mut b_client, blind) = blind_client(&shared);
 
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(!blind.get(), "the blind read was consumed");
-    assert_eq!(report.conflicts, 0, "identical bytes are not a conflict");
-    assert_eq!(report.uploaded, 1, "B adopts A's revision as its own");
-    assert!(
-        read_client(b_root.path(), "hello (conflicted copy 2026-10-16).txt").is_none(),
-        "no stray conflicted copy on disk"
-    );
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(!blind.get(), "the blind read was consumed");
+        assert_eq!(report.conflicts, 0, "identical bytes are not a conflict");
+        assert_eq!(report.uploaded, 1, "B adopts A's revision as its own");
+        assert!(
+            read_client(b_root.path(), "hello (conflicted copy 2026-10-16).txt").is_none(),
+            "no stray conflicted copy on disk"
+        );
 
-    // Converged: nothing left to do, and the server still holds one revision.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "settled after adopting: {report:?}");
-    assert_eq!(
-        shared.0.borrow().head(),
-        1,
-        "no duplicate revision was added"
-    );
+        // Converged: nothing left to do, and the server still holds one revision.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "settled after adopting: {report:?}");
+        assert_eq!(
+            shared.0.borrow().head(),
+            1,
+            "no duplicate revision was added"
+        );
+    });
 }
 
 #[test]
 fn a_peer_committing_another_file_is_retried_not_conflicted() {
-    // The head moved because a peer committed a *different* file. Ours is still
-    // news: it should be committed against the new head, not turned into a copy.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
+    both_modes(|mode| {
+        // The head moved because a peer committed a *different* file. Ours is still
+        // news: it should be committed against the new head, not turned into a copy.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
 
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "other.txt", b"a's file");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "other.txt", b"a's file");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    write_client(b_root.path(), "hello.txt", b"b's file");
-    let (mut b_client, _blind) = blind_client(&shared);
+        let mut b = engine(b_root.path(), mode);
+        write_client(b_root.path(), "hello.txt", b"b's file");
+        let (mut b_client, _blind) = blind_client(&shared);
 
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 0, "a different file is not a conflict");
-    assert_eq!(report.uploaded, 1, "B commits its own file after the retry");
-    assert_eq!(
-        read_client(b_root.path(), "hello.txt").as_deref(),
-        Some(&b"b's file"[..]),
-        "B's file is untouched"
-    );
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 0, "a different file is not a conflict");
+        assert_eq!(report.uploaded, 1, "B commits its own file after the retry");
+        assert_eq!(
+            read_client(b_root.path(), "hello.txt").as_deref(),
+            Some(&b"b's file"[..]),
+            "B's file is untouched"
+        );
 
-    // Both files are on the server, and a fresh peer sees both.
-    let c_root = tempfile::tempdir().unwrap();
-    let mut c = engine(c_root.path());
-    let mut c_client = client(&shared);
-    let report = c.sync_once(&mut c_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 2, "both files are in the vault");
+        // Both files are on the server, and a fresh peer sees both.
+        let c_root = tempfile::tempdir().unwrap();
+        let mut c = engine(c_root.path(), mode);
+        let mut c_client = client(&shared);
+        let report = c.sync_once(&mut c_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 2, "both files are in the vault");
+    });
 }
 
 #[test]
 fn a_peer_committing_different_bytes_keeps_a_conflicted_copy() {
-    // The head moved because a peer committed a different version of *this* file.
-    // Ours must survive under a conflicted name.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
+    both_modes(|mode| {
+        // The head moved because a peer committed a different version of *this* file.
+        // Ours must survive under a conflicted name.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
 
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "notes.txt", b"a's version");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "notes.txt", b"a's version");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    write_client(b_root.path(), "notes.txt", b"b's version");
-    let (mut b_client, _blind) = blind_client(&shared);
+        let mut b = engine(b_root.path(), mode);
+        write_client(b_root.path(), "notes.txt", b"b's version");
+        let (mut b_client, _blind) = blind_client(&shared);
 
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 1, "different bytes for one file conflict");
-    assert_eq!(
-        read_client(b_root.path(), "notes (conflicted copy 2026-10-16).txt").as_deref(),
-        Some(&b"b's version"[..]),
-        "B's bytes survive under a conflicted name"
-    );
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 1, "different bytes for one file conflict");
+        assert_eq!(
+            read_client(b_root.path(), "notes (conflicted copy 2026-10-16).txt").as_deref(),
+            Some(&b"b's version"[..]),
+            "B's bytes survive under a conflicted name"
+        );
+    });
 }
 
 #[test]
 fn a_local_delete_propagates_as_a_tombstone() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
 
-    write_client(a_root.path(), "gone.txt", b"temporary");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(read_client(b_root.path(), "gone.txt").is_some());
+        write_client(a_root.path(), "gone.txt", b"temporary");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(read_client(b_root.path(), "gone.txt").is_some());
 
-    std::fs::remove_file(a_root.path().join("gone.txt")).unwrap();
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.deleted, 1, "the delete is committed");
+        std::fs::remove_file(a_root.path().join("gone.txt")).unwrap();
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.deleted, 1, "the delete is committed");
 
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(
-        read_client(b_root.path(), "gone.txt"),
-        None,
-        "B removes the file the tombstone deletes"
-    );
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            read_client(b_root.path(), "gone.txt"),
+            None,
+            "B removes the file the tombstone deletes"
+        );
+    });
 }
 
 #[test]
 fn a_file_in_a_shared_subdirectory_round_trips() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    // Both peers share the directory structure, so the child dir id is known to
-    // both and the file can be placed (a peer-only directory an id cannot name is
-    // out of scope and is skipped).
-    std::fs::create_dir_all(a_root.path().join("docs")).unwrap();
-    std::fs::create_dir_all(b_root.path().join("docs")).unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        // Both peers share the directory structure, so the child dir id is known to
+        // both and the file can be placed (a peer-only directory an id cannot name is
+        // out of scope and is skipped).
+        std::fs::create_dir_all(a_root.path().join("docs")).unwrap();
+        std::fs::create_dir_all(b_root.path().join("docs")).unwrap();
 
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "docs/report.md", b"# title");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "docs/report.md", b"# title");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(report.skipped, 0, "the known directory let it be placed");
-    assert_eq!(
-        read_client(b_root.path(), "docs/report.md").as_deref(),
-        Some(&b"# title"[..])
-    );
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(report.skipped, 0, "the known directory let it be placed");
+        assert_eq!(
+            read_client(b_root.path(), "docs/report.md").as_deref(),
+            Some(&b"# title"[..])
+        );
+    });
 }
 
 /// A deterministic pseudorandom buffer with enough entropy that the content-defined
@@ -681,475 +726,611 @@ fn stage_dirty(tee: &TeeStore, index: &mut MemoryIndex, vault: &Vault, path: &st
 
 #[test]
 fn a_pull_populates_a_store_a_mount_can_read_from() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(b_root.path().join("docs")).unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(b_root.path().join("docs")).unwrap();
 
-    // A uploads a file into a subdirectory.
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "docs/report.md", b"# server-only content");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        // A uploads a file into a subdirectory.
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "docs/report.md", b"# server-only content");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    // B pulls, with a local content store installed on the engine.
-    let tee = TeeStore::default();
-    let store = tee.clone(); // a second handle to the same recording
-    let mut b = engine(b_root.path()).with_store(store);
-    let mut b_client = client(&shared);
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1, "B downloaded A's file");
+        // B pulls, with a local content store installed on the engine.
+        let tee = TeeStore::default();
+        let store = tee.clone(); // a second handle to the same recording
+        let mut b = engine(b_root.path(), mode).with_store(store);
+        let mut b_client = client(&shared);
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1, "B downloaded A's file");
 
-    // The store now holds the manifest and chunks for that file, under its vault
-    // coordinates — independently enough to decrypt it WITHOUT the server or B's copy
-    // on disk, which is exactly what a read-only mount does via `Vault::open`.
-    let (dir_id, cipher_name, _name) = b.vault.locate("docs/report.md").unwrap();
-    let recorded = tee.0.lock().unwrap();
-    let manifest = recorded
-        .manifests
-        .get(&(dir_id.as_str().to_owned(), cipher_name.clone()))
-        .expect("the pull stored the manifest under the file's coordinates");
-    let (plaintext, ids) = b
-        .vault
-        .open(&dir_id, &cipher_name, manifest, &mut |id| {
-            recorded
-                .chunks
-                .get(id.as_str())
-                .cloned()
-                .ok_or(SyncError::Integrity("chunk missing from tee store"))
-        })
-        .expect("reconstructs from the store alone");
-    assert_eq!(plaintext, b"# server-only content");
-    assert!(!ids.is_empty(), "the chunk ids were recorded");
+        // The store now holds the manifest and chunks for that file, under its vault
+        // coordinates — independently enough to decrypt it WITHOUT the server or B's copy
+        // on disk, which is exactly what a read-only mount does via `Vault::open`.
+        let (dir_id, cipher_name, _name) = b.vault.locate("docs/report.md").unwrap();
+        let recorded = tee.0.lock().unwrap();
+        let manifest = recorded
+            .manifests
+            .get(&(dir_id.as_str().to_owned(), cipher_name.clone()))
+            .expect("the pull stored the manifest under the file's coordinates");
+        let (plaintext, ids) = b
+            .vault
+            .open(&dir_id, &cipher_name, manifest, &mut |id| {
+                recorded
+                    .chunks
+                    .get(id.as_str())
+                    .cloned()
+                    .ok_or(SyncError::Integrity("chunk missing from tee store"))
+            })
+            .expect("reconstructs from the store alone");
+        assert_eq!(plaintext, b"# server-only content");
+        assert!(!ids.is_empty(), "the chunk ids were recorded");
+    });
 }
 
 // ---- folderless sync (the mount is the interface) ----------------------------
 
 #[test]
 fn a_folderless_push_ships_dirty_store_records_and_their_tombstones() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let vault_dir = tempfile::tempdir().unwrap();
-    let tee = TeeStore::default();
-    let mut e = engine(vault_dir.path())
-        .with_store(tee.clone())
-        .folderless();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let tee = TeeStore::default();
+        let mut e = engine(vault_dir.path(), mode)
+            .with_store(tee.clone())
+            .folderless();
 
-    // Two mount-writes, staged the way FsMut leaves them: content in the store,
-    // dirty records in the index, no plaintext on disk anywhere.
-    stage_dirty(
-        &tee,
-        &mut e.index,
-        &e.vault,
-        "plan.txt",
-        b"written through the mount",
-    );
-    stage_dirty(&tee, &mut e.index, &e.vault, "notes.md", b"# mount notes");
+        // Two mount-writes, staged the way FsMut leaves them: content in the store,
+        // dirty records in the index, no plaintext on disk anywhere.
+        stage_dirty(
+            &tee,
+            &mut e.index,
+            &e.vault,
+            "plan.txt",
+            b"written through the mount",
+        );
+        stage_dirty(&tee, &mut e.index, &e.vault, "notes.md", b"# mount notes");
 
-    let mut e_client = client(&shared);
-    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
-    assert_eq!(report.uploaded, 2, "both dirty records reached the server");
-    assert!(e.index.file("plan.txt").unwrap().is_clean());
-    assert!(
-        !vault_dir.path().join("plan.txt").exists(),
-        "a folderless pass writes no plaintext"
-    );
+        let mut e_client = client(&shared);
+        let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        assert_eq!(report.uploaded, 2, "both dirty records reached the server");
+        assert!(e.index.file("plan.txt").unwrap().is_clean());
+        assert!(
+            !vault_dir.path().join("plan.txt").exists(),
+            "a folderless pass writes no plaintext"
+        );
 
-    // A plain folder client pulls both — the push went through the normal pipeline.
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 2);
-    assert_eq!(
-        read_client(b_root.path(), "plan.txt").unwrap(),
-        b"written through the mount"
-    );
-    assert_eq!(
-        read_client(b_root.path(), "notes.md").unwrap(),
-        b"# mount notes"
-    );
+        // A plain folder client pulls both — the push went through the normal pipeline.
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 2);
+        assert_eq!(
+            read_client(b_root.path(), "plan.txt").unwrap(),
+            b"written through the mount"
+        );
+        assert_eq!(
+            read_client(b_root.path(), "notes.md").unwrap(),
+            b"# mount notes"
+        );
 
-    // The mount deletes a file: exactly the bookkeeping FsMut::unlink leaves behind.
-    let entry = e.index.file("plan.txt").unwrap();
-    e.index.note_delete(&entry);
-    e.index.remove_file("plan.txt");
-    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
-    assert_eq!(report.deleted, 1, "the queued tombstone is committed");
-    assert!(
-        e.index.pending_deletes().is_empty(),
-        "the queue drains only once the server has it"
-    );
+        // The mount deletes a file: exactly the bookkeeping FsMut::unlink leaves behind.
+        let entry = e.index.file("plan.txt").unwrap();
+        e.index.note_delete(&entry);
+        e.index.remove_file("plan.txt");
+        let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        assert_eq!(report.deleted, 1, "the queued tombstone is committed");
+        assert!(
+            e.index.pending_deletes().is_empty(),
+            "the queue drains only once the server has it"
+        );
 
-    // The folder client mirrors the deletion.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.deleted, 1);
-    assert!(read_client(b_root.path(), "plan.txt").is_none());
+        // The folder client mirrors the deletion.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(read_client(b_root.path(), "plan.txt").is_none());
+    });
 }
 
 #[test]
 fn a_folderless_local_edit_outranks_a_newer_server_revision() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let vault_dir = tempfile::tempdir().unwrap();
-    let tee = TeeStore::default();
-    let mut e = engine(vault_dir.path())
-        .with_store(tee.clone())
-        .folderless();
-    let mut e_client = client(&shared);
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let tee = TeeStore::default();
+        let mut e = engine(vault_dir.path(), mode)
+            .with_store(tee.clone())
+            .folderless();
+        let mut e_client = client(&shared);
 
-    stage_dirty(
-        &tee,
-        &mut e.index,
-        &e.vault,
-        "shared.txt",
-        b"v1 from the mount",
-    );
-    e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        stage_dirty(
+            &tee,
+            &mut e.index,
+            &e.vault,
+            "shared.txt",
+            b"v1 from the mount",
+        );
+        e.sync_once(&mut e_client, "2026-10-16").unwrap();
 
-    // B (a folder client) pulls v1, then commits its own v2.
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    write_client(b_root.path(), "shared.txt", b"v2 from the folder client");
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        // B (a folder client) pulls v1, then commits its own v2.
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        write_client(b_root.path(), "shared.txt", b"v2 from the folder client");
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // Back on the mount device, a fresh edit is dirty when the pass runs: the server
-    // is newer, but the store's bytes are this device's newest word.
-    stage_dirty(
-        &tee,
-        &mut e.index,
-        &e.vault,
-        "shared.txt",
-        b"v2 from the mount",
-    );
-    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
-    assert_eq!(
-        report.conflicts, 1,
-        "the newer server revision meets a dirty record"
-    );
-    assert_eq!(
-        report.downloaded, 0,
-        "nothing was pulled over the local edit"
-    );
-    assert_eq!(report.uploaded, 1, "our edit is committed over it");
+        // Back on the mount device, a fresh edit is dirty when the pass runs: the server
+        // is newer, but the store's bytes are this device's newest word.
+        stage_dirty(
+            &tee,
+            &mut e.index,
+            &e.vault,
+            "shared.txt",
+            b"v2 from the mount",
+        );
+        let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        assert_eq!(
+            report.conflicts, 1,
+            "the newer server revision meets a dirty record"
+        );
+        assert_eq!(
+            report.downloaded, 0,
+            "nothing was pulled over the local edit"
+        );
+        assert_eq!(report.uploaded, 1, "our edit is committed over it");
 
-    // The mount's bytes win the canonical name; B picks them up next pass (with its
-    // own v2 kept as a conflicted copy, folder mode's usual rescue).
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        read_client(b_root.path(), "shared.txt").unwrap(),
-        b"v2 from the mount"
-    );
+        // The mount's bytes win the canonical name; B picks them up next pass (with its
+        // own v2 kept as a conflicted copy, folder mode's usual rescue).
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            read_client(b_root.path(), "shared.txt").unwrap(),
+            b"v2 from the mount"
+        );
+    });
 }
 
 // ---- conflict edge cases ------------------------------------------------------
 
 #[test]
 fn a_peer_rename_lands_as_a_rename_not_a_conflict() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "plan.txt", b"the only version");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "plan.txt", b"the only version");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // A renames, and syncs the tombstone-plus-new-name pair.
-    std::fs::rename(
-        a_root.path().join("plan.txt"),
-        a_root.path().join("plan-final.txt"),
-    )
-    .unwrap();
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.deleted, 1, "the old name was tombstoned");
-    assert_eq!(report.uploaded, 1, "the new name was committed");
-    assert_eq!(report.conflicts, 0);
+        // A renames, and syncs the tombstone-plus-new-name pair.
+        std::fs::rename(
+            a_root.path().join("plan.txt"),
+            a_root.path().join("plan-final.txt"),
+        )
+        .unwrap();
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.deleted, 1, "the old name was tombstoned");
+        assert_eq!(report.uploaded, 1, "the new name was committed");
+        assert_eq!(report.conflicts, 0);
 
-    // B sees the same move, with no conflict: an unchanged local copy under a
-    // tombstoned name simply goes away, and the new name lands beside it.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 0, "a clean copy stashes nothing");
-    assert_eq!(report.deleted, 1);
-    assert_eq!(report.downloaded, 1);
-    assert!(read_client(b_root.path(), "plan.txt").is_none());
-    assert_eq!(
-        read_client(b_root.path(), "plan-final.txt").as_deref(),
-        Some(&b"the only version"[..])
-    );
+        // B sees the same move, with no conflict: an unchanged local copy under a
+        // tombstoned name simply goes away, and the new name lands beside it.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 0, "a clean copy stashes nothing");
+        assert_eq!(report.deleted, 1);
+        assert_eq!(report.downloaded, 1);
+        assert!(read_client(b_root.path(), "plan.txt").is_none());
+        assert_eq!(
+            read_client(b_root.path(), "plan-final.txt").as_deref(),
+            Some(&b"the only version"[..])
+        );
 
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "the rename is fully settled: {report:?}");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "the rename is fully settled: {report:?}");
+    });
 }
 
 #[test]
 fn a_rename_and_a_peer_edit_both_survive() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "x.txt", b"base");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "x.txt", b"base");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // A renames x away before syncing; meanwhile B edits x and syncs first.
-    std::fs::rename(a_root.path().join("x.txt"), a_root.path().join("y.txt")).unwrap();
-    write_client(b_root.path(), "x.txt", b"b's edit");
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        // A renames x away before syncing; meanwhile B edits x and syncs first.
+        std::fs::rename(a_root.path().join("x.txt"), a_root.path().join("y.txt")).unwrap();
+        write_client(b_root.path(), "x.txt", b"b's edit");
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // A's pass: the peer's edited x comes back down (its name is not A's to
-    // steal), and the rename goes up as a new file. Two names, nothing lost.
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1, "B's edited x was pulled");
-    assert_eq!(report.uploaded, 1, "the renamed y was committed");
-    assert_eq!(report.conflicts, 0);
-    assert_eq!(
-        read_client(a_root.path(), "x.txt").as_deref(),
-        Some(&b"b's edit"[..])
-    );
-    assert_eq!(
-        read_client(a_root.path(), "y.txt").as_deref(),
-        Some(&b"base"[..])
-    );
+        // A's pass: the peer's edited x comes back down (its name is not A's to
+        // steal), and the rename goes up as a new file. Two names, nothing lost.
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1, "B's edited x was pulled");
+        assert_eq!(report.uploaded, 1, "the renamed y was committed");
+        assert_eq!(report.conflicts, 0);
+        assert_eq!(
+            read_client(a_root.path(), "x.txt").as_deref(),
+            Some(&b"b's edit"[..])
+        );
+        assert_eq!(
+            read_client(a_root.path(), "y.txt").as_deref(),
+            Some(&b"base"[..])
+        );
 
-    // B learns y; its x is already current. Both settle.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        read_client(b_root.path(), "y.txt").as_deref(),
-        Some(&b"base"[..])
-    );
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "both names settled: {report:?}");
+        // B learns y; its x is already current. Both settle.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            read_client(b_root.path(), "y.txt").as_deref(),
+            Some(&b"base"[..])
+        );
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "both names settled: {report:?}");
+    });
 }
 
 #[test]
 fn a_peer_delete_stashes_my_unsynced_edit_as_a_conflicted_copy() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "note.txt", b"shared");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "note.txt", b"shared");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // B deletes and commits the tombstone while A's own edit never made it up.
-    std::fs::remove_file(b_root.path().join("note.txt")).unwrap();
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    write_client(a_root.path(), "note.txt", b"my unsynced edit");
+        // B deletes and commits the tombstone while A's own edit never made it up.
+        std::fs::remove_file(b_root.path().join("note.txt")).unwrap();
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        write_client(a_root.path(), "note.txt", b"my unsynced edit");
 
-    // A's pass: the tombstone takes the canonical name, but A's drifted bytes
-    // are stashed as a conflicted copy first — and uploaded as a new file.
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 1, "the drifted local copy was stashed");
-    assert_eq!(report.deleted, 1, "the tombstone still landed locally");
-    assert_eq!(report.uploaded, 1, "the copy was pushed as its own file");
-    assert!(read_client(a_root.path(), "note.txt").is_none());
-    let copy = "note (conflicted copy 2026-10-16).txt";
-    assert_eq!(
-        read_client(a_root.path(), copy).as_deref(),
-        Some(&b"my unsynced edit"[..]),
-        "an unsynced edit must not vanish under a peer's delete"
-    );
+        // A's pass: the tombstone takes the canonical name, but A's drifted bytes
+        // are stashed as a conflicted copy first — and uploaded as a new file.
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 1, "the drifted local copy was stashed");
+        assert_eq!(report.deleted, 1, "the tombstone still landed locally");
+        assert_eq!(report.uploaded, 1, "the copy was pushed as its own file");
+        assert!(read_client(a_root.path(), "note.txt").is_none());
+        let copy = "note (conflicted copy 2026-10-16).txt";
+        assert_eq!(
+            read_client(a_root.path(), copy).as_deref(),
+            Some(&b"my unsynced edit"[..]),
+            "an unsynced edit must not vanish under a peer's delete"
+        );
 
-    // B sees the rescued copy on its next pass.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        read_client(b_root.path(), copy).as_deref(),
-        Some(&b"my unsynced edit"[..])
-    );
+        // B sees the rescued copy on its next pass.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            read_client(b_root.path(), copy).as_deref(),
+            Some(&b"my unsynced edit"[..])
+        );
+    });
 }
 
 #[test]
 fn a_server_edit_outranks_a_local_delete() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "f.txt", b"base");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "f.txt", b"base");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // A deletes locally (nothing synced about it) while B edits and commits.
-    std::fs::remove_file(a_root.path().join("f.txt")).unwrap();
-    write_client(b_root.path(), "f.txt", b"b's newer edit");
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        // A deletes locally (nothing synced about it) while B edits and commits.
+        std::fs::remove_file(a_root.path().join("f.txt")).unwrap();
+        write_client(b_root.path(), "f.txt", b"b's newer edit");
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // The server holds a NEWER revision of f.txt, not a tombstone, so A's
-    // delete-vs-edit resolves server-wins: the file comes back down and A
-    // commits nothing. (This is the counterpart of a_peer_delete_…: deletes
-    // and edits are only tombstones-versus-revisions, never both at once.)
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1, "the newer server revision came back");
-    assert_eq!(
-        report.uploaded, 0,
-        "A's empty-handed delete committed nothing"
-    );
-    assert_eq!(report.deleted, 0);
-    assert_eq!(
-        read_client(a_root.path(), "f.txt").as_deref(),
-        Some(&b"b's newer edit"[..])
-    );
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert!(
-        report.is_quiet(),
-        "resurrected and settled in one pass: {report:?}"
-    );
+        // The server holds a NEWER revision of f.txt, not a tombstone, so A's
+        // delete-vs-edit resolves server-wins: the file comes back down and A
+        // commits nothing. (This is the counterpart of a_peer_delete_…: deletes
+        // and edits are only tombstones-versus-revisions, never both at once.)
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1, "the newer server revision came back");
+        assert_eq!(
+            report.uploaded, 0,
+            "A's empty-handed delete committed nothing"
+        );
+        assert_eq!(report.deleted, 0);
+        assert_eq!(
+            read_client(a_root.path(), "f.txt").as_deref(),
+            Some(&b"b's newer edit"[..])
+        );
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert!(
+            report.is_quiet(),
+            "resurrected and settled in one pass: {report:?}"
+        );
+    });
 }
 
 #[test]
 fn a_folderless_dirty_record_outranks_a_tombstone_and_revives_the_file() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let vault_dir = tempfile::tempdir().unwrap();
-    let tee = TeeStore::default();
-    let mut e = engine(vault_dir.path())
-        .with_store(tee.clone())
-        .folderless();
-    let mut e_client = client(&shared);
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let vault_dir = tempfile::tempdir().unwrap();
+        let tee = TeeStore::default();
+        let mut e = engine(vault_dir.path(), mode)
+            .with_store(tee.clone())
+            .folderless();
+        let mut e_client = client(&shared);
 
-    stage_dirty(&tee, &mut e.index, &e.vault, "doc.txt", b"v1");
-    e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        stage_dirty(&tee, &mut e.index, &e.vault, "doc.txt", b"v1");
+        e.sync_once(&mut e_client, "2026-10-16").unwrap();
 
-    // B pulls, then deletes the file for everyone.
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    std::fs::remove_file(b_root.path().join("doc.txt")).unwrap();
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        // B pulls, then deletes the file for everyone.
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        std::fs::remove_file(b_root.path().join("doc.txt")).unwrap();
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // The mount writes again: a dirty record meets the peer's tombstone. Folder
-    // mode's rule (the local edit wins the canonical name) applies unchanged —
-    // a delete is just another newer revision, and loses to local-wins.
-    stage_dirty(
-        &tee,
-        &mut e.index,
-        &e.vault,
-        "doc.txt",
-        b"v2 after the delete",
-    );
-    let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
-    assert_eq!(report.conflicts, 1, "the tombstone met a dirty record");
-    assert_eq!(
-        report.uploaded, 1,
-        "our record committed over the tombstone"
-    );
-    assert_eq!(report.deleted, 0, "the tombstone was not echoed back down");
+        // The mount writes again: a dirty record meets the peer's tombstone. Folder
+        // mode's rule (the local edit wins the canonical name) applies unchanged —
+        // a delete is just another newer revision, and loses to local-wins.
+        stage_dirty(
+            &tee,
+            &mut e.index,
+            &e.vault,
+            "doc.txt",
+            b"v2 after the delete",
+        );
+        let report = e.sync_once(&mut e_client, "2026-10-16").unwrap();
+        assert_eq!(report.conflicts, 1, "the tombstone met a dirty record");
+        assert_eq!(
+            report.uploaded, 1,
+            "our record committed over the tombstone"
+        );
+        assert_eq!(report.deleted, 0, "the tombstone was not echoed back down");
 
-    // B, which deleted the file, now sees it revived with the mount's bytes —
-    // the cost of local-wins, paid in resurrection rather than lost edits.
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        read_client(b_root.path(), "doc.txt").as_deref(),
-        Some(&b"v2 after the delete"[..])
-    );
+        // B, which deleted the file, now sees it revived with the mount's bytes —
+        // the cost of local-wins, paid in resurrection rather than lost edits.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            read_client(b_root.path(), "doc.txt").as_deref(),
+            Some(&b"v2 after the delete"[..])
+        );
+    });
 }
 
 #[test]
 fn both_sides_deleting_the_same_file_converges_quietly() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let b_root = tempfile::tempdir().unwrap();
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    write_client(a_root.path(), "gone.txt", b"doomed");
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "gone.txt", b"doomed");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // Both delete; A commits the tombstone first, and B's copy is already gone
-    // when the tombstone arrives — nothing to stash, nothing to echo back.
-    std::fs::remove_file(a_root.path().join("gone.txt")).unwrap();
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    std::fs::remove_file(b_root.path().join("gone.txt")).unwrap();
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(report.deleted, 1, "B applied the server's tombstone");
-    assert_eq!(report.conflicts, 0);
-    assert_eq!(report.uploaded, 0);
+        // Both delete; A commits the tombstone first, and B's copy is already gone
+        // when the tombstone arrives — nothing to stash, nothing to echo back.
+        std::fs::remove_file(a_root.path().join("gone.txt")).unwrap();
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        std::fs::remove_file(b_root.path().join("gone.txt")).unwrap();
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(report.deleted, 1, "B applied the server's tombstone");
+        assert_eq!(report.conflicts, 0);
+        assert_eq!(report.uploaded, 0);
 
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "one tombstone for one death: {report:?}");
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "A agrees: {report:?}");
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "one tombstone for one death: {report:?}");
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "A agrees: {report:?}");
+    });
 }
 
 #[test]
 fn unicode_and_case_distinct_names_round_trip() {
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+
+        // Names the whole pipeline must carry byte-exactly: case-distinct siblings
+        // in one directory, unicode directories that differ only by case, spaces
+        // and combining-ish scripts in file names.
+        let files: &[(&str, &[u8])] = &[
+            ("S.txt", b"capital"),
+            ("s.txt", b"small"),
+            ("Café/ÄÖÜ.txt", b"upper dir"),
+            ("café/äöü.txt", b"lower dir"),
+            ("sp ace/naïve ✓.md", b"spaces and ticks"),
+        ];
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        for (name, bytes) in files {
+            write_client(a_root.path(), name, bytes);
+        }
+        let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        assert_eq!(report.uploaded, files.len());
+
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        // The peer's subdirectories exist on B too — the engine names files under
+        // directories it can resolve, and a directory that exists nowhere local is
+        // unnameable from an opaque id (a documented skip, not this test's subject).
+        // B's OWN unicode dirs must map to the same ids A's words encrypt to,
+        // case-distinctly: that resolution is exactly what is under test here.
+        for dir in ["Café", "café", "sp ace"] {
+            std::fs::create_dir_all(b_root.path().join(dir)).unwrap();
+        }
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            report.downloaded,
+            files.len(),
+            "every distinct name arrived"
+        );
+        assert_eq!(report.skipped, 0, "no name failed to resolve");
+        for (name, bytes) in files {
+            assert_eq!(
+                read_client(b_root.path(), name).as_deref(),
+                Some(*bytes),
+                "{name} round-tripped"
+            );
+        }
+
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(report.is_quiet(), "no case folding, no churn: {report:?}");
+    });
+}
+
+// ---- mode: the one thing the two codecs must not share ------------------------
+
+#[test]
+fn a_sync_space_writes_cleartext_names_and_bytes_to_the_server() {
+    // S2's whole point, pinned: a sync space's name and content reach the server
+    // as they are, which is what lets it index, browse and serve them.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("docs")).unwrap();
+    write_client(root.path(), "docs/hello.txt", b"hello in the clear");
+
+    let mut a = engine(root.path(), SpaceMode::Sync);
+    let mut a_client = client(&shared);
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let server = shared.0.borrow();
+    let rev = server.log.last().expect("a revision landed");
+    assert_eq!(rev.cipher_name, "hello.txt", "the server can read the name");
+    assert!(!rev.dir_id.is_empty(), "the file has a usable directory id");
+    assert!(
+        server
+            .chunks
+            .values()
+            .any(|bytes| bytes.as_slice() == b"hello in the clear"),
+        "the server holds the file's own bytes, not ciphertext"
+    );
+}
+
+#[test]
+fn a_vault_never_puts_a_plaintext_name_or_byte_on_the_server() {
+    // The other half of the promise: a vault's name and bytes are sealed, so the
+    // server reads neither. If this ever fails, the zero-knowledge claim is false.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let root = tempfile::tempdir().unwrap();
+    write_client(root.path(), "hello.txt", b"hello in the clear");
+
+    let mut a = engine(root.path(), SpaceMode::Vault);
+    let mut a_client = client(&shared);
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    let server = shared.0.borrow();
+    let rev = server.log.last().expect("a revision landed");
+    assert_ne!(rev.cipher_name, "hello.txt", "the name is encrypted");
+    assert!(
+        server
+            .chunks
+            .values()
+            .all(|bytes| bytes.as_slice() != b"hello in the clear"),
+        "no chunk is the plaintext"
+    );
+}
+
+#[test]
+fn a_sync_peer_materializes_a_directory_it_never_had() {
+    // A vault can only place a file whose directory it can already name, so a
+    // peer's brand-new folder is skipped. A sync space encodes the path in the
+    // directory id, so the pull makes the folder and lands the file — the
+    // OneDrive behaviour a sync product is judged on.
     let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
     let a_root = tempfile::tempdir().unwrap();
     let b_root = tempfile::tempdir().unwrap();
 
-    // Names the whole pipeline must carry byte-exactly: case-distinct siblings
-    // in one directory, unicode directories that differ only by case, spaces
-    // and combining-ish scripts in file names.
-    let files: &[(&str, &[u8])] = &[
-        ("S.txt", b"capital"),
-        ("s.txt", b"small"),
-        ("Café/ÄÖÜ.txt", b"upper dir"),
-        ("café/äöü.txt", b"lower dir"),
-        ("sp ace/naïve ✓.md", b"spaces and ticks"),
-    ];
-    let mut a = engine(a_root.path());
+    let mut a = engine(a_root.path(), SpaceMode::Sync);
     let mut a_client = client(&shared);
-    for (name, bytes) in files {
-        write_client(a_root.path(), name, bytes);
-    }
-    let report = a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    assert_eq!(report.uploaded, files.len());
-
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    // The peer's subdirectories exist on B too — the engine names files under
-    // directories it can resolve, and a directory that exists nowhere local is
-    // unnameable from an opaque id (a documented skip, not this test's subject).
-    // B's OWN unicode dirs must map to the same ids A's words encrypt to,
-    // case-distinctly: that resolution is exactly what is under test here.
-    for dir in ["Café", "café", "sp ace"] {
-        std::fs::create_dir_all(b_root.path().join(dir)).unwrap();
-    }
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(
-        report.downloaded,
-        files.len(),
-        "every distinct name arrived"
-    );
-    assert_eq!(report.skipped, 0, "no name failed to resolve");
-    for (name, bytes) in files {
-        assert_eq!(
-            read_client(b_root.path(), name).as_deref(),
-            Some(*bytes),
-            "{name} round-tripped"
-        );
-    }
-
+    write_client(a_root.path(), "docs/2026/report.md", b"# fresh folder");
     a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+    // B has never created `docs` at all.
+    let mut b = engine(b_root.path(), SpaceMode::Sync);
+    let mut b_client = client(&shared);
     let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(report.is_quiet(), "no case folding, no churn: {report:?}");
+    assert_eq!(report.downloaded, 1);
+    assert_eq!(
+        report.skipped, 0,
+        "the id named the path, so nothing was lost"
+    );
+    assert_eq!(
+        read_client(b_root.path(), "docs/2026/report.md").as_deref(),
+        Some(&b"# fresh folder"[..])
+    );
 }
 
-// ---- interruption and resume --------------------------------------------------
+#[test]
+fn a_sync_space_carries_a_cleartext_name_through_a_conflicted_copy() {
+    // The conflict machinery is shared, but in a sync space the conflicted copy's
+    // name is also on the server in the clear — the same spine, plaintext labels.
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let a_root = tempfile::tempdir().unwrap();
+    let b_root = tempfile::tempdir().unwrap();
+    let mut a = engine(a_root.path(), SpaceMode::Sync);
+    let mut a_client = client(&shared);
+    let mut b = engine(b_root.path(), SpaceMode::Sync);
+    let mut b_client = client(&shared);
+
+    write_client(a_root.path(), "notes.txt", b"base");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    write_client(a_root.path(), "notes.txt", b"a's version");
+    write_client(b_root.path(), "notes.txt", b"b's version");
+    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+    assert_eq!(report.conflicts, 1);
+
+    let names: Vec<String> = shared
+        .0
+        .borrow()
+        .log
+        .iter()
+        .map(|r| r.cipher_name.clone())
+        .collect();
+    assert!(
+        names
+            .iter()
+            .any(|n| n == "notes (conflicted copy 2026-10-16).txt"),
+        "the conflicted copy is named in the clear too: {names:?}"
+    );
+}
 
 /// Pseudo-random bytes from a fixed LCG: no early repetition (so every chunk is
 /// distinct and a resume cannot dedup past what it must prove) and no pattern
@@ -1169,220 +1350,228 @@ fn filler(len: usize) -> Vec<u8> {
 
 #[test]
 fn a_push_dropped_midway_resumes_from_the_chunks_already_uploaded() {
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let bytes = filler(200_000);
-    write_client(a_root.path(), "video.part", &bytes);
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let bytes = filler(200_000);
+        write_client(a_root.path(), "video.part", &bytes);
 
-    // The third chunk's transfer dies: the pass ends in error with the first two
-    // landed and no commit made — the record is still dirty by construction.
-    shared.0.borrow_mut().fail_put_number = Some(3);
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    assert!(
-        a.sync_once(&mut a_client, "2026-10-16").is_err(),
-        "a dropped transfer must fail the pass, not pretend"
-    );
-    assert_eq!(
-        shared.0.borrow().chunks.len(),
-        2,
-        "the first two chunks landed"
-    );
+        // The third chunk's transfer dies: the pass ends in error with the first two
+        // landed and no commit made — the record is still dirty by construction.
+        shared.0.borrow_mut().fail_put_number = Some(3);
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        assert!(
+            a.sync_once(&mut a_client, "2026-10-16").is_err(),
+            "a dropped transfer must fail the pass, not pretend"
+        );
+        assert_eq!(
+            shared.0.borrow().chunks.len(),
+            2,
+            "the first two chunks landed"
+        );
 
-    // The next pass re-offers every chunk and uploads only the server's shortfall:
-    // resume is what content addressing already promises, and this pins it.
-    let mut a2 = engine(a_root.path());
-    let mut a_client2 = client(&shared);
-    let report = a2.sync_once(&mut a_client2, "2026-10-16").unwrap();
-    let total = shared.0.borrow().chunks.len();
-    assert!(
-        total >= 3,
-        "the fixture must span several chunks; got {total}"
-    );
-    assert_eq!(report.uploaded, 1);
-    assert_eq!(
-        report.chunks_uploaded,
-        total - 2,
-        "only the missing chunks went up the second time"
-    );
-    assert_eq!(
-        shared.0.borrow().put_attempts,
-        total + 1,
-        "exactly one dropped attempt and no wasted bytes"
-    );
+        // The next pass re-offers every chunk and uploads only the server's shortfall:
+        // resume is what content addressing already promises, and this pins it.
+        let mut a2 = engine(a_root.path(), mode);
+        let mut a_client2 = client(&shared);
+        let report = a2.sync_once(&mut a_client2, "2026-10-16").unwrap();
+        let total = shared.0.borrow().chunks.len();
+        assert!(
+            total >= 3,
+            "the fixture must span several chunks; got {total}"
+        );
+        assert_eq!(report.uploaded, 1);
+        assert_eq!(
+            report.chunks_uploaded,
+            total - 2,
+            "only the missing chunks went up the second time"
+        );
+        assert_eq!(
+            shared.0.borrow().put_attempts,
+            total + 1,
+            "exactly one dropped attempt and no wasted bytes"
+        );
 
-    // The server's copy still rebuilds the file byte for byte.
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(
-        std::fs::read(b_root.path().join("video.part")).unwrap(),
-        bytes,
-        "the resumed push stored the same content as an uninterrupted one would"
-    );
+        // The server's copy still rebuilds the file byte for byte.
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            std::fs::read(b_root.path().join("video.part")).unwrap(),
+            bytes,
+            "the resumed push stored the same content as an uninterrupted one would"
+        );
+    });
 }
 
 #[test]
 fn an_interrupted_pull_resumes_from_the_chunks_already_stored() {
-    // A server that already holds a multi-chunk file.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    let bytes = filler(200_000);
-    write_client(a_root.path(), "movie.part", &bytes);
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
-    let total = shared.0.borrow().chunks.len();
-    assert!(
-        total >= 3,
-        "the fixture must span several chunks; got {total}"
-    );
-
-    // B pulls through a store, and the second chunk's download drops.
-    let tee = TeeStore::default();
-    let b_root = tempfile::tempdir().unwrap();
-    shared.0.borrow_mut().fail_get_number = Some(2);
-    let mut b = engine(b_root.path()).with_store(tee.clone());
-    let mut b_client = client(&shared);
-    assert!(b.sync_once(&mut b_client, "2026-10-16").is_err());
-
-    // The interruption leaves a head start, and not a half-written promise:
-    // chunk one is durably cached, and no manifest or plaintext landed — the
-    // file does not exist anywhere until it is whole.
-    {
-        let t = tee.0.lock().unwrap();
-        assert_eq!(t.chunks.len(), 1, "the first downloaded chunk was staged");
+    both_modes(|mode| {
+        // A server that already holds a multi-chunk file.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let bytes = filler(200_000);
+        write_client(a_root.path(), "movie.part", &bytes);
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+        let total = shared.0.borrow().chunks.len();
         assert!(
-            t.manifests.is_empty(),
-            "the manifest lands last, only when the whole file is local"
+            total >= 3,
+            "the fixture must span several chunks; got {total}"
         );
-    }
-    assert!(!b_root.path().join("movie.part").exists());
-    assert_eq!(
-        std::fs::read_dir(b_root.path().join(".syncbox-tmp"))
-            .expect("the interrupted pull left its staging directory")
-            .count(),
-        1,
-        "the half-pull exists only as a staged part-file"
-    );
 
-    // The next pull reads through the store first: chunk one never goes back to
-    // the wire, and the pass finishes from where the drop stopped it.
-    shared.0.borrow_mut().fail_get_number = None;
-    let mut b2 = engine(b_root.path()).with_store(tee.clone());
-    let mut b2_client = client(&shared);
-    let report = b2.sync_once(&mut b2_client, "2026-10-16").unwrap();
-    assert_eq!(report.downloaded, 1);
-    assert_eq!(
-        report.resumed_chunks, 1,
-        "chunk one came from the store, not the server"
-    );
-    assert_eq!(
-        shared.0.borrow().get_attempts,
-        total + 1,
-        "one dropped attempt, and not one chunk ever re-fetched"
-    );
-    assert_eq!(
-        std::fs::read(b_root.path().join("movie.part")).unwrap(),
-        bytes,
-        "resumed bytes are byte-identical to a clean pull"
-    );
+        // B pulls through a store, and the second chunk's download drops.
+        let tee = TeeStore::default();
+        let b_root = tempfile::tempdir().unwrap();
+        shared.0.borrow_mut().fail_get_number = Some(2);
+        let mut b = engine(b_root.path(), mode).with_store(tee.clone());
+        let mut b_client = client(&shared);
+        assert!(b.sync_once(&mut b_client, "2026-10-16").is_err());
+
+        // The interruption leaves a head start, and not a half-written promise:
+        // chunk one is durably cached, and no manifest or plaintext landed — the
+        // file does not exist anywhere until it is whole.
+        {
+            let t = tee.0.lock().unwrap();
+            assert_eq!(t.chunks.len(), 1, "the first downloaded chunk was staged");
+            assert!(
+                t.manifests.is_empty(),
+                "the manifest lands last, only when the whole file is local"
+            );
+        }
+        assert!(!b_root.path().join("movie.part").exists());
+        assert_eq!(
+            std::fs::read_dir(b_root.path().join(".syncbox-tmp"))
+                .expect("the interrupted pull left its staging directory")
+                .count(),
+            1,
+            "the half-pull exists only as a staged part-file"
+        );
+
+        // The next pull reads through the store first: chunk one never goes back to
+        // the wire, and the pass finishes from where the drop stopped it.
+        shared.0.borrow_mut().fail_get_number = None;
+        let mut b2 = engine(b_root.path(), mode).with_store(tee.clone());
+        let mut b2_client = client(&shared);
+        let report = b2.sync_once(&mut b2_client, "2026-10-16").unwrap();
+        assert_eq!(report.downloaded, 1);
+        assert_eq!(
+            report.resumed_chunks, 1,
+            "chunk one came from the store, not the server"
+        );
+        assert_eq!(
+            shared.0.borrow().get_attempts,
+            total + 1,
+            "one dropped attempt, and not one chunk ever re-fetched"
+        );
+        assert_eq!(
+            std::fs::read(b_root.path().join("movie.part")).unwrap(),
+            bytes,
+            "resumed bytes are byte-identical to a clean pull"
+        );
+    });
 }
 
 #[test]
 fn pull_staging_is_invisible_to_the_folder_scan() {
-    // A pull interrupted mid-file leaves its part-file in the tree's staging
-    // directory — and the scan that decides what to push must never see it, or a
-    // half-download would climb back to the server as a file of its own.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    write_client(a_root.path(), "quiet.txt", b"nothing to stage here");
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        // A pull interrupted mid-file leaves its part-file in the tree's staging
+        // directory — and the scan that decides what to push must never see it, or a
+        // half-download would climb back to the server as a file of its own.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        write_client(a_root.path(), "quiet.txt", b"nothing to stage here");
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    // An abandoned part-file, as an interrupted pull would leave behind, plus one
-    // freshly staged: neither may be scanned, pushed, or reported.
-    let stage = b_root.path().join(".syncbox-tmp");
-    std::fs::create_dir_all(&stage).unwrap();
-    std::fs::write(stage.join("ABCD-EF12.part"), b"half a file").unwrap();
+        // An abandoned part-file, as an interrupted pull would leave behind, plus one
+        // freshly staged: neither may be scanned, pushed, or reported.
+        let stage = b_root.path().join(".syncbox-tmp");
+        std::fs::create_dir_all(&stage).unwrap();
+        std::fs::write(stage.join("ABCD-EF12.part"), b"half a file").unwrap();
 
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert!(
-        report.is_quiet(),
-        "staging leaked into the pass: {report:?}"
-    );
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(
+            report.is_quiet(),
+            "staging leaked into the pass: {report:?}"
+        );
 
-    // A deeper directory of the same name is the user's, not staging, and still
-    // syncs — the skip is surgical, not a name ban.
-    let nested = b_root.path().join("work").join(".syncbox-tmp");
-    std::fs::create_dir_all(&nested).unwrap();
-    std::fs::write(nested.join("notes.txt"), b"real user content").unwrap();
-    let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
-    assert_eq!(
-        report.uploaded, 1,
-        "a nested .syncbox-tmp is just a directory"
-    );
+        // A deeper directory of the same name is the user's, not staging, and still
+        // syncs — the skip is surgical, not a name ban.
+        let nested = b_root.path().join("work").join(".syncbox-tmp");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("notes.txt"), b"real user content").unwrap();
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            report.uploaded, 1,
+            "a nested .syncbox-tmp is just a directory"
+        );
 
-    let c_root = tempfile::tempdir().unwrap();
-    // The known-directory rule still applies on the way down: C creates the
-    // directory so it can name the files beneath it, exactly as with any folder.
-    std::fs::create_dir_all(c_root.path().join("work/.syncbox-tmp")).unwrap();
-    let c_root = c_root.path();
-    let mut c = engine(c_root);
-    let mut c_client = client(&shared);
-    c.sync_once(&mut c_client, "2026-10-16").unwrap();
-    assert_eq!(
-        std::fs::read(c_root.join("work/.syncbox-tmp/notes.txt")).unwrap(),
-        b"real user content",
-        "it arrives intact"
-    );
+        let c_root = tempfile::tempdir().unwrap();
+        // The known-directory rule still applies on the way down: C creates the
+        // directory so it can name the files beneath it, exactly as with any folder.
+        std::fs::create_dir_all(c_root.path().join("work/.syncbox-tmp")).unwrap();
+        let c_root = c_root.path();
+        let mut c = engine(c_root, mode);
+        let mut c_client = client(&shared);
+        c.sync_once(&mut c_client, "2026-10-16").unwrap();
+        assert_eq!(
+            std::fs::read(c_root.join("work/.syncbox-tmp/notes.txt")).unwrap(),
+            b"real user content",
+            "it arrives intact"
+        );
+    });
 }
 
 #[test]
 fn a_clean_pass_reclaims_its_empty_staging_directory() {
-    // `.syncbox-tmp` is scaffolding: folder-mode pulls assemble files inside
-    // it, and the folder scan is trained to skip it. A pass that finished
-    // with nothing half-fetched earned the right to hide it again — an empty
-    // dot-directory squatting in the user's tree is pure debris.
-    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
-    let a_root = tempfile::tempdir().unwrap();
-    write_client(a_root.path(), "doc.txt", b"complete on the first pass");
-    let mut a = engine(a_root.path());
-    let mut a_client = client(&shared);
-    a.sync_once(&mut a_client, "2026-10-16").unwrap();
+    both_modes(|mode| {
+        // `.syncbox-tmp` is scaffolding: folder-mode pulls assemble files inside
+        // it, and the folder scan is trained to skip it. A pass that finished
+        // with nothing half-fetched earned the right to hide it again — an empty
+        // dot-directory squatting in the user's tree is pure debris.
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        write_client(a_root.path(), "doc.txt", b"complete on the first pass");
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
 
-    let b_root = tempfile::tempdir().unwrap();
-    let mut b = engine(b_root.path());
-    let mut b_client = client(&shared);
-    b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
 
-    assert_eq!(
-        std::fs::read(b_root.path().join("doc.txt")).unwrap(),
-        b"complete on the first pass",
-        "the file itself arrived whole, as ever"
-    );
-    assert!(
-        !b_root.path().join(".syncbox-tmp").exists(),
-        "a completed pass reclaimed its empty staging directory"
-    );
+        assert_eq!(
+            std::fs::read(b_root.path().join("doc.txt")).unwrap(),
+            b"complete on the first pass",
+            "the file itself arrived whole, as ever"
+        );
+        assert!(
+            !b_root.path().join(".syncbox-tmp").exists(),
+            "a completed pass reclaimed its empty staging directory"
+        );
 
-    // The user's own directory of the same name, deeper in the tree, is not
-    // scaffolding and must survive a hundred clean passes.
-    std::fs::create_dir_all(b_root.path().join("notes/.syncbox-tmp")).unwrap();
-    std::fs::write(b_root.path().join("notes/.syncbox-tmp/keep.txt"), b"mine").unwrap();
-    let mut b2 = engine(b_root.path());
-    let mut b2_client = client(&shared);
-    b2.sync_once(&mut b2_client, "2026-10-17").unwrap();
-    assert_eq!(
-        std::fs::read(b_root.path().join("notes/.syncbox-tmp/keep.txt")).unwrap(),
-        b"mine",
-        "the tidy is root-scoped; the user's directory is untouched"
-    );
+        // The user's own directory of the same name, deeper in the tree, is not
+        // scaffolding and must survive a hundred clean passes.
+        std::fs::create_dir_all(b_root.path().join("notes/.syncbox-tmp")).unwrap();
+        std::fs::write(b_root.path().join("notes/.syncbox-tmp/keep.txt"), b"mine").unwrap();
+        let mut b2 = engine(b_root.path(), mode);
+        let mut b2_client = client(&shared);
+        b2.sync_once(&mut b2_client, "2026-10-17").unwrap();
+        assert_eq!(
+            std::fs::read(b_root.path().join("notes/.syncbox-tmp/keep.txt")).unwrap(),
+            b"mine",
+            "the tidy is root-scoped; the user's directory is untouched"
+        );
+    });
 }

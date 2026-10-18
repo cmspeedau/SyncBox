@@ -107,6 +107,13 @@ In a vault those two are ciphertext; in a sync space they are the cleartext path
 while this route still only compares them, the browse and share surfaces (S3) read
 them as paths — which is the point of the mode.
 
+The same split runs through the rest of a revision. A vault's `manifest` is an
+authenticated, encrypted chunk list and its chunk bodies are sealed, so the server can
+size them but not read them; a sync space's `manifest` is the same chunk list in a
+small cleartext record (`SBXSYNC1 || size || count || (stored_len, id)*`) and its chunk
+bodies are the file's own bytes. The server stores each form verbatim and never parses
+either — it only ever has to hand them back.
+
 ```
 POST /api/v1/vaults/{vaultID}/revisions
      {
