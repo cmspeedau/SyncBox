@@ -103,6 +103,7 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 1rem 1.1rem;
+  min-width: 0; /* let the grid item shrink so a long pairing command scrolls inside the card, not the page */
 }
 
 .vault-card.archived { opacity: 0.6; }
@@ -140,3 +141,73 @@ footer {
 }
 
 footer a { color: inherit; }
+
+/* A sync space's readable surfaces (M11 S4): a panel that opens under the card,
+   holding the file tree and the recycle bin. It reuses the card's own tokens;
+   nothing here introduces a colour the rest of the console does not already use. */
+
+.vault-note { margin-top: 0.85rem; }
+
+.space-panel {
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--line);
+}
+
+.space-tabs { display: flex; gap: 0.4rem; margin-bottom: 0.4rem; }
+
+.space-tab {
+  padding: 0.3rem 0.8rem;
+  font-size: 0.85rem;
+  border-radius: 999px;
+  color: var(--muted);
+}
+
+.space-tab.active {
+  border-color: var(--accent);
+  color: var(--ink);
+  background: var(--paper);
+}
+
+.file-list { display: grid; gap: 0.35rem; margin-top: 0.7rem; }
+
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.7rem;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.file-name {
+  flex: 1 1 16rem;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.file-meta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.file-action { min-width: 0; }
+
+.file-empty { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0; }
+
+.share-link { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; min-width: 0; }
+
+.share-link input {
+  flex: 1 1 8rem;
+  min-width: 0;
+  font: 0.8rem/1.4 ui-monospace, monospace;
+  padding: 0.4rem 0.5rem;
+}
+
+.share-expiry { color: var(--muted); font-size: 0.78rem; }

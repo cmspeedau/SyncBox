@@ -84,7 +84,9 @@ syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
 
 ## Status
 
-Milestones **M1–M6** are in place; **M7** is one step from done.
+Milestones **M1–M8** are in place (packaging's macOS/Windows signing is
+deferred with the runners and identities they need); **M10** and **M11** — the
+operator console and the sync-space surfaces — are in as well.
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
 (FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
@@ -128,6 +130,8 @@ directory entirely, and came back byte-identical.
 | M6 | Packaging: Linux ✅; mac/win + signing deferred | 🟡 |
 | M7 | Hardening: conflicts, GC + auto policy, verification, restore drills, resume, rate limits, streaming | ✅ |
 | M8 | Backup targets: S3 object-lock + restic/rsync/borg consumer hook | ✅ |
+| M10 | Operator console (one embedded page): vault registry, clients point at the server, snapshots page, commit enforcement, server-side vault location | ✅ |
+| M11 | Space modes: a space is a sync space or a vault; the client syncs in the clear when the mode says so; browse/share/recycle-bin API; and the console browses, shares, and restores a sync space | ✅ |
 
 ## License
 
