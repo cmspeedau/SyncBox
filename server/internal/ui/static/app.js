@@ -187,6 +187,7 @@ function vaultCard(vault) {
 
   card.appendChild(definitionList([
     ["Vault id", vault.id],
+    ["Mode", vault.mode === "vault" ? "vault — end-to-end encrypted" : "sync — stored in the clear"],
     ["Folder", resolvedFolder(vault.location)],
     ["Revisions", String(vault.revisions)],
     ["Live files", String(vault.live_files)],
@@ -417,13 +418,16 @@ $("create-form").addEventListener("submit", async (event) => {
   $("vault-error").textContent = "";
   const name = $("vault-name").value.trim();
   const location = $("vault-location").value.trim();
-  const response = await api("POST", "/admin/vaults", location ? { name, location } : { name });
+  const mode = $("vault-mode").value;
+  const body = location ? { name, location, mode } : { name, mode };
+  const response = await api("POST", "/admin/vaults", body);
   if (!response.ok) {
     $("vault-error").textContent = await reason(response);
     return;
   }
   $("vault-name").value = "";
   $("vault-location").value = "";
+  $("vault-mode").value = "sync";
   refresh();
 });
 

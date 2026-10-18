@@ -274,14 +274,14 @@ func TestConformVaultRegistry(t *testing.T) {
 	runPerStore(t, func(t *testing.T, st Store) {
 		ctx := context.Background()
 
-		id, err := st.CreateVault(ctx, "Photos", "")
+		id, err := st.CreateVault(ctx, "Photos", "", ModeSync)
 		if err != nil {
 			t.Fatalf("CreateVault: %v", err)
 		}
 		if len(id) != 8 {
 			t.Errorf("minted id %q, want eight base32 characters", id)
 		}
-		second, err := st.CreateVault(ctx, "Work", "Syncbox/Work")
+		second, err := st.CreateVault(ctx, "Work", "Syncbox/Work", ModeVault)
 		if err != nil || second == id {
 			t.Errorf("second CreateVault = %q, %v; want a different id", second, err)
 		}
@@ -316,6 +316,12 @@ func TestConformVaultRegistry(t *testing.T) {
 		}
 		if byID[second].Location != "Syncbox/Work" {
 			t.Errorf("explicit location = %q, want Syncbox/Work", byID[second].Location)
+		}
+		if byID[id].Mode != ModeSync {
+			t.Errorf("Photos mode = %q, want the sync it was created as", byID[id].Mode)
+		}
+		if byID[second].Mode != ModeVault {
+			t.Errorf("Work mode = %q, want the vault it was created as", byID[second].Mode)
 		}
 
 		// A commit into an unregistered vault enters the registry nameless,
@@ -358,6 +364,9 @@ func TestConformVaultRegistry(t *testing.T) {
 		}
 		if found.Name != "" || found.Archived {
 			t.Errorf("commit-born vault should be nameless and unarchived, got %+v", found)
+		}
+		if found.Mode != ModeVault {
+			t.Errorf("commit-born vault mode = %q, want vault (nothing registered it)", found.Mode)
 		}
 		if found.Revisions != 3 || found.LiveFiles != 1 || found.Bytes != 10 {
 			t.Errorf("tally = %+v, want 3 revisions, 1 live file, 10 bytes", found)
@@ -425,6 +434,26 @@ func TestConformVaultRegistry(t *testing.T) {
 		}
 		if names[second].Name != "Work" {
 			t.Errorf("vault %s lost its created name: %+v", second, names[second])
+		}
+
+		// Modes (M11 S1): an empty mode is the new-registration default, sync,
+		// and a mode that is neither sync nor vault is refused before anything
+		// is minted, so the registry can never hold a mode no reader knows.
+		def, err := st.CreateVault(ctx, "Default Mode", "", "")
+		if err != nil {
+			t.Fatalf("CreateVault with an empty mode = %v, want the sync default", err)
+		}
+		final, err := st.ListVaults(ctx)
+		if err != nil {
+			t.Fatalf("ListVaults: %v", err)
+		}
+		for _, info := range final {
+			if info.ID == def && info.Mode != ModeSync {
+				t.Errorf("an empty mode created %q, want sync", info.Mode)
+			}
+		}
+		if _, err := st.CreateVault(ctx, "Bad Mode", "", Mode("nonsense")); !errors.Is(err, ErrBadMode) {
+			t.Errorf("CreateVault with a bad mode = %v, want ErrBadMode", err)
 		}
 	})
 }

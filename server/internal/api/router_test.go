@@ -680,8 +680,13 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	if created.Location != "Photos" {
 		t.Errorf("a vault with no location given should default to its name, got %q", created.Location)
 	}
+	// A space with no mode given is the new-registration default, sync.
+	if created.Mode != store.ModeSync {
+		t.Errorf("created space mode = %q, want the sync default", created.Mode)
+	}
 
-	// A name that would render as a blank row is refused on the way in.
+	// A name that would render as a blank row is refused on the way in, and so
+	// is a mode that is neither of the two a space may have.
 	for _, bad := range []string{`{"name":"  "}`, `{"name":""}`} {
 		response := c.do(http.MethodPost, "/admin/vaults", []byte(bad))
 		code, _ := c.errorBodyOf(response)
@@ -689,6 +694,25 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 		if code != "invalid_name" {
 			t.Errorf("create with %s = %q, want invalid_name", bad, code)
 		}
+	}
+	response = c.do(http.MethodPost, "/admin/vaults", []byte(`{"name":"Nope","mode":"scrambled"}`))
+	if code, _ := c.errorBodyOf(response); code != "invalid_mode" {
+		t.Errorf("create with an unknown mode = %q, want invalid_mode", code)
+	}
+	response.Body.Close()
+
+	// A space may be created as a vault, and reads back as one — the mode is
+	// fixed at creation and never PATCHed.
+	vaultBody, _ := json.Marshal(map[string]string{"name": "Secret", "mode": "vault"})
+	response = c.do(http.MethodPost, "/admin/vaults", vaultBody)
+	if response.StatusCode != http.StatusCreated {
+		defer response.Body.Close()
+		t.Fatalf("create vault space = %s", response.Status)
+	}
+	var secret store.VaultInfo
+	c.mustDecode(response, &secret)
+	if secret.Mode != store.ModeVault {
+		t.Errorf("created vault space mode = %q, want vault", secret.Mode)
 	}
 
 	// A client that commits into a vault nobody registered still works —
@@ -741,10 +765,13 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("set location = %s, want 200", response.Status)
 	}
-	secondBody, _ := json.Marshal(map[string]string{"name": "Work"})
+	secondBody, _ := json.Marshal(map[string]string{"name": "Work", "mode": "vault"})
 	response = c.do(http.MethodPost, "/admin/vaults", secondBody)
 	var second store.VaultInfo
 	c.mustDecode(response, &second)
+	if second.Mode != store.ModeVault {
+		t.Errorf("Work space mode = %q, want vault", second.Mode)
+	}
 	body, _ = json.Marshal(map[string]string{"location": "Syncbox/Family Photos"})
 	response = c.do(http.MethodPatch, "/admin/vaults/"+second.ID, body)
 	code, _ = c.errorBodyOf(response)
@@ -785,8 +812,8 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	for _, info := range vaults {
 		byID[info.ID] = info
 	}
-	if len(byID) != 3 {
-		t.Fatalf("registry lists %+v, want three vaults", vaults)
+	if len(byID) != 4 {
+		t.Fatalf("registry lists %+v, want four vaults", vaults)
 	}
 	if renamed := byID[created.ID]; renamed.Name != "Family Photos" ||
 		renamed.Location != "Syncbox/Family Photos" || renamed.Revisions != 0 {
@@ -802,6 +829,9 @@ func TestVaultRegistryLifecycle(t *testing.T) {
 	if grandma.Name != "" || !grandma.Archived || grandma.Revisions != 1 ||
 		grandma.LiveFiles != 1 || grandma.Bytes != 12 {
 		t.Errorf("commit-born vault reads %+v, want nameless, archived, 1 revision of 12 live bytes", grandma)
+	}
+	if grandma.Mode != store.ModeVault {
+		t.Errorf("commit-born vault mode = %q, want vault (nothing registered it)", grandma.Mode)
 	}
 }
 
@@ -843,8 +873,8 @@ func TestClientsSeeVaultsWithoutBookkeeping(t *testing.T) {
 		t.Fatalf("client list = %+v, want the two registered vaults", decoded.Vaults)
 	}
 	if photos := byID[created.ID]; photos["name"] != "Photos" || photos["archived"] != false ||
-		photos["location"] != "Photos" {
-		t.Errorf("Photos reads %+v, want name Photos at its defaulted location", photos)
+		photos["location"] != "Photos" || photos["mode"] != "sync" {
+		t.Errorf("Photos reads %+v, want name Photos at its defaulted location in sync mode", photos)
 	}
 	if retired := byID[retiring.ID]; retired["archived"] != true {
 		t.Errorf("retired vault reads %+v, want archived true", retired)
@@ -946,7 +976,10 @@ func TestConsoleServedToBrowsers(t *testing.T) {
 		t.Fatalf("reading page: %v", err)
 	}
 	body := string(page)
-	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read your files", "id=\"snapshots\"", "Take snapshot", "id=\"theme\""} {
+	// The honesty pass (M11 S1) is pinned too: the page may say the server
+	// cannot read a vault, and must say sync spaces are stored in the clear —
+	// both claims live on the page rather than one being left implied.
+	for _, want := range []string{"<!DOCTYPE html>", "src=\"/app.js\"", "href=\"/style.css\"", "cannot read them", "stored in the clear", "id=\"snapshots\"", "id=\"vault-mode\"", "Take snapshot", "id=\"theme\""} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page is missing %q", want)
 		}

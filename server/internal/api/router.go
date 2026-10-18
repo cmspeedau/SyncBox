@@ -510,6 +510,8 @@ func writeErrorFrom(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, store.ErrLocationTaken):
 		writeError(w, http.StatusConflict, "location_taken", err.Error())
+	case errors.Is(err, store.ErrBadMode):
+		writeError(w, http.StatusBadRequest, "invalid_mode", err.Error())
 	case errors.Is(err, store.ErrTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "too_large", err.Error())
 	case errors.Is(err, store.ErrBadChunkID):

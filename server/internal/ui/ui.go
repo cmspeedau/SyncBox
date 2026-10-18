@@ -4,9 +4,10 @@
 // artifact, which keeps the deployment story (one binary, scratch container)
 // intact.
 //
-// The page is deliberately narrow: it shows what a zero-knowledge server can
-// honestly know (vault bookkeeping, chunk counts, snapshots) and says on its
-// face that it cannot read anyone's files.
+// The page is deliberately narrow: it shows what the server can honestly know
+// without a key — bookkeeping, chunk counts, snapshots — and its face says which
+// spaces it can read (a sync space, stored in the clear) and which it cannot (a
+// vault, encrypted on the client, M11 S1).
 package ui
 
 import (

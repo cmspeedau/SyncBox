@@ -59,7 +59,7 @@ h2 { font-size: 1.05rem; margin: 0 0 0.5rem; }
 
 form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0 0; }
 
-input {
+input, select {
   flex: 1 1 16rem;
   padding: 0.5rem 0.65rem;
   border: 1px solid var(--line);
@@ -68,6 +68,8 @@ input {
   color: var(--ink);
   font: inherit;
 }
+
+#vault-mode { flex: 0 0 auto; }
 
 button {
   padding: 0.45rem 0.9rem;

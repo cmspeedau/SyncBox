@@ -325,8 +325,12 @@ func (d *Durable) Commit(ctx context.Context, rev Revision) (uint64, error) {
 	defer tx.Rollback()
 
 	now := d.now()
+	// An unregistered vault born of a commit is a vault, not a sync space:
+	// nothing registered it, so the server keeps claiming it cannot read it
+	// rather than exposing what it was never handed in the clear.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT OR IGNORE INTO vault (id, created_at) VALUES (?, ?)`, rev.VaultID, now.Unix()); err != nil {
+		`INSERT OR IGNORE INTO vault (id, mode, created_at) VALUES (?, ?, ?)`,
+		rev.VaultID, string(ModeVault), now.Unix()); err != nil {
 		return 0, fmt.Errorf("registering vault %s: %w", rev.VaultID, err)
 	}
 
@@ -421,15 +425,21 @@ func (d *Durable) Stats(ctx context.Context) (Stats, error) {
 	return stats, nil
 }
 
-// CreateVault mints a fresh id and registers it under name, in location. The
-// retry loop is form against luck: eight base32 characters is 32^5 ids, and a
-// PRIMARY KEY collision just means minting again.
-func (d *Durable) CreateVault(ctx context.Context, name, location string) (string, error) {
+// CreateVault mints a fresh id and registers it under name, in location, with
+// mode. The retry loop is form against luck: eight base32 characters is 32^5
+// ids, and a PRIMARY KEY collision just means minting again.
+func (d *Durable) CreateVault(ctx context.Context, name, location string, mode Mode) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("creating vault: %w", err)
 	}
 	if location == "" {
 		location = name
+	}
+	if mode == "" {
+		mode = ModeSync
+	}
+	if !mode.Valid() {
+		return "", fmt.Errorf("%w: %q", ErrBadMode, mode)
 	}
 	if err := d.ensureLocationFree(ctx, location, ""); err != nil {
 		return "", err
@@ -441,8 +451,8 @@ func (d *Durable) CreateVault(ctx context.Context, name, location string) (strin
 			return "", err
 		}
 		res, err := d.db.ExecContext(ctx,
-			`INSERT OR IGNORE INTO vault (id, name, location, created_at) VALUES (?, ?, ?, ?)`,
-			id, name, location, d.now().Unix())
+			`INSERT OR IGNORE INTO vault (id, name, location, mode, created_at) VALUES (?, ?, ?, ?, ?)`,
+			id, name, location, string(mode), d.now().Unix())
 		if err != nil {
 			return "", fmt.Errorf("registering vault %s: %w", id, err)
 		}
@@ -497,7 +507,7 @@ tally AS (
     WHERE rn = 1
     GROUP BY vault_id
 )
-SELECT v.id, v.name, v.location, v.created_at,
+SELECT v.id, v.name, v.location, v.mode, v.created_at,
        CASE WHEN v.archived_at IS NULL THEN 0 ELSE 1 END AS archived,
        COUNT(r.id) AS revisions,
        COALESCE(MAX(r.stored_at), 0) AS last_write,
@@ -525,7 +535,7 @@ func (d *Durable) ListVaults(ctx context.Context) ([]VaultInfo, error) {
 	for rows.Next() {
 		var info VaultInfo
 		var archived int
-		if err := rows.Scan(&info.ID, &info.Name, &info.Location, &info.CreatedAt, &archived,
+		if err := rows.Scan(&info.ID, &info.Name, &info.Location, &info.Mode, &info.CreatedAt, &archived,
 			&info.Revisions, &info.LastWriteAt, &info.LiveFiles, &info.Bytes); err != nil {
 			return nil, fmt.Errorf("reading vault registry: %w", err)
 		}
@@ -678,22 +688,30 @@ func (d *Durable) ImportMetadata(ctx context.Context, doc Metadata) (chunks, rev
 
 	for _, vault := range doc.Vaults {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT OR IGNORE INTO vault (id, created_at) VALUES (?, ?)`, vault, d.now().Unix()); err != nil {
+			`INSERT OR IGNORE INTO vault (id, mode, created_at) VALUES (?, ?, ?)`,
+			vault, string(ModeVault), d.now().Unix()); err != nil {
 			return 0, 0, fmt.Errorf("importing vault %s: %w", vault, err)
 		}
 	}
-	// The registry arrives after the bare ids so an operator's name, minting
-	// time and retired flag win over the placeholder. Old documents carry no
-	// registry, and their vaults stay nameless — what they were when written.
+	// The registry arrives after the bare ids so an operator's name, mode,
+	// minting time and retired flag win over the placeholder. Old documents
+	// carry no registry — and their vaults stay nameless — while a document
+	// from before modes carries a record whose mode is empty, which imports as
+	// ModeVault: the era before modes had one kind of space, and it was
+	// encrypted.
 	for _, record := range doc.VaultRegistry {
 		var archivedAt any
 		if record.Archived {
 			archivedAt = d.now().Unix()
 		}
+		mode := record.Mode
+		if mode == "" {
+			mode = ModeVault
+		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO vault (id, name, location, created_at, archived_at) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET name = excluded.name, location = excluded.location, created_at = excluded.created_at, archived_at = excluded.archived_at`,
-			record.ID, record.Name, record.Location, record.CreatedAt, archivedAt); err != nil {
+			INSERT INTO vault (id, name, location, mode, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET name = excluded.name, location = excluded.location, mode = excluded.mode, created_at = excluded.created_at, archived_at = excluded.archived_at`,
+			record.ID, record.Name, record.Location, string(mode), record.CreatedAt, archivedAt); err != nil {
 			return 0, 0, fmt.Errorf("importing vault registry entry %s: %w", record.ID, err)
 		}
 	}
@@ -711,7 +729,8 @@ func (d *Durable) ImportMetadata(ctx context.Context, doc Metadata) (chunks, rev
 	for _, vaultID := range sortedKeys(doc.Revisions) {
 		for _, rev := range doc.Revisions[vaultID] {
 			if _, err := tx.ExecContext(ctx,
-				`INSERT OR IGNORE INTO vault (id, created_at) VALUES (?, ?)`, vaultID, d.now().Unix()); err != nil {
+				`INSERT OR IGNORE INTO vault (id, mode, created_at) VALUES (?, ?, ?)`,
+				vaultID, string(ModeVault), d.now().Unix()); err != nil {
 				return 0, 0, fmt.Errorf("importing vault %s: %w", vaultID, err)
 			}
 			if _, err := tx.ExecContext(ctx, `
@@ -792,7 +811,7 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 	}
 
 	vaultRows, err := tx.QueryContext(ctx,
-		`SELECT id, name, location, created_at, archived_at FROM vault ORDER BY id`)
+		`SELECT id, name, location, mode, created_at, archived_at FROM vault ORDER BY id`)
 	if err != nil {
 		return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 	}
@@ -802,10 +821,11 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 			id            string
 			name          string
 			location      string
+			mode          string
 			createdAt     int64
 			archivedAtSql sql.NullInt64
 		)
-		if err := vaultRows.Scan(&id, &name, &location, &createdAt, &archivedAtSql); err != nil {
+		if err := vaultRows.Scan(&id, &name, &location, &mode, &createdAt, &archivedAtSql); err != nil {
 			return Metadata{}, fmt.Errorf("reading vaults for dump: %w", err)
 		}
 		doc.Vaults = append(doc.Vaults, id)
@@ -813,6 +833,7 @@ func dumpMetadataTx(ctx context.Context, tx *sql.Tx) (Metadata, error) {
 			ID:        id,
 			Name:      name,
 			Location:  location,
+			Mode:      Mode(mode),
 			CreatedAt: createdAt,
 			Archived:  archivedAtSql.Valid,
 		})
