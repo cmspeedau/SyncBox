@@ -3,13 +3,12 @@
 The Tauri v2 desktop client: background sync, vault unlock, sync status, and a
 Backups panel (list snapshots, back up now).
 
-The app is **excluded from the client Cargo workspace** — see `client/Cargo.toml` —
-so `cargo check`/`test --workspace` works on a machine without the Tauri system
-dependencies (webkit2gtk on Linux, the SDKs on macOS and Windows).
-
-It is built as its **own Cargo workspace** (still excluded from the client one), so
-the GUI libraries are needed only to build the app itself — never for `cargo check`
-or `cargo test --workspace`. It is built on the crates that already exist:
+The app is a **member of the client Cargo workspace** — see `client/Cargo.toml` —
+so `cargo check`/`clippy`/`test --workspace` compile the shell and run its tests, and
+CI's `Client (Rust)` job covers it. Building the workspace needs the Tauri system
+libraries on the machine — webkit2gtk-4.1, gtk-3, libsoup-3.0, javascriptcoregtk-4.1
+(the SDKs on macOS and Windows) — so CI pins that job to the one runner that has
+them. It is built on the crates that already exist:
 
 | Crate | What the app uses it for |
 | --- | --- |
@@ -78,6 +77,10 @@ folderless sync); bundling shipped as M6's first step (see Packaging). A Node/Sv
 frontend behind `frontendDist` (instead of this static one) and code signing remain open.
 
 ## Building the app
+
+The app is a **member** of the client workspace, so `cargo build`/`test --workspace`
+from `client/` compiles it and runs its tests, and these build the binary and bundle
+into `client/target/`. To build just this crate:
 
 ```sh
 cargo build --manifest-path client/apps/desktop/src-tauri/Cargo.toml

@@ -10,7 +10,6 @@ server/*.test
 # Node / Tauri frontends
 node_modules/
 dist/
-client/apps/desktop/src-tauri/target/
 
 # Local configuration and secrets
 .env
