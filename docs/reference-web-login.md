@@ -81,12 +81,17 @@ Deliberately absent: username field (v1 has one server password, not users),
 - The route is IP rate-limited server-side (`limit` guard covers login), so
   the client needs no extra throttle beyond disabling the button in flight.
 - Token expiry: on a 401 from any API call, the app returns here.
-- First run is a **server change, not just a screen**: today the password
-  comes from server config and `POST /api/v1/auth/token` is the only auth
-  endpoint — nothing reports "no password yet". Needs (a) an uninitialised
-  signal the page can read (`GET /healthz` returning `initialized: false`, or
-  a small `GET /api/v1/auth/status`) and (b) `POST /api/v1/auth/setup`
-  `{"password": …}` that stores the first password and refuses all later
-  calls. Until then the first-run screen is design-only.
+- First run is now a **server feature, not just a screen**. `GET
+  /api/v1/auth/status` answers `{"initialized": bool}`, which tells the page
+  which door to open; a one-shot `POST /api/v1/auth/setup` `{"password": …}`
+  stores the first password, refuses every later call (`409
+  already_initialized`), and refuses one under 8 characters (`400
+  weak_password`). The chosen password — a human phrase, not a random secret —
+  is sealed with Argon2id into the data directory and never stored in the clear
+  (`server/internal/credential`, `server/internal/api/firstrun.go`). An
+  environment password (`SYNCBOX_PASSWORD`) keeps the server always
+  initialised, so setup is refused out of the hand and this screen never
+  appears for a deployment that set one.
 
-Status: design reference only.
+Status: the sign-in and first-run flows are **live in the embedded console**;
+the blue-screen styling below stays a design reference for the desktop client.

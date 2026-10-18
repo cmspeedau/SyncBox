@@ -27,6 +27,7 @@ import (
 
 	"github.com/syncbox/server/internal/auth"
 	"github.com/syncbox/server/internal/backup"
+	"github.com/syncbox/server/internal/credential"
 	"github.com/syncbox/server/internal/ratelimit"
 	"github.com/syncbox/server/internal/store"
 )
@@ -48,14 +49,16 @@ const (
 
 // Server bundles what the handlers need.
 type Server struct {
-	store    store.Store
-	backups  *backup.Manager
-	issuer   *auth.Issuer
-	password string
-	version  string
-	hub      *hub
-	limiter  *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
-	now      func() time.Time
+	store   store.Store
+	backups *backup.Manager
+	issuer  *auth.Issuer
+	// creds is the single server password's authority: whether anything can sign
+	// in yet, a guess check, and the one-time first run.
+	creds   *credential.Authority
+	version string
+	hub     *hub
+	limiter *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
+	now     func() time.Time
 	// shareTTL is the longest a share link stays valid. A mint may ask for a
 	// shorter life; nothing may ask for a longer one.
 	shareTTL time.Duration
@@ -75,12 +78,28 @@ const DefaultShareTTL = 7 * 24 * time.Hour
 
 // New returns a server over a store. backups may be nil, in which case the
 // administrative endpoints report that backups are not configured.
+//
+// The password here is the environment's: non-empty buys an env authority whose
+// password is compared as typed, and first-run setup is then refused. An empty
+// password leaves the server uninitialized with no way to persist a first run,
+// which is right for tests and for anyone who means to manage the credential
+// themselves. A real server built by main replaces this with a data-directory-
+// backed authority through NewWithAuthority.
 func New(st store.Store, backups *backup.Manager, issuer *auth.Issuer, password string) *Server {
+	// A path of "" cannot fail to build an authority: it reads no file.
+	creds, _ := credential.NewAuthority("", password)
+	return NewWithAuthority(st, backups, issuer, creds)
+}
+
+// NewWithAuthority is New for a caller that owns the credential authority —
+// main's, which loads a stored password from the data directory and can persist a
+// first run through it.
+func NewWithAuthority(st store.Store, backups *backup.Manager, issuer *auth.Issuer, creds *credential.Authority) *Server {
 	return &Server{
 		store:    st,
 		backups:  backups,
 		issuer:   issuer,
-		password: password,
+		creds:    creds,
 		hub:      newHub(),
 		now:      time.Now,
 		shareTTL: DefaultShareTTL,
@@ -141,6 +160,11 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("POST /api/v1/auth/token", s.handleToken)
+	// First-run bring-up: a fresh server with no password yet reports it here and
+	// accepts one exactly once. Both are unauthenticated, because until setup there
+	// is no credential to authenticate with; the IP rate limiter still covers them.
+	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("POST /api/v1/auth/setup", s.handleAuthSetup)
 
 	// The root answers instead of 404-ing: the embedded console for browsers,
 	// a JSON name-card for scripts (see handleIndex). {$} pins it to exactly
@@ -253,10 +277,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Single-user v1: there is one password, and a correct one buys a token for
-	// "owner". Comparison is not constant-time against the configured value, but
-	// the value is a long random secret rather than a human guess, and the TLS
-	// layer is what an attacker actually faces.
-	if s.password == "" || request.Password != s.password {
+	// "owner". A fresh server has none yet, so nothing verifies and the answer is a
+	// distinct code that points the caller at setup rather than a bare mismatch.
+	if !s.creds.Initialized() {
+		writeError(w, http.StatusUnauthorized, "uninitialized",
+			"this server has no password yet; POST /api/v1/auth/setup to give it one")
+		return
+	}
+	if !s.creds.Verify(request.Password) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "password mismatch")
 		return
 	}

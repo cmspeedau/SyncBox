@@ -6,8 +6,6 @@
 package config
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -98,27 +96,23 @@ func Defaults() Config {
 
 // FromEnv reads SYNCBOX_* variables over the defaults.
 //
-// With no password set it generates one and reports that it did, rather than
-// starting an unauthenticated server: a random secret in the log is recoverable
-// by whoever can read the log, which is a narrower exposure than no credential at
-// all. That convenience is for development; a container deployment should always
-// set one.
+// With no SYNCBOX_PASSWORD it leaves Password empty rather than inventing one:
+// a fresh server then awaits first-run setup in the console, where the operator
+// chooses a password and the server seals it with Argon2id into the data
+// directory. A container deployment that wants its credential from the
+// environment still sets SYNCBOX_PASSWORD, and that always wins.
 func FromEnv() (Config, error) {
 	cfg := Defaults()
-	var generated string
 
 	if value := strings.TrimSpace(os.Getenv("SYNCBOX_LISTEN_ADDR")); value != "" {
 		cfg.ListenAddr = value
 	}
+	// An unset SYNCBOX_PASSWORD is left unset. The server then falls back to a
+	// password stored on an earlier first run, or to awaiting first-run setup in the
+	// console. It no longer invents one and prints it to the log: sealing a first
+	// password is the console's job now (internal/credential + internal/api/firstrun).
 	if value := strings.TrimSpace(os.Getenv("SYNCBOX_PASSWORD")); value != "" {
 		cfg.Password = value
-	} else {
-		secret, err := randomHex(16)
-		if err != nil {
-			return Config{}, err
-		}
-		cfg.Password = secret
-		generated = secret
 	}
 	cfg.TokenSecret = strings.TrimSpace(os.Getenv("SYNCBOX_TOKEN_SECRET"))
 	cfg.DataDir = valueOr(os.Getenv("SYNCBOX_DATA_DIR"), cfg.DataDir)
@@ -207,10 +201,6 @@ func FromEnv() (Config, error) {
 	}
 	cfg.RequireRegisteredVaults = requireRegistered
 
-	if generated != "" {
-		fmt.Printf("config: SYNCBOX_PASSWORD is unset, using the generated password %s\n", generated)
-		fmt.Printf("config: set SYNCBOX_PASSWORD before exposing this server on a network\n")
-	}
 	return cfg, nil
 }
 
@@ -219,6 +209,10 @@ func FromEnv() (Config, error) {
 // them later.
 func (c Config) Warnings() []string {
 	var warnings []string
+	if c.Password == "" {
+		warnings = append(warnings,
+			"SYNCBOX_PASSWORD is unset and no password is stored yet; the server awaits first-run setup in the console")
+	}
 	if c.TokenSecret == "" {
 		warnings = append(warnings,
 			"SYNCBOX_TOKEN_SECRET is unset; tokens are signed with a key generated at boot and stop working after a restart")
@@ -266,15 +260,6 @@ func parseSwitch(name, value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("%s %q is not a yes/no switch (use 1/0, true/false, yes/no or on/off)", name, value)
 	}
-}
-
-// randomHex returns n random bytes as hex.
-func randomHex(n int) (string, error) {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generating a secret: %w", err)
-	}
-	return hex.EncodeToString(buf), nil
 }
 
 // ParseInt64 reads an environment-sized integer, used by tests and by future

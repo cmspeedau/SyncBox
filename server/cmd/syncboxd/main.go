@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ import (
 	"github.com/syncbox/server/internal/backup"
 	"github.com/syncbox/server/internal/backup/target"
 	"github.com/syncbox/server/internal/config"
+	"github.com/syncbox/server/internal/credential"
 	"github.com/syncbox/server/internal/store"
 )
 
@@ -122,8 +124,20 @@ func serve(args []string, stdout io.Writer) error {
 	}
 
 	issuer := auth.NewIssuer(cfg.TokenSecret, cfg.TokenTTL)
-	srv := api.New(st, backups, issuer, cfg.Password)
+
+	// The password authority: SYNCBOX_PASSWORD wins and first-run is then closed;
+	// otherwise a password stored in the data directory on an earlier first run, or
+	// a fresh server that awaits its first run in the console. store.Open has
+	// already made cfg.DataDir, so a setup can write there.
+	creds, err := credential.NewAuthority(filepath.Join(cfg.DataDir, "password"), cfg.Password)
+	if err != nil {
+		return err
+	}
+	srv := api.NewWithAuthority(st, backups, issuer, creds)
 	srv.SetVersion(version)
+	if !creds.Initialized() {
+		log.Printf("no password yet: open the console to complete first-run setup, or set SYNCBOX_PASSWORD and restart")
+	}
 	if cfg.RequireRegisteredVaults {
 		srv.SetRequireRegisteredVaults(true)
 		log.Printf("requiring commits to target a vault the registry knows; unknown vault ids are refused")

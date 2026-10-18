@@ -83,7 +83,7 @@ button {
 
 button:hover { border-color: var(--accent); }
 
-#login { max-width: 26rem; }
+#login, #setup { max-width: 26rem; }
 
 dl {
   display: grid;
