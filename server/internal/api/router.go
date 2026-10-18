@@ -60,6 +60,11 @@ type Server struct {
 	// in yet, a guess check, and the one-time first run.
 	creds   *credential.Authority
 	version string
+	// deployment facts the operator set via the environment and cannot otherwise
+	// read back from the console: where the live store keeps its bookkeeping, and
+	// what kind of store that is. Zero-valued until SetDeployment is called.
+	dataDir string
+	storage string
 	hub     *hub
 	limiter *ratelimit.Limiter // nil, or a zero-rate limiter, means unlimited
 	now     func() time.Time
@@ -124,6 +129,16 @@ func (s *Server) SetRateLimit(rate float64, burst int) {
 // server is built over.
 func (s *Server) SetVersion(version string) {
 	s.version = version
+}
+
+// SetDeployment hands the server the read-only facts it cannot derive from what
+// it was built over: the data directory the live store sits in, and a short name
+// for the storage backend. main sets these; they are surfaced verbatim by the
+// About endpoint so an operator can see, in the console, what the environment
+// pointed the server at.
+func (s *Server) SetDeployment(dataDir, storage string) {
+	s.dataDir = dataDir
+	s.storage = storage
 }
 
 // SetRequireRegisteredVaults turns the registry into a gate: with it on, a
@@ -224,6 +239,12 @@ func (s *Server) Routes() http.Handler {
 	mux.Handle("POST /admin/vaults", s.requireToken(http.HandlerFunc(s.handleAdminVaultsCreate)))
 	mux.Handle("PATCH /admin/vaults/{id}", s.requireToken(http.HandlerFunc(s.handleAdminVaultsPatch)))
 	mux.Handle("POST /admin/vaults/{id}/archive", s.requireToken(http.HandlerFunc(s.handleAdminVaultsArchive)))
+
+	// A read-only summary of what this server was pointed at, for the console's
+	// About panel. It is authenticated because it names the data directory and
+	// backup location — operator facts the unauthenticated name-card and health
+	// probe must not give away.
+	mux.Handle("GET /admin/about", s.requireToken(http.HandlerFunc(s.handleAbout)))
 
 	var handler http.Handler = mux
 	handler = s.limit(handler)

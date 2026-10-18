@@ -6,10 +6,12 @@ no settings rail, no panels. The interactive mockup is
 snapshot*, the schedule *Apply*, per-snapshot *Verify* and *Sign out* all
 work. Supersedes the v1 rail + panels design (commit `7ae1b59`).
 
-Status: design reference for the web frontend. The snapshot **schedule** endpoint
-(`GET/PUT /admin/backups/config`) already exists and the embedded console's
-Snapshots panel drives it; the full web settings page (About server, vault-key
-change, Set-up-S3) is not built.
+Status: design reference for the web frontend. Two server pieces already exist
+and the embedded console drives them: the snapshot **schedule**
+(`GET/PUT /admin/backups/config`, Snapshots panel) and the read-only **About
+server** facts (`GET /admin/about` — version, storage backend, data dir, backup
+target, share TTL, recycle retention — shown under the Server stats). The web
+page itself, the vault-key change, and Set-up-S3 are not built.
 
 ## Shape
 
@@ -27,7 +29,7 @@ Shared shell, one scrollable column (660 px centred):
 
 | Block | Content |
 |---|---|
-| About server | server name as the card title; version; **storage — live** stat block: four counters (chunks, chunk bytes, revisions, largest chunk) re-read from `/healthz` every 5 s under a green *live* dot — a poll, not a page-load snapshot; storage backend + data dir; agent installer links (macOS / Windows / Linux). **No `check for updates`** — there is no endpoint and no release feed behind it; it must not ship dead, and re-adding it is the PR that designs the feed |
+| About server | server name as the card title; version; **storage — live** stat block: four counters (chunks, chunk bytes, revisions, largest chunk) re-read from `/healthz` every 5 s under a green *live* dot — a poll, not a page-load snapshot; storage backend + data dir; agent installer links (macOS / Windows / Linux). **No `check for updates`** — there is no endpoint and no release feed behind it; it must not ship dead, and re-adding it is the PR that designs the feed. The read facts (version, backend, data dir, backup target, share TTL, recycle retention) are already served by `GET /admin/about` and shown under the embedded console's Server stats; the installer links still need release assets |
 | Change password | the vault password; changing it re-wraps the vault key on the server — zero-knowledge, so no one can reset it for you |
 | Snapshots | **Take a snapshot** button; schedule select + inline *Apply* (every 15 min … once a day, plus *Off*); sealed-snapshot list (stamp, short hash, size, age) with per-row **Verify** |
 

@@ -212,6 +212,19 @@ function fmtTime(unix) {
   return unix ? new Date(unix * 1000).toLocaleString() : "never";
 }
 
+// fmtDuration turns a whole number of seconds into the coarsest unit that divides
+// it exactly ("7 days", "12 hours", "15 minutes"), the way an operator reads a
+// configured lifetime rather than a raw count.
+function fmtDuration(seconds) {
+  const s = Number(seconds) || 0;
+  if (s <= 0) return "never";
+  const plural = (n, unit) => n + " " + unit + (n === 1 ? "" : "s");
+  if (s % 86400 === 0) return plural(s / 86400, "day");
+  if (s % 3600 === 0) return plural(s / 3600, "hour");
+  if (s % 60 === 0) return plural(s / 60, "minute");
+  return plural(s, "second");
+}
+
 // copyText puts text on the clipboard when the browser lets it, and says so when
 // it will not. The console often runs over a plain http tailscale address, which
 // is not a secure context, so the clipboard API is unavailable there; the
@@ -241,15 +254,17 @@ function flashCopy(button, label, copied) {
 }
 
 async function refresh() {
-  const [vaultsResponse, snapshotsResponse, scheduleResponse, health, card] = await Promise.all([
+  const [vaultsResponse, snapshotsResponse, scheduleResponse, aboutResponse, health, card] = await Promise.all([
     api("GET", "/admin/vaults"),
     api("GET", "/admin/backups"),
     api("GET", "/admin/backups/config"),
+    api("GET", "/admin/about"),
     fetch("/healthz").then((r) => (r.ok ? r.json() : null)),
     fetch("/", { headers: { Accept: "application/json" } }).then((r) => (r.ok ? r.json() : null)),
   ]);
   $("version").textContent = card ? "syncbox " + card.version : "";
   if (health) renderStats(health);
+  if (aboutResponse.ok) renderAbout(await aboutResponse.json());
   await renderSnapshots(snapshotsResponse);
   renderSchedule(scheduleResponse);
   if (!vaultsResponse.ok) {
@@ -283,6 +298,24 @@ function renderStats(health) {
       ["Revisions", String(storage.revisions ?? 0)],
       ["Largest chunk", fmtBytes(storage.largest_chunk ?? 0)],
     ]), { id: "stats" })
+  );
+}
+
+// renderAbout fills the Configuration list under the live stats with the read-
+// only facts from GET /admin/about: where the server keeps its data, what backup
+// it writes, and the two lifetimes an operator set from the environment. The
+// snapshot schedule is not repeated here — the Snapshots panel owns that one.
+function renderAbout(body) {
+  const about = body || {};
+  $("about").replaceWith(
+    Object.assign(definitionList([
+      ["Version", about.version || "unknown"],
+      ["Storage", about.storage || "unknown"],
+      ["Data directory", about.data_dir || "—"],
+      ["Backup target", about.backup_target || "not configured"],
+      ["Share links last", fmtDuration(about.share_ttl_seconds)],
+      ["Deleted files kept", about.recycle_days > 0 ? about.recycle_days + " days" : "until purged by hand"],
+    ]), { id: "about" })
   );
 }
 

@@ -135,6 +135,9 @@ func serve(args []string, stdout io.Writer) error {
 	}
 	srv := api.NewWithAuthority(st, backups, issuer, creds)
 	srv.SetVersion(version)
+	// store.Open opened the durable SQLite store under cfg.DataDir; tell the API
+	// so its About panel can show the operator where the server keeps its data.
+	srv.SetDeployment(cfg.DataDir, "SQLite")
 	if !creds.Initialized() {
 		log.Printf("no password yet: open the console to complete first-run setup, or set SYNCBOX_PASSWORD and restart")
 	}

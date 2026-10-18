@@ -87,8 +87,8 @@ syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
 Milestones **M1–M8** are in place (packaging's macOS/Windows signing is
 deferred with the runners and identities they need); **M10** through **M13** —
 the operator console, the sync-space surfaces, first-run bring-up (seal and
-rotate the server password), and a live snapshot schedule set from the console —
-are in as well.
+rotate the server password), and settings driven from the console (a live
+snapshot schedule, a read-only About panel) — are in as well.
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
 (FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
@@ -135,7 +135,7 @@ directory entirely, and came back byte-identical.
 | M10 | Operator console (one embedded page): vault registry, clients point at the server, snapshots page, commit enforcement, server-side vault location | ✅ |
 | M11 | Space modes: a space is a sync space or a vault; the client syncs in the clear when the mode says so; browse/share/recycle-bin API; and the console browses, shares, and restores a sync space | ✅ |
 | M12 | First-run bring-up: a fresh server with no password awaits one and seals it with Argon2id; the console sets it in place of a logged secret and can rotate it; env-provided passwords behave exactly as before | ✅ |
-| M13 | Settings: the console sets the snapshot schedule live (`GET/PUT /admin/backups/config`); the change applies to the running server and a restart falls back to `SYNCBOX_BACKUP_SCHEDULE` | ✅ |
+| M13 | Settings: the console sets the snapshot schedule live (`GET/PUT /admin/backups/config`; a restart falls back to `SYNCBOX_BACKUP_SCHEDULE`), and a read-only **About this server** panel (`GET /admin/about`) shows storage, data directory, backup target, share TTL and recycle retention | ✅ |
 
 ## License
 
