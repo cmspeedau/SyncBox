@@ -236,6 +236,22 @@ function fmtUp(seconds) {
   return plural(Math.round(s / 86400), "day");
 }
 
+// passwordNote reads About's password facts the way an operator wants them: who
+// owns the password, and — when the server itself owns it — how long since it was
+// last set, read from the stored credential's own timestamp.
+function passwordNote(about) {
+  if (about.password_source === "stored") {
+    const age = about.password_changed_unix
+      ? ", last changed " + fmtTime(about.password_changed_unix)
+      : "";
+    return "stored — set in the console" + age + ", survives restarts";
+  }
+  if (about.password_source === "environment") {
+    return "from SYNCBOX_PASSWORD — change it in the environment";
+  }
+  return "not set up";
+}
+
 // fmtAge reads a timestamp backwards — "just now", "12 minutes ago", "3 days ago"
 // — the way an operator gauges whether a backup is fresh. fmtIn reads one
 // forwards, for the next scheduled snapshot. Both round to the coarsest unit,
@@ -353,7 +369,7 @@ function renderAbout(body) {
       ["Deleted files kept", about.recycle_days > 0 ? about.recycle_days + " days" : "until purged by hand"],
       ["Request rate limit", about.rate_limit_rps > 0 ? about.rate_limit_rps + " req/s (burst " + about.rate_burst + ")" : "unlimited"],
       ["Commits to unknown vaults", about.require_registered_vaults ? "refused" : "accepted"],
-      ["Server password", about.password_source === "stored" ? "stored — set in the console, survives restarts" : about.password_source === "environment" ? "from SYNCBOX_PASSWORD — change it in the environment" : "not set up"],
+      ["Server password", passwordNote(about)],
       ["Started", fmtTime(about.started_unix)],
       ["Uptime", fmtUp(about.uptime_seconds)],
     ]), { id: "about" })
