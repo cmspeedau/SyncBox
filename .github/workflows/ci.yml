@@ -1,5 +1,36 @@
 name: CI
 
+# ---- the fleet this runs on (rebuilt 18 Oct 2026, each name checked against
+# ---- that runner's own log rather than remembered) -------------------------
+#
+#   linux-docker-desktop   agentId 28, on the CachyOS desktop (8 cores/14 GB).
+#       labels: self-hosted, Linux, docker, desktop
+#       Carries every Linux job. It is the only runner with the native
+#       webkit2gtk-4.1/gtk/libsoup development libraries and real FUSE, which is
+#       what makes AppImage bundling possible, so `desktop` is its alone.
+#   intel nuc runner       agentId 29, container `github-runner`
+#       (myoung34/github-runner:2.338.0-debian-bookworm) on the Alpine NUC.
+#       configured labels: self-hosted, docker
+#       Has the docker CLI and a mounted daemon. Its toolchains arrive fresh for
+#       every job, so it is a poor host for a cargo build and a tolerable one for
+#       `docker build`.
+#
+# What that means for the jobs below:
+#   - `Linux` and `X64` are NOT choices: GitHub adds those two automatically from
+#     the runner's reported OS and architecture, so a job asking for
+#     [self-hosted, Linux] can be taken by the NUC container as easily as by the
+#     desktop. Labels you actually control are the extras (`docker`, `desktop`),
+#     and the only way to keep a Linux job on one box is to ask for a second label
+#     that only that box has. `rust` and `go` are exposed to this today: they may
+#     land on the NUC's 2 cores, where a cargo build crawls.
+#   - Nothing answers `macOS` today, so `Package (macOS x86_64)` queues to its
+#     6-hour timeout rather than failing. Registering the Mini fixes it.
+#   - Two runners answer `docker`, so the image job may land on either box.
+#
+# Adding a job? Read the note at the top of the project build plan first; the
+# short version is that an unserved label does not fail, it just queues, and that
+# these boxes are not the ubuntu-latest sandbox your habits expect.
+
 on:
   push:
     branches: [main]
@@ -17,9 +48,11 @@ permissions:
 jobs:
   rust:
     name: Client (Rust)
-    # `Linux` (a label every self-hosted Linux runner carries implicitly) keeps
-    # these jobs off the Mac mini: it is a 4-core Intel box reserved for macOS
-    # bundling, and far too slow to be a general CI runner.
+    # `Linux` is automatic on any self-hosted Linux runner, so this is the set of
+    # every Linux box we have — which is the point: it keeps these jobs off the
+    # Mac mini, a 4-core Intel box reserved for macOS bundling and far too slow to
+    # be a general CI runner. The flip side is that the NUC container can take
+    # them too; see the fleet note at the top of this file.
     runs-on: [self-hosted, Linux]
     defaults:
       run:
@@ -81,10 +114,12 @@ jobs:
 
   image:
     name: Server image builds
-    # Self-hosted with Docker: the NUC host runner (label `docker`) builds the
-    # image without pushing it. The Incus CI container deliberately stays out —
-    # it is unprivileged, so container-in-container would be sandpaper. Building
-    # here also keeps the laptop runner free; publishing stays a deliberate act.
+    # `docker` is a label we control, and two runners carry it: the desktop box
+    # (native docker) and the NUC's container runner, which reaches the Alpine
+    # host's daemon through a mounted /var/run/docker.sock — so the image is built
+    # by the host either way, not inside the job container. The Incus CI container
+    # deliberately stays out: it is unprivileged, so container-in-container would
+    # be sandpaper. Built, never pushed — publishing stays a deliberate act.
     runs-on: [self-hosted, docker]
     needs: go
     steps:
@@ -348,12 +383,14 @@ jobs:
 
   package:
     name: Package (Linux desktop)
-    # The `desktop` box (githubrunner-desktop), and only it: the CachyOS
-    # desktop carries the webkit2gtk/gtk/libsoup development libraries natively
-    # and, unlike the containerised NUC runner, has real FUSE — which
-    # linuxdeploy (itself an AppImage) needs to bundle the AppImage. The
+    # The `desktop` label, which exactly one runner has: `linux-docker-desktop`,
+    # the CachyOS desktop box. It carries the webkit2gtk/gtk/libsoup development
+    # libraries natively and, unlike the containerised NUC runner, has real FUSE —
+    # which linuxdeploy (itself an AppImage) needs to bundle the AppImage. The
     # bundler needs no packaging tools for its .deb either: it emits one
     # through ar/tar, and linuxdeploy bootstraps its own patchelf.
+    # Ask for `desktop` and you get that one machine: it is the only way to pin a
+    # Linux job to a box, since `Linux` itself is automatic on both.
     # The first run on a fresh runner installs cargo-tauri into ~/.cargo/bin and
     # every later one reuses it. Bundles are uploaded as build artifacts only —
     # signing and publishing stay deliberate (Windows packaging still needs a
@@ -429,6 +466,11 @@ jobs:
     # deliberate, like every other publish gate in this project. An Apple
     # Silicon runner would be a second, separate target (aarch64-apple-darwin),
     # not a replacement for this one.
+    # NOT RUNNING, as of 18 Oct 2026: no runner answers `macOS`, so this job sits
+    # in the queue for its full 6-hour timeout instead of failing. The Mini's
+    # install is intact and one registration token (Settings -> Actions) from
+    # coming back. Delete the job rather than leaving it pending forever: a
+    # permanently queued job is how a hole stays hidden behind a mostly-green run.
     runs-on: [self-hosted, macOS]
     needs: rust
     defaults:
