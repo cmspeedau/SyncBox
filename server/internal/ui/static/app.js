@@ -796,6 +796,59 @@ $("create-form").addEventListener("submit", async (event) => {
   refresh();
 });
 
+// Rotating the server password. The client mirrors the server's floor (>= 8) and
+// the match rule so an obvious mistake never round-trips, but the server is the
+// authority: it re-checks the current password against the Argon2id seal, so a
+// wrong current password is refused there. It answers 403 (not 401) for that, so
+// api() leaves the session alone and the operator stays signed in to try again.
+$("password-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("password-error").textContent = "";
+  $("password-note").textContent = "";
+  const current = $("pw-current").value;
+  const next = $("pw-next").value;
+  const confirm = $("pw-confirm").value;
+  if (current === "") {
+    $("password-error").textContent = "Enter your current password.";
+    $("pw-current").focus();
+    return;
+  }
+  if (next === "") {
+    $("password-error").textContent = "Choose a new password.";
+    $("pw-next").focus();
+    return;
+  }
+  if (next.length < 8) {
+    $("password-error").textContent = "Use at least 8 characters.";
+    $("pw-next").focus();
+    return;
+  }
+  if (next !== confirm) {
+    $("password-error").textContent = "The two new passwords don't match.";
+    $("pw-confirm").focus();
+    return;
+  }
+
+  const button = $("password-form").querySelector("button");
+  button.disabled = true;
+  try {
+    const response = await api("POST", "/api/v1/auth/password", { current, password: next });
+    if (!response.ok) {
+      $("password-error").textContent = await reason(response);
+      return;
+    }
+    $("pw-current").value = "";
+    $("pw-next").value = "";
+    $("pw-confirm").value = "";
+    $("password-note").textContent =
+      "Password changed. It stays in force until the next restart only if " +
+      "SYNCBOX_PASSWORD is set in the environment; otherwise it is sealed to the " +
+      "data directory and permanent. Update any clients that sync against this server.";
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // The console follows the operator's own light/dark setting; this button pins
 // it either way for this browser, and "system" hands the decision back. The
 // palette itself lives in `color-scheme` plus `light-dark()` in the stylesheet.

@@ -165,6 +165,9 @@ func (s *Server) Routes() http.Handler {
 	// is no credential to authenticate with; the IP rate limiter still covers them.
 	mux.HandleFunc("GET /api/v1/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("POST /api/v1/auth/setup", s.handleAuthSetup)
+	// Once a password exists, rotating it is an authenticated act that asks for
+	// the current password again as a second confirmation.
+	mux.Handle("POST /api/v1/auth/password", s.requireToken(http.HandlerFunc(s.handleChangePassword)))
 
 	// The root answers instead of 404-ing: the embedded console for browsers,
 	// a JSON name-card for scripts (see handleIndex). {$} pins it to exactly
