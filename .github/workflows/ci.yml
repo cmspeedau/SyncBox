@@ -208,14 +208,15 @@ jobs:
       # `docker build` proves the compiler is happy; a scratch image can still
       # die on boot (wrong user, unwritable volume, broken ENTRYPOINT) and show
       # none of it in the build output. This step runs the very tag built above,
-      # probes it over loopback, and asserts three facts: it answers /healthz, it
-      # refuses strangers, and a space registered as `sync` stays in the clear —
+      # probes it over loopback, and asserts the essentials: it answers /healthz,
+      # boots uninitialized and takes its password through first run, refuses
+      # strangers, and keeps a space registered as `sync` in the clear —
       # a cleartext name and body in, the same out (S2's server-side contract,
-      # which the Rust engine's fake server can only approximate). Credentials
-      # are read from the container's own boot log, because syncboxd generates a
-      # password when SYNCBOX_PASSWORD is unset — exactly what a throwaway
-      # container wants. The assertions on the auth paths are the point of the
-      # exercise: a regression that ships an open server fails HERE, not in
+      # which the Rust engine's fake server can only approximate). A throwaway
+      # container ships no SYNCBOX_PASSWORD, so it boots uninitialized; the probe
+      # gives it a password over the one-shot setup route rather than reading a
+      # secret out of a log. The assertions on the auth paths are the point of
+      # the exercise: a regression that ships an open server fails HERE, not in
       # someone's deployment.
       - name: Runtime check
         run: |
@@ -277,44 +278,69 @@ jobs:
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
+          # Before first run the server has no password, so it says so and lets
+          # nobody in. Both answers are the assertion that a fresh image cannot
+          # be signed into and cannot be scraped for a credential.
+          status=$(curl -fsS --max-time 3 "http://127.0.0.1:${port}/api/v1/auth/status")
+          if [[ $status != *'"initialized":false'* ]]; then
+            echo "::error::a fresh image reported itself initialized: $status"
+            docker logs "$name" 2>&1 | tail -40
+            exit 1
+          fi
           code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
             -X POST -d '{"password":"wrong"}' "http://127.0.0.1:${port}/api/v1/auth/token")
           if [ "$code" != 401 ]; then
-            echo "::error::wrong password got $code, expected 401"
+            echo "::error::token before first run got $code, expected 401"
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
 
-          # ---- a sync space, end to end --------------------------------
-          # S2's server-side contract. The Rust engine suite proves the client
-          # codec against a fake; this proves the *deployed* server stores and
-          # serves a space the operator registered as `sync` in the clear,
-          # without ever trying to decrypt a name or a byte. The generated
-          # password is printed to the boot log for the operator, so the probe
-          # reads it there rather than shipping a credential in the workflow —
-          # and it reads the log from a file, because taking "the first match"
-          # out of a pipe needs `head -1`, which is the trap above.
+          # ---- first run: give this throwaway server its password ----
+          # The image ships uninitialized (no SYNCBOX_PASSWORD), exactly what a
+          # throwaway container wants: the probe sets a password over the
+          # one-shot setup route, so no credential ever appears in the workflow.
+          # The boot log is kept for the closing-evidence step at the end.
           boot_log="${RUNNER_TEMP:-.}/syncbox-boot.log"
-          docker logs "$name" >"$boot_log" 2>&1
-          password=$(sed -n \
-            's/^config: SYNCBOX_PASSWORD is unset, using the generated password \(.*\)$/\1/p' \
-            "$boot_log")
-          # First match only, spelled in bash rather than with another reader.
-          password=${password%%$'\n'*}
-          if [ -z "$password" ]; then
-            echo "::error::could not read the generated password from the boot log"
+          password="syncbox-ci-first-run-9f3a"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -X POST \
+            -d "$(printf '{"password":"%s"}' "$password")" \
+            "http://127.0.0.1:${port}/api/v1/auth/setup")
+          if [ "$code" != 201 ]; then
+            echo "::error::first-run setup got $code, expected 201"
             docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
-          token=$(curl -fsS --max-time 3 -X POST \
+          # The setup door is one-shot: a second attempt must be refused.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X POST \
+            -d '{"password":"another-password-here"}' \
+            "http://127.0.0.1:${port}/api/v1/auth/setup")
+          if [ "$code" != 409 ]; then
+            echo "::error::a second setup got $code, expected 409 already_initialized"
+            exit 1
+          fi
+          # Now a wrong password is refused on its merits, not for lack of one.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+            -X POST -d '{"password":"wrong"}' "http://127.0.0.1:${port}/api/v1/auth/token")
+          if [ "$code" != 401 ]; then
+            echo "::error::wrong password after setup got $code, expected 401"
+            exit 1
+          fi
+          token=$(curl -fsS --max-time 5 -X POST \
             -d "$(printf '{"password":"%s"}' "$password")" \
             "http://127.0.0.1:${port}/api/v1/auth/token" \
             | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
           if [ -z "$token" ]; then
             echo "::error::the token exchange returned no token"
+            docker logs "$name" 2>&1 | tail -40
             exit 1
           fi
           auth="Authorization: Bearer ${token}"
+
+          # ---- a sync space, end to end --------------------------------
+          # S2's server-side contract. The Rust engine suite proves the client
+          # codec against a fake; this proves the *deployed* server stores and
+          # serves a space the operator registered as `sync` in the clear,
+          # without ever trying to decrypt a name or a byte.
 
           created=$(curl -fsS --max-time 3 -X POST -H "$auth" \
             -d '{"name":"Probe","mode":"sync"}' \
@@ -442,7 +468,7 @@ jobs:
             exit 1
           fi
 
-          # The boot log is the closing evidence: the generated-password and
+          # The boot log is the closing evidence: the first-run and
           # listen-everywhere warnings should be visible — proof the config layer
           # spoke, and that the scratch image ran long enough to speak. Reading it
           # from a file rather than piping `docker logs` into `head` is not
@@ -452,9 +478,9 @@ jobs:
           # 40 lines is boot chatter plus one line per probe request.
           docker logs "$name" >"$boot_log" 2>&1
           head -40 "$boot_log"
-          echo "runtime check passed: served /healthz, refused strangers, kept a sync"
-          echo "space in the clear, browsed it, shared one file to a stranger, emptied"
-          echo "and refilled its recycle bin, and refused a vault three times over"
+          echo "runtime check passed: booted uninitialized, completed first run, refused"
+          echo "strangers, kept a sync space in the clear, browsed it, shared one file to"
+          echo "a stranger, emptied and refilled its recycle bin, and refused a vault thrice"
 
   package:
     name: Package (Linux desktop)
