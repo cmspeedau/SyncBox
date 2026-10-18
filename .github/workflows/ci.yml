@@ -5,9 +5,12 @@ name: CI
 #
 #   linux-docker-desktop   agentId 28, on the CachyOS desktop (8 cores/14 GB).
 #       labels: self-hosted, Linux, docker, desktop
-#       Carries every Linux job. It is the only runner with the native
-#       webkit2gtk-4.1/gtk/libsoup development libraries and real FUSE, which is
-#       what makes AppImage bundling possible, so `desktop` is its alone.
+#       The general-purpose builder: it runs `Client (Rust)` (pinned), the
+#       `.deb`/AppImage bundling, and any image build the NUC does not take. It is
+#       the only runner with the native webkit2gtk-4.1/gtk/libsoup development
+#       libraries and real FUSE, which is what makes AppImage bundling possible —
+#       which is also why `desktop` is the one label held by exactly one box, and
+#       therefore the only thing that can pin a Linux job anywhere.
 #   intel nuc runner       agentId 29, container `github-runner`
 #       (myoung34/github-runner:2.338.0-debian-bookworm) on the Alpine NUC.
 #       configured labels: self-hosted, docker
@@ -21,8 +24,9 @@ name: CI
 #     [self-hosted, Linux] can be taken by the NUC container as easily as by the
 #     desktop. Labels you actually control are the extras (`docker`, `desktop`),
 #     and the only way to keep a Linux job on one box is to ask for a second label
-#     that only that box has. `rust` and `go` are exposed to this today: they may
-#     land on the NUC's 2 cores, where a cargo build crawls.
+#     that only that box has. `Client (Rust)` is pinned that way, with `desktop`;
+#     `Server (Go)` is deliberately left shareable because the NUC handles it in
+#     seconds. Anything new that compiles Rust belongs on the desktop too.
 #   - Nothing answers `macOS` today, so `Package (macOS x86_64)` queues to its
 #     6-hour timeout rather than failing. Registering the Mini fixes it.
 #   - Two runners answer `docker`, so the image job may land on either box.
@@ -48,12 +52,16 @@ permissions:
 jobs:
   rust:
     name: Client (Rust)
-    # `Linux` is automatic on any self-hosted Linux runner, so this is the set of
-    # every Linux box we have — which is the point: it keeps these jobs off the
-    # Mac mini, a 4-core Intel box reserved for macOS bundling and far too slow to
-    # be a general CI runner. The flip side is that the NUC container can take
-    # them too; see the fleet note at the top of this file.
-    runs-on: [self-hosted, Linux]
+    # Pinned to the desktop box by asking for `desktop` next to `Linux`. That label
+    # is the only one a single runner has, and `Linux` alone is not a pin: GitHub
+    # adds `Linux`/`X64` itself from each runner's OS and architecture, so on run
+    # 39104747110 this job was taken by the 2-core NUC container and built the whole
+    # workspace there in 4m32s. It passed — and it was competing with nine other
+    # containers for 8 GB while doing it. Ask for a label only one box has and you
+    # get that box, which is also the box with warm caches and 14 GB.
+    # `Server (Go)` below stays unpinned on purpose: the NUC does it in ~25s, and
+    # leaving one Linux job shareable keeps the two heavy jobs starting at once.
+    runs-on: [self-hosted, Linux, desktop]
     defaults:
       run:
         working-directory: client
