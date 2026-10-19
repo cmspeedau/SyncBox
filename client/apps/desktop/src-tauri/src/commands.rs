@@ -75,16 +75,32 @@ pub fn lock(shared: State<'_, Shared>) -> Result<Status, String> {
 }
 
 /// Asks every loop to run a pass now (non-blocking) and returns the current
-/// status.
+/// status. Refused while the loops are held: a "sync now" that visibly did
+/// nothing would be a dead control, so the window offers resume instead.
 #[command]
 pub fn sync_now(shared: State<'_, Shared>) -> Result<Status, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
     if state.workers().is_empty() {
         return Err("the vault is locked — unlock it first".into());
     }
+    if state.is_paused() {
+        return Err("syncing is paused — resume it first".into());
+    }
     for worker in state.workers() {
         worker.request_sync();
     }
+    Ok(current_status(&state))
+}
+
+/// Holds or releases every loop's passes. Nothing on disk changes: edits made
+/// while held wait in the folders until the resume pass reads them.
+#[command]
+pub fn set_paused(shared: State<'_, Shared>, paused: bool) -> Result<Status, String> {
+    let mut state = shared.lock().map_err(|e| e.to_string())?;
+    if state.workers().is_empty() {
+        return Err("the vault is locked — unlock it first".into());
+    }
+    state.set_paused(paused);
     Ok(current_status(&state))
 }
 

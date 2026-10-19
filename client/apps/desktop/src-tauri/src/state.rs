@@ -138,6 +138,23 @@ impl AppState {
         self.vault_dir.as_deref()
     }
 
+    /// Holds every folder's passes, or lets them run again.
+    ///
+    /// A pause is not a lock: the keys stay in hand, and nothing in the folders
+    /// is touched — edits made while held wait on disk for the resume pass.
+    pub fn set_paused(&mut self, paused: bool) {
+        for worker in &self.workers {
+            worker.set_paused(paused);
+        }
+    }
+
+    /// Whether the loops are held. Empty (locked) reads as not paused: a locked
+    /// vault is not a paused one.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.workers.iter().any(SyncWorker::is_paused)
+    }
+
     fn stop_workers(&mut self) {
         for worker in self.workers.drain(..) {
             worker.stop();
