@@ -32,9 +32,14 @@ type syncProbe struct {
 	offset atomic.Int64
 }
 
-// probeClock is the moment every probe starts from, so a test that advances the
-// clock by days knows exactly what the server thinks "today" is.
-var probeClock = time.Date(2026, time.October, 18, 12, 0, 0, 0, time.UTC)
+// probeClock is the moment every probe starts from: the real now, snapped to the
+// top of the minute. Every assertion built on it is a *difference* — a share
+// that outlives the clock by an hour, a recycle window that closes after thirty
+// days — so the fake clock stays a real "today" however long the suite runs.
+// A fixed date here was the suite's own time bomb: it minted tokens that
+// expired the next afternoon, and every probe's login check then failed against
+// the wall clock it was being compared with.
+var probeClock = time.Now().UTC().Truncate(time.Minute)
 
 func newSyncProbe(t *testing.T) *syncProbe {
 	t.Helper()
