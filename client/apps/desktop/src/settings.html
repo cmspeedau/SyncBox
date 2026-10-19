@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Syncbox — Settings</title>
+    <!--
+      The settings window, built to docs/reference-agent-settings.html: the
+      OneDrive-shaped rail and page list, with the footer bar's two app-wide
+      switches. Only controls a command already backs are drawn — no
+      Notifications page (its events are a backend that does not exist yet), no
+      choose-folders tree, no pause durations, no auto-lock timer, no device id
+      or update check. What the reference badges `new` is left out, not drawn
+      dead; what it badges `today` is here.
+
+      A preview exists for browsers outside Tauri: open with `?demo=1` and every
+      invoke answers from fixtures, as in the other two windows.
+    -->
+    <style>
+      :root {
+        --brand: #0082c9;
+        --brand-dark: #006aa3;
+        --ink: #272833;
+        --muted: #7a8694;
+        --line: #e2ecf3;
+        --hover: #f3f9fd;
+        --ok: #16a34a;
+        --err: #dc2626;
+        font-family: system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; margin: 0; }
+      html, body { height: 100%; }
+      body { background: #fff; color: var(--ink); font-size: 13px; display: flex; flex-direction: column; }
+
+      .setbody { flex: 1; display: flex; min-height: 0; }
+
+      /* rail: the space's card over the page list */
+      .rail {
+        flex: none; width: 200px; padding: 14px 10px; display: flex; flex-direction: column;
+        background: linear-gradient(160deg, #f1f8fd, #dcebfa); border-right: 1px solid #d9e7f1;
+      }
+      .vault { padding: 4px 6px 10px; }
+      .vault .vh { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+      .vault .vh svg { flex: none; }
+      .vault .vh span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .vusage { font-size: 11px; color: #5b6672; margin-top: 7px; }
+      .rail nav { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; border-top: 1px solid rgba(0,106,163,.15); padding-top: 10px; }
+      .rail nav button {
+        display: flex; align-items: center; gap: 9px; text-align: left; border: 0; background: none;
+        border-radius: 999px; padding: 9px 12px; font: 600 12.5px system-ui, sans-serif; color: var(--ink); cursor: pointer;
+      }
+      .rail nav button:hover { background: rgba(255, 255, 255, .6); }
+      .rail nav button.on { background: var(--brand-dark); color: #fff; }
+      .rail nav .ic { width: 16px; display: grid; place-items: center; flex: none; }
+
+      /* pages */
+      .pages { flex: 1; min-width: 0; padding: 16px 18px 18px; overflow-y: auto; }
+      .page { display: none; }
+      .page.on { display: block; }
+      .page h3 { font-size: 15px; margin-bottom: 12px; }
+      .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 13px; margin-bottom: 12px; }
+      .card > b { display: block; font-size: 12.5px; margin-bottom: 4px; }
+      .cd { font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+      .crow { display: flex; align-items: center; gap: 10px; padding: 8px 0; font-size: 12.5px; }
+      .crow + .crow { border-top: 1px solid #edf2f6; }
+      .crow .lbl { min-width: 0; }
+      .crow .lbl small { display: block; color: var(--muted); font-size: 11px; }
+      .crow .sp { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
+      .mono { font-family: ui-monospace, monospace; font-size: 11.5px; }
+      .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .chip { background: #e8f3fb; color: var(--brand-dark); border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 600; }
+      .mini { border: 1px solid #d5dee6; background: #fff; color: var(--ink); border-radius: 999px; padding: 6px 12px; font: 600 12px system-ui, sans-serif; cursor: pointer; }
+      .mini:hover { background: var(--hover); }
+      .fine { font-size: 11px; color: var(--muted); }
+      .fine i { font-style: italic; }
+      .msg { font-size: 11.5px; color: var(--err); min-height: 14px; margin: 2px 0 6px; }
+
+      /* the two switches */
+      .sw { width: 30px; height: 18px; border-radius: 999px; background: #cbd5e1; position: relative; cursor: pointer; border: 0; flex: none; transition: background .15s; }
+      .sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+      .sw.on { background: var(--ok); }
+      .sw.on::after { left: 14px; }
+
+      /* footer: app-wide switches, not page items */
+      .fbar {
+        flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+        background: #f6fafd; border-top: 1px solid var(--line); font-size: 12px; color: #5b6672;
+      }
+      .fbar .gap { margin-left: 20px; }
+      .fbar .note { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+      /* nothing unlocked: the window has no session to describe, so the pages
+         that describe one say nothing at all — only the note and the two
+         app-wide switches are left, and both are true */
+      .when-locked { display: none; font-size: 12.5px; color: var(--muted); }
+      body.locked .needs-session { display: none; }
+      body.locked .page h3, body.locked .page .fine { display: none; }
+      body.locked .when-locked { display: block; }
+
+      @media (max-width: 560px) {
+        .setbody { flex-direction: column; }
+        .rail { width: 100%; border-right: 0; border-bottom: 1px solid #d9e7f1; }
+        .rail nav { flex-direction: row; overflow-x: auto; }
+      }
+    </style>
+  </head>
+  <body class="locked">
+    <div class="setbody">
+      <aside class="rail">
+        <div class="vault">
+          <div class="vh">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#006aa3" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+            <span id="spaceName">Syncbox</span>
+          </div>
+          <div class="vusage" id="spaceUsage">no space is running</div>
+        </div>
+        <nav id="nav">
+          <button class="on" data-p="sync" type="button"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2" /><path d="M3 7v5h5M21 17v-5h-5" /></svg></span>Sync Files</button>
+          <button data-p="account" type="button"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="8" r="3.6" /><path d="M5 20c1.2-3.4 4-5 7-5s5.8 1.6 7 5" /></svg></span>Account</button>
+          <button data-p="about" type="button"><span class="ic"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 11v5M12 7.6v.4" /></svg></span>About</button>
+        </nav>
+      </aside>
+
+      <main class="pages">
+        <p class="msg" id="msg"></p>
+        <p class="when-locked">No space is running. The main window's card is where one is chosen and unlocked; this window has nothing to change until then.</p>
+
+        <section class="page on" id="p-sync">
+          <h3>Sync Files</h3>
+
+          <div class="card needs-session">
+            <b>Sync folder</b>
+            <div id="folderRows"></div>
+            <div class="cd">Each folder is a copy of the space: a change in any one of them syncs to the others.</div>
+            <div class="crow"><span class="lbl">Change which space this machine syncs<small>Locks the session — the main window's card lists the server's spaces again</small></span><span class="sp"><button class="mini" data-change type="button">Change…</button></span></div>
+          </div>
+
+          <div class="card needs-session">
+            <div class="crow"><span class="lbl">Pause syncing<small>Local edits keep saving on disk; the loops hold their passes until you resume</small></span><span class="sp"><button class="sw" id="pauseSw" type="button" aria-label="Pause syncing"></button></span></div>
+          </div>
+
+          <p class="fine">Nothing here waits for an <i>Apply settings</i> button: every control in this window takes effect as you touch it. Choosing which folders sync, and pausing for a set number of hours, arrive with the backends that answer to them.</p>
+        </section>
+
+        <section class="page" id="p-account">
+          <h3>Account</h3>
+
+          <div class="card needs-session">
+            <b>Server</b>
+            <div class="crow"><span class="lbl path mono" id="serverHost">—</span><span class="sp"><button class="mini" data-change type="button">Change…</button></span></div>
+            <div class="cd">Change re-runs first run: connect to an address, list its spaces, pick the folder.</div>
+          </div>
+
+          <div class="card needs-session">
+            <b>Space</b>
+            <div class="crow"><span class="lbl" id="spaceLine">—</span><span class="sp"><span class="chip" id="modeChip">—</span></span></div>
+            <div class="cd">One space per machine until the client can keep more than one. To sync a different one, <i>Change…</i> re-runs first run — its picker lists the server's spaces.</div>
+          </div>
+        </section>
+
+        <section class="page" id="p-about">
+          <h3>About</h3>
+
+          <div class="card">
+            <div class="crow"><span class="lbl">Agent version</span><span class="sp mono" id="agentVersion">—</span></div>
+            <div class="crow"><span class="lbl">Platform</span><span class="sp mono" id="platform">—</span></div>
+            <div class="crow"><span class="lbl">Licence</span><span class="sp mono" id="licence">—</span></div>
+            <div class="crow needs-session"><span class="lbl">Space state folder<small>where this machine keeps the space's header and each folder's index</small></span><span class="sp"><button class="mini" id="openHdr" type="button">Open</button></span></div>
+          </div>
+
+          <p class="fine">A device id to quote for support, the server's version, a logs folder and an update check are the reference's <i>new</i>-badged rows: they appear when something can answer for them.</p>
+        </section>
+      </main>
+    </div>
+
+    <div class="fbar">
+      <span>Run at login</span><button class="sw" id="loginSw" type="button" aria-label="Run at login"></button>
+      <span class="gap">Show hidden features</span><button class="sw" id="hiddenSw" type="button" aria-label="Show hidden features"></button>
+      <span class="note" id="hiddenNote"></span>
+    </div>
+
+    <script>
+      // Outside Tauri (a plain browser with ?demo=1), the invokes answer from
+      // fixtures, as in the main and unlock windows.
+      const DEMO = !window.__TAURI__ && new URLSearchParams(location.search).has("demo");
+      // `&locked=1` previews the no-session state: the window opens only from a
+      // running session, but a lock from the main window can empty it while open.
+      const demo = { unlocked: !(DEMO && new URLSearchParams(location.search).get("locked")), paused: false, hidden: false, login: false };
+      function demoInvoke(cmd, args) {
+        if (cmd === "settings_info")
+          return Promise.resolve({
+            agentVersion: "0.1.0",
+            platform: "linux x86_64",
+            licence: "MIT",
+            space: demo.unlocked
+              ? { name: "Files synced", server: "https://sync.example.org", mode: "vault", vaultDir: "/home/you/.syncbox/demo" }
+              : null,
+          });
+        if (cmd === "status")
+          return Promise.resolve(
+            demo.unlocked
+              ? {
+                  state: "idle", paused: demo.paused, unlocked: true, vaultId: "demo",
+                  lastSyncUnix: Math.floor(Date.now() / 1000) - 320, lastError: null, passes: 57,
+                  folders: [
+                    { folder: "/home/you/Syncbox/Files synced", state: "idle", lastSyncUnix: 1760000000 },
+                    { folder: "/home/you/LaptopMirror/Files synced", state: "idle", lastSyncUnix: 1760000000 },
+                  ],
+                }
+              : { state: "locked", paused: false, unlocked: false, vaultId: null, lastSyncUnix: null, lastError: null, passes: 0, folders: [] },
+          );
+        if (cmd === "usage")
+          return Promise.resolve(demo.unlocked ? { files: 412, bytes: 1_932_735_283, folders: [] } : { files: 0, bytes: 0, folders: [] });
+        if (cmd === "get_prefs") return Promise.resolve({ showHidden: demo.hidden });
+        if (cmd === "set_prefs") { demo.hidden = !!(args && args.settings && args.settings.showHidden); return null; }
+        if (cmd === "get_autostart") return Promise.resolve(demo.login);
+        if (cmd === "set_autostart") { demo.login = !!(args && args.enabled); return null; }
+        if (cmd === "set_paused") { demo.paused = !!(args && args.paused); return demoInvoke("status"); }
+        if (cmd === "lock") { demo.unlocked = false; return demoInvoke("status"); }
+        return Promise.resolve(null);
+      }
+      const invoke = DEMO ? demoInvoke : window.__TAURI__.core.invoke;
+
+      const $ = (id) => document.getElementById(id);
+
+      function setMsg(text) {
+        $("msg").textContent = text || "";
+      }
+
+      /* ---------- the page list ---------- */
+      $("nav").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-p]");
+        if (!btn) return;
+        for (const b of $("nav").querySelectorAll("button")) b.classList.toggle("on", b === btn);
+        for (const p of document.querySelectorAll(".page")) p.classList.toggle("on", p.id === "p-" + btn.dataset.p);
+      });
+
+      /* ---------- the two app-wide switches ---------- */
+      $("loginSw").addEventListener("click", async () => {
+        const want = !$("loginSw").classList.contains("on");
+        try {
+          await invoke("set_autostart", { enabled: want });
+          $("loginSw").classList.toggle("on", want);
+          setMsg("");
+        } catch (err) {
+          setMsg(String(err));
+        }
+      });
+      $("hiddenSw").addEventListener("click", async () => {
+        const want = !$("hiddenSw").classList.contains("on");
+        try {
+          await invoke("set_prefs", { settings: { showHidden: want } });
+          $("hiddenSw").classList.toggle("on", want);
+          renderHiddenNote(want);
+          setMsg("");
+        } catch (err) {
+          setMsg(String(err));
+        }
+      });
+      // The switch reveals controls in the main window, so say which ones: the
+      // one place that draws them should not be a mystery from here.
+      function renderHiddenNote(on) {
+        $("hiddenNote").textContent = on
+          ? "on — the main window reveals the by-hand id, extra folders and header creation"
+          : "";
+      }
+
+      /* ---------- the session's page contents ---------- */
+      let lastFolders = "";
+
+      function renderFolders(status) {
+        const key = (status.folders || []).map((f) => f.folder).join("\n");
+        if (key === lastFolders) return;
+        lastFolders = key;
+        $("folderRows").innerHTML = "";
+        for (const f of status.folders || []) {
+          const row = document.createElement("div");
+          row.className = "crow";
+          const path = document.createElement("span");
+          path.className = "path mono";
+          path.textContent = f.folder;
+          path.title = f.folder;
+          const sp = document.createElement("span");
+          sp.className = "sp";
+          const open = document.createElement("button");
+          open.type = "button";
+          open.className = "mini";
+          open.textContent = "Open";
+          open.addEventListener("click", () => invoke("open_folder", { path: f.folder }).catch((err) => setMsg(String(err))));
+          sp.append(open);
+          row.append(path, sp);
+          $("folderRows").append(row);
+        }
+      }
+
+      function render(status, usage, info) {
+        document.body.classList.toggle("locked", !status.unlocked);
+        const space = info && info.space;
+        $("spaceName").textContent = space ? space.name : "Syncbox";
+        $("spaceUsage").textContent = !status.unlocked
+          ? "no space is running"
+          : usage && usage.files
+            ? `${fmtBytes(usage.bytes)} · ${usage.files} file${usage.files === 1 ? "" : "s"} on this machine`
+            : "nothing synced yet";
+        $("pauseSw").classList.toggle("on", !!status.paused);
+        if (space) {
+          $("serverHost").textContent = space.server;
+          $("serverHost").title = space.server;
+          $("spaceLine").textContent = space.name;
+          $("modeChip").textContent = space.mode === "sync" ? "sync space" : "encrypted vault";
+          $("openHdr").onclick = () => invoke("open_folder", { path: space.vaultDir }).catch((err) => setMsg(String(err)));
+        }
+        if (info) {
+          $("agentVersion").textContent = info.agentVersion;
+          $("platform").textContent = info.platform;
+          $("licence").textContent = info.licence;
+        }
+        if (status.unlocked) renderFolders(status);
+      }
+
+      function fmtBytes(n) {
+        if (!n) return "0 B";
+        const units = ["B", "KB", "MB", "GB", "TB"];
+        const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+        return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+      }
+
+      $("pauseSw").addEventListener("click", async () => {
+        const paused = !$("pauseSw").classList.contains("on");
+        $("pauseSw").classList.toggle("on", paused); // optimistic: the poll confirms
+        try {
+          await invoke("set_paused", { paused });
+          setMsg("");
+        } catch (err) {
+          $("pauseSw").classList.toggle("on", !paused);
+          setMsg(String(err));
+        }
+      });
+
+      // Both Change… rows mean the same thing, as they do in the reference: the
+      // session is locked and the main window's card — where a space is chosen —
+      // takes over. This window has nothing left to describe, so it closes.
+      for (const btn of document.querySelectorAll("[data-change]")) {
+        btn.addEventListener("click", async () => {
+          try {
+            await invoke("lock");
+            await invoke("close_settings");
+          } catch (err) {
+            setMsg(String(err));
+          }
+        });
+      }
+
+      /* ---------- reading the shell ---------- */
+      async function refresh() {
+        try {
+          const info = await invoke("settings_info");
+          const status = await invoke("status");
+          const usage = status.unlocked ? await invoke("usage") : null;
+          const prefs = await invoke("get_prefs");
+          render(status, usage, info);
+          $("hiddenSw").classList.toggle("on", !!prefs.showHidden);
+          renderHiddenNote(!!prefs.showHidden);
+          $("loginSw").classList.toggle("on", !!(await invoke("get_autostart")));
+        } catch (err) {
+          setMsg(String(err));
+        }
+      }
+
+      refresh();
+      setInterval(refresh, 2000);
+
+      // `&page=account|about` opens another page for a screenshot, which a
+      // headless browser cannot click its way into.
+      if (DEMO) {
+        const page = new URLSearchParams(location.search).get("page");
+        const btn = page && $("nav").querySelector(`button[data-p="${page}"]`);
+        if (btn) btn.click();
+      }
+    </script>
+  </body>
+</html>

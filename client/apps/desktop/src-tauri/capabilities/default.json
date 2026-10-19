@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the app's windows",
-  "windows": ["main", "unlock"],
+  "windows": ["main", "unlock", "settings"],
   "permissions": []
 }

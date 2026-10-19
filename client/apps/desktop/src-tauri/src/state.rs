@@ -64,14 +64,33 @@ pub struct Pending {
     pub name: String,
 }
 
+/// The space a running session serves, in the words the settings window may
+/// show: what it is called, which server it lives on, what the server keeps
+/// there, and where this machine keeps its own state for it.
+///
+/// No password is among these — a window that reads this back cannot be handed
+/// a secret by it.
+#[derive(Clone, Debug)]
+pub struct Running {
+    /// The space's display name, as `list_vaults` called it (or the id, for a
+    /// hand-typed space).
+    pub name: String,
+    /// The server origin the loops dial.
+    pub server: String,
+    /// What the space stores: a vault, or a sync space in the clear.
+    pub mode: SpaceMode,
+    /// The space's local state directory — the `vault.json` header plus each
+    /// folder's index. `usage` reads it through here, so the frontend never
+    /// repeats a path it never chose.
+    pub vault_dir: PathBuf,
+}
+
 /// Everything the shell tracks about the current session.
 #[derive(Default)]
 pub struct AppState {
     workers: Vec<SyncWorker>,
-    /// The chosen space's local state directory, kept while the session lives
-    /// so `usage` can find each folder's index without the frontend repeating
-    /// a path it never chose.
-    vault_dir: Option<PathBuf>,
+    /// The space the workers are serving, if a session is running.
+    running: Option<Running>,
     /// The session whose vault password window is open, if any.
     pending: Option<Pending>,
 }
@@ -80,7 +99,8 @@ impl AppState {
     /// Unlocks the space once and starts one background loop per folder,
     /// replacing any running session. `vault_password` unlocks the vault header
     /// — a sync space has no header, so it is empty and unused there (the server
-    /// token comes from [`Session::server_password`]).
+    /// token comes from [`Session::server_password`]). `name` is the space's
+    /// display name, kept only to tell the settings window what to call it.
     ///
     /// Blocking: Argon2id runs on unlock and each loop's first pass authenticates
     /// immediately. Callers run this on a blocking thread (see `commands`).
@@ -90,7 +110,12 @@ impl AppState {
     /// A human-readable reason if the space cannot be unlocked (wrong vault
     /// password, unreadable header, index cannot be opened) or if no folder was
     /// given.
-    pub fn unlock_vault(&mut self, session: Session, vault_password: String) -> Result<(), String> {
+    pub fn unlock_vault(
+        &mut self,
+        session: Session,
+        name: String,
+        vault_password: String,
+    ) -> Result<(), String> {
         // End the previous loops before replacing the session so two never run.
         self.stop_workers();
 
@@ -116,7 +141,12 @@ impl AppState {
         )
         .map_err(|e| e.to_string())?;
 
-        self.vault_dir = Some(session.vault_dir.clone());
+        self.running = Some(Running {
+            name,
+            server: session.server.clone(),
+            mode: session.mode,
+            vault_dir: session.vault_dir.clone(),
+        });
         // The attempt is over, whatever it was waiting on.
         self.pending = None;
 
@@ -170,8 +200,10 @@ impl AppState {
     pub fn lock_vault(&mut self) {
         self.stop_workers();
         // A pending unlock dies with the session: it carries the server
-        // password, and a lock is the statement that no session is running.
+        // password, and a lock is the statement that no session is running —
+        // so the settings window has nothing left to describe either.
         self.pending = None;
+        self.running = None;
     }
 
     /// The live status handles, one per synced folder.
@@ -185,7 +217,16 @@ impl AppState {
     /// to read yet.
     #[must_use]
     pub fn vault_dir(&self) -> Option<&Path> {
-        self.vault_dir.as_deref()
+        self.running
+            .as_ref()
+            .map(|running| running.vault_dir.as_path())
+    }
+
+    /// The space the workers serve, in showable words — nothing a window may
+    /// not see. `None` while locked.
+    #[must_use]
+    pub fn running(&self) -> Option<&Running> {
+        self.running.as_ref()
     }
 
     /// Holds every folder's passes, or lets them run again.
@@ -275,11 +316,17 @@ mod tests {
     #[test]
     fn locking_drops_a_pending_unlock() {
         let mut state = AppState::default();
+        assert!(state.running().is_none(), "no session, no space to show");
         state.set_pending(session(SpaceMode::Vault), "Files synced".into());
         state.lock_vault();
         assert!(
             state.pending_info().is_none(),
             "a lock leaves no session, and no server password with it"
+        );
+        assert!(state.running().is_none(), "and nothing to describe");
+        assert!(
+            state.vault_dir().is_none(),
+            "so there are no indexes to read"
         );
     }
 
