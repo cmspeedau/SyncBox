@@ -22,6 +22,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", default-features = false, features = ["wry"] }
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -31,6 +32,7 @@ serde_json = "1"
 # the app the same real HTTPS client the CLI uses.
 syncbox-agent = { path = "../../../crates/agent" }
 syncbox-crypto = { path = "../../../crates/crypto" }
+syncbox-index = { path = "../../../crates/index" }
 syncbox-sync = { path = "../../../crates/sync" }
 syncbox-transport = { path = "../../../crates/transport", features = ["ureq"] }
 syncbox-vault = { path = "../../../crates/vault" }

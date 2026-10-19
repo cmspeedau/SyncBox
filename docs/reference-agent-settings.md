@@ -23,7 +23,9 @@ button in the main window. Three regions:
 
 ### Show hidden features
 
-App-wide toggle in the footer bar. **Off (default):** the out-of-the-box
+App-wide toggle in the footer bar. Until this window ships, the switch lives
+in the main window's footer bar (M16 S1) and the pref it writes already
+exists. **Off (default):** the out-of-the-box
 flow — the client picks vaults from the server, the sync folder is the
 server-derived one, ids are never typed, no vault is created from here.
 **On:** reveals the three advanced controls designed in
