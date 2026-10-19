@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Syncbox desktop app (Tauri v2 shell over the sync agent)"
 edition = "2021"
 rust-version = "1.85"
+license = "MIT"
 
 # This crate is a MEMBER of the client workspace (see client/Cargo.toml): a plain
 # package, not a workspace of its own. So `cargo check`/`clippy`/`test --workspace`

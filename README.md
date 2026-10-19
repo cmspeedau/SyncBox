@@ -142,5 +142,5 @@ directory entirely, and came back byte-identical.
 
 ## License
 
-No license has been chosen yet, so all rights are reserved by default. Pick one
-before publishing anything.
+MIT — see [LICENSE](LICENSE). Everything in this repository is offered under
+it, with no warranty of any kind.

@@ -4,6 +4,7 @@ description = "Headless Syncbox client, used to drive end-to-end tests"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "syncbox"

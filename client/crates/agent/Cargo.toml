@@ -4,6 +4,7 @@ description = "Tauri-free desktop sync controller: unlock, sync state machine, a
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # The desktop window (apps/desktop, a workspace member) shells around this crate.
 # Keeping the behaviour here — with no Tauri or webkit dependency — is what lets the
