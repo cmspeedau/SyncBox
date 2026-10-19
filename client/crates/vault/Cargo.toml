@@ -4,6 +4,7 @@ description = "On-disk layout of a Syncbox encrypted vault"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
 base64.workspace = true

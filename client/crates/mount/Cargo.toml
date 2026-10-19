@@ -4,6 +4,7 @@ description = "Vault-as-filesystem model: namespace, metadata, and content reads
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 # The filesystem *model* lives here with no `fuser`/libfuse dependency, so the
 # namespace, metadata, and read logic are unit-tested without a FUSE driver and
