@@ -85,10 +85,15 @@ syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
 ## Status
 
 Milestones **M1–M8** are in place (packaging's macOS/Windows signing is
-deferred with the runners and identities they need); **M10** through **M13** —
+deferred with the runners and identities they need); **M10** through **M15** —
 the operator console, the sync-space surfaces, first-run bring-up (seal and
 rotate the server password), and settings driven from the console (a live
-snapshot schedule, a read-only About panel) — are in as well.
+snapshot schedule, a read-only About panel), the console flagging a setting that
+reverts on a restart, and uptime plus password age on that panel — are in as
+well. **M16**, rebuilding the desktop agent UI on its references, has landed all
+five slices; what's left of it is the drafted dark palette and the mock's
+per-vault locked rows, and both wait on the client remembering a session between
+launches.
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
 (FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
@@ -100,7 +105,15 @@ into conflicted copies so neither client loses work, and mirrors deletes as
 tombstones; the durable `index` crate lets a restart resume without a rescan.
 
 The desktop app (M4) is a thin Tauri shell over `crates/agent`, a Tauri-free
-controller whose states are unit-tested against an in-process fake server.
+controller whose states are unit-tested against an in-process fake server. Its UI
+(M16) is three windows and a tray, each built to its own reference in `docs/`: the
+main window's status bar, per-folder rows and first-run card; a separate top-level
+window for the vault password, which is the only place that secret is ever typed;
+the settings window; and a tray icon whose native menu is the agent's presence
+while no window is open — relabelled from the same status the window polls, with
+the glyph's corner badge painted from it. One rule held across all five slices: a
+control is drawn only when a command backs it, so the reference controls that have
+no command yet are left out rather than drawn dead.
 `syncbox mount` (M5) serves the vault as a FUSE filesystem — read-only by
 default, and `--writable` seals writes into the vault so nothing on disk is
 ever plaintext; with no folder, `sync once` runs folderless, relaying dirty
