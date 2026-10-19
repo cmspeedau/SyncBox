@@ -126,7 +126,13 @@ pub fn install(app: &AppHandle, shared: &Shared, presence: &Presence) {
             // a right-click (or the panel's own menu affordance) brings up.
             .show_menu_on_left_click(false)
             .icon(badge(&locked_status()))
-            .tooltip("Syncbox — locked")
+            // The label is the tooltip: on Windows and macOS a tray icon has a
+            // tooltip and that is where the state belongs. On this Linux backend
+            // it is dropped on the floor — `tray-icon`'s `set_tooltip` is a no-op
+            // there — so what a KDE or GNOME user actually sees is the badge and,
+            // one click later, the menu's header row. Verified against Plasma
+            // over D-Bus rather than assumed.
+            .tooltip(label(&locked_status()))
             .on_tray_icon_event(|tray, event| {
                 // A plain (left) click is the reference's "open the agent UI".
                 // The button and state are checked because a right-click, which
@@ -240,10 +246,15 @@ fn lock_or_raise(app: &AppHandle, shared: &Shared) {
     }
 }
 
-/// Every two seconds, mirror the session onto the icon: the badge's colour, the
-/// tooltip, the status row's word, the lock row's label, and whether the folder
-/// row has a folder behind it. Native menus relabel rather than rebuild, so this
-/// reads as the state changing rather than the menu changing.
+/// Mirror the session onto the icon: the badge's colour, the label, the status
+/// row's word, the lock row's label, and whether the folder row has a folder
+/// behind it. Native menus relabel rather than rebuild, so this reads as the
+/// state changing rather than the menu changing.
+///
+/// It reads every two seconds but **posts only on a change**. The appindicator
+/// backend writes the tray image out as a fresh PNG for every `set_icon`, so a
+/// tick that re-posts an unchanged state is file I/O and a panel repaint every two
+/// seconds forever, over a state nobody can see moving.
 fn watch(
     app: AppHandle,
     shared: Shared,
@@ -251,6 +262,10 @@ fn watch(
     folder_row: MenuItem<Wry>,
     lock_row: MenuItem<Wry>,
 ) {
+    // What the panel shows right now. The word, whether keys are in hand, and
+    // whether there is a folder to name decide every label and pixel of the
+    // tray, so those three are exactly what a tick has to compare.
+    let mut shown: Option<(&'static str, bool, bool)> = None;
     std::thread::spawn(move || loop {
         std::thread::sleep(WATCH_INTERVAL);
         let status = match shared.lock() {
@@ -259,23 +274,29 @@ fn watch(
             // poll will surface that. Saying nothing here beats saying it twice.
             Err(_) => return,
         };
+        let word = word(&status);
+        let has_folder = !status.folders.is_empty();
+        let seen = (word, status.unlocked, has_folder);
+        if shown.replace(seen) == Some(seen) {
+            continue;
+        }
         let (status_row, folder_row, lock_row) =
             (status_row.clone(), folder_row.clone(), lock_row.clone());
+        let label = label(&status);
         // Reading the session is cheap from any thread; relabelling a menu and
         // swapping an icon belong to the event loop's thread, so this thread
         // posts what it found rather than touching the desktop itself.
         let for_main_thread = app.clone();
         let posted = app.run_on_main_thread(move || {
-            let word = word(&status);
             let _ = status_row.set_text(word);
             let _ = lock_row.set_text(if status.unlocked {
                 "Lock vault"
             } else {
                 "Unlock vault…"
             });
-            let _ = folder_row.set_enabled(!status.folders.is_empty());
+            let _ = folder_row.set_enabled(has_folder);
             if let Some(tray) = for_main_thread.tray_by_id(TRAY_ID) {
-                let _ = tray.set_tooltip(Some(format!("Syncbox — {word}")));
+                let _ = tray.set_tooltip(Some(label));
                 let _ = tray.set_icon(Some(badge(&status)));
             }
         });
@@ -284,6 +305,12 @@ fn watch(
             return;
         }
     });
+}
+
+/// The icon's label as a panel shows it: the agent, then what it is doing, so a
+/// tooltip or a title says whose icon it is as well as its state.
+fn label(status: &Status) -> String {
+    format!("Syncbox — {}", word(status))
 }
 
 /// The state in the words the main window uses, in its order of outranking: an
@@ -413,6 +440,20 @@ mod tests {
         assert_eq!(word(&status(true, None, true, "idle")), "Paused");
         assert_eq!(word(&status(true, None, false, "syncing")), "Syncing…");
         assert_eq!(word(&status(true, None, false, "idle")), "Up to date");
+    }
+
+    #[test]
+    fn the_label_names_the_agent_then_its_state() {
+        // A panel shows this string for the icon, so it has to say whose icon it
+        // is as well as what that icon is doing.
+        assert_eq!(
+            label(&status(false, None, false, "locked")),
+            "Syncbox — Locked"
+        );
+        assert_eq!(
+            label(&status(true, None, false, "syncing")),
+            "Syncbox — Syncing…"
+        );
     }
 
     #[test]

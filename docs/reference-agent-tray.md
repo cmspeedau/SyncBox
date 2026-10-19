@@ -63,12 +63,20 @@ spells the same state out in text.
 | Settings… | ✅ `open_settings_window` — the settings window's second entry point |
 | Quit | ✅ `app.exit(0)`, the same exit the gear menu's *Quit* asks for |
 | icon badge | ✅ the dot, painted at runtime over the shipped glyph — green idle, yellow syncing, red error, amber paused, grey locked — with a white halo, since the real panel's colour is the desktop's, not ours. It does not **pulse**: a StatusNotifier icon is drawn once per change, so the tray says *Syncing…* in the header row instead |
+| tooltip with the state | ⚠️ set, and thrown away by this Linux backend — `tray-icon`'s `set_tooltip` is a no-op for appindicator, and the item's SNI `ToolTip` stays empty on a live Plasma session (checked over D-Bus, not assumed). On Windows and macOS it is the tooltip; here the badge and the header row are what the human gets. The `Title` route was tried and dropped: on this backend it is `app_indicator_set_label`, a panel label Plasma only draws when the human turns text-beside-icon on, and it takes panel space to say what the dot already says |
 | `Quit` ≠ closing | ✅ `CloseRequested` on the main window hides it and the loops keep running — **when a tray exists** to raise it again. Without one the close quits, which is what it did before the tray |
 
-Three honest deviations, then: the header carries no dot; *Open sync folder*
+Four honest deviations, then: the header carries no dot; *Open sync folder*
 names the first chosen folder rather than a fixed path, and greys out with
-nothing unlocked; and the syncing badge is steady rather than pulsing. The
-menu still has no pause row — OneDrive's durations stayed out on purpose.
+nothing unlocked; the syncing badge is steady rather than pulsing; and the state
+reaches a Linux panel as a colour and a menu row rather than a tooltip, because
+the backend drops tooltips. The menu still has no pause row — OneDrive's
+durations stayed out on purpose.
+
+One thing running it against Plasma changed: the appindicator backend writes the
+tray image out as a **fresh PNG for every** `set_icon`, so the mirror posts only
+when the state actually changed. Posting every tick worked, but it was file I/O
+and a panel repaint every two seconds over a state that had not moved.
 
 ## Implementation notes
 
@@ -84,7 +92,8 @@ two windows it can raise are the only places a password is ever typed.
 | Tray element | Code |
 |---|---|
 | the icon and its menu | `tauri::TrayIconBuilder` with id `main`, `MenuBuilder` rows built once, then `set_text` / `set_enabled` |
-| the state it mirrors | `commands::current_status` — the same `Status` the main window's `status` poll answers with, read on the same 2 s rhythm by `tray::watch`, applied with `run_on_main_thread` because menus belong to the event loop's thread |
+| the state it mirrors | `commands::current_status` — the same `Status` the main window's `status` poll answers with, read on the same 2 s rhythm by `tray::watch`, **posted only when it moved**, and applied with `run_on_main_thread` because menus belong to the event loop's thread |
+| the label | `tray::label` ("Syncbox — Locked"), handed to `set_tooltip`; what a Linux panel does with it is in the shipped table |
 | the badge | `tray::badge` over `include_image!("icons/32x32.png")`; `dot` picks the colour from `word`, so the text and the colour can never disagree |
 | lock / unlock rows | `AppState::lock_vault`; the S3 windows (`unlock`, else `main`) |
 | folder row | the running session's first worker's folder, through `open_folder` |

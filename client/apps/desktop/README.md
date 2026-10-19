@@ -155,7 +155,9 @@ the reference's rows and nothing more: a disabled header spelling the state,
 `open_folder`, greyed while nothing is unlocked), *Lock vault* ⇄ *Unlock
 vault…*, *Settings…* and *Quit*. Built once, then relabelled: a two-second watch
 thread reads the same `current_status` the window polls and posts what it found
-with `run_on_main_thread`, because menus belong to the event loop's thread. A
+with `run_on_main_thread`, because menus belong to the event loop's thread — and
+posts **only when the state moved**, since the appindicator backend writes the
+tray image out as a fresh PNG for every `set_icon`. A
 plain icon click raises the window; the menu is what a right-click brings up. The
 glyph's corner badge is painted at runtime from the state (`badge`), the same
 colours the status bar's dot uses. Whether a tray is even *attempted* is decided
@@ -192,6 +194,31 @@ bundling (`cargo-tauri build --bundles deb appimage`) and for `cargo-tauri icon`
 Its unit tests run with
 `cargo test --manifest-path client/apps/desktop/src-tauri/Cargo.toml` (they need the
 GUI libs to link but open no window).
+
+## Running it
+
+`client/target/debug/syncbox-desktop` runs against the desktop session it is started
+from. Two things worth knowing from running it on the KDE/Wayland dev box:
+
+* WebKitGTK aborts the process with `Error 71 (Protocol error) dispatching to Wayland
+  display` while the webview is being created, unless the environment carries
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`. That is a WebKitGTK/compositor pairing, not
+  something the shell controls; the run that fails dies *after* the tray registered
+  fine, so it is not the tray's doing.
+* The tray appears only where `libayatana-appindicator3.so.1` is installed (on Arch:
+  `libayatana-appindicator`). Whether it registered is checkable without looking at
+  the panel:
+
+  ```sh
+  busctl --user call org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+    org.freedesktop.DBus.Properties Get ss org.kde.StatusNotifierWatcher \
+    RegisteredStatusNotifierItems
+  ```
+
+  A line ending `…/org/ayatana/NotificationItem/tray_icon_tray_app_main` is the
+  agent's. The image the panel was given lands as a PNG under
+  `/run/user/<uid>/tray-icon/`, which is the quickest way to see the badge as the
+  tray actually has it.
 
 ## Packaging (M6)
 
