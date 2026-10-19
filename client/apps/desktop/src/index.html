@@ -307,7 +307,7 @@
       let byHand = false;
       let hiddenTier = false;
 
-      const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error", locked: "" };
+      const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error" };
 
       function escapeHtml(s) {
         return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -349,10 +349,7 @@
         $("stxt").textContent = TXT[s.state] || s.state;
         $("passCnt").textContent = s.passes ? `pass ${s.passes}` : "";
         const banner = $("errBanner");
-        if (s.state === "error" && s.lastError) {
-          banner.textContent = "Last pass failed: " + s.lastError;
-          win.classList.add("st-err");
-        }
+        banner.textContent = s.state === "error" && s.lastError ? "Last pass failed: " + s.lastError : "";
         const folders = s.folders || [];
         $("vlist").innerHTML = folders
           .map((f) => {
@@ -418,9 +415,8 @@
       }
 
       function applyHidden() {
-        for (const id of ["gSeg", "gNew", "gFolders", "hdrFld"]) {
-          $(id).classList.toggle("show", hiddenTier && id !== "hdrFld");
-        }
+        // The three dashed groups the switch reveals.
+        for (const id of ["gSeg", "gNew", "gFolders"]) $(id).classList.toggle("show", hiddenTier);
         // The header field is a .fld, not a dashed group: visible on step 2
         // only, and only for eyes that asked for it.
         $("hdrFld").classList.toggle("hidden", !(hiddenTier && step === 2));
