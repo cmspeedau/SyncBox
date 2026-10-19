@@ -191,6 +191,9 @@ pub fn usage(counts: &[(String, u64, u64)]) -> Usage {
 pub struct Status {
     /// `"locked"`, `"idle"`, `"syncing"`, or `"error"` — the worst across folders.
     pub state: &'static str,
+    /// The loops are held at the user's request. The window draws this over the
+    /// state word, since a paused vault still has to say why nothing moves.
+    pub paused: bool,
     /// Whether keys are in hand (a worker exists).
     pub unlocked: bool,
     /// The vault id, when unlocked.
@@ -270,6 +273,7 @@ pub struct Activity {
 pub fn locked() -> Status {
     Status {
         state: "locked",
+        paused: false,
         unlocked: false,
         vault_id: None,
         last_sync_unix: None,
@@ -300,6 +304,7 @@ pub fn status(vault_id: Option<String>, folders: &[FolderSnapshot]) -> Status {
     };
     Status {
         state,
+        paused: folders.iter().any(|folder| folder.status.paused),
         unlocked: !folders.is_empty(),
         vault_id,
         last_sync_unix: folders
@@ -408,6 +413,7 @@ mod tests {
         }];
         let json = serde_json::to_value(status(Some("vault-1".into()), &folders)).unwrap();
         assert_eq!(json["state"], "idle");
+        assert_eq!(json["paused"], false);
         assert_eq!(json["unlocked"], true);
         assert_eq!(json["vaultId"], "vault-1");
         assert_eq!(json["passes"], 4);
@@ -462,6 +468,41 @@ mod tests {
         // The error is the reported one even though another folder synced later:
         // a failure is never hidden behind a quiet sibling.
         assert_eq!(mapped.folders[2].state, "error");
+    }
+
+    #[test]
+    fn a_paused_folder_makes_the_vault_read_paused() {
+        let running = AgentStatus {
+            state: SyncState::Idle,
+            passes: 2,
+            ..Default::default()
+        };
+        let held = AgentStatus {
+            state: SyncState::Idle,
+            paused: true,
+            passes: 2,
+            ..Default::default()
+        };
+        let folders = vec![
+            FolderSnapshot {
+                folder: "/a".into(),
+                status: running.clone(),
+            },
+            FolderSnapshot {
+                folder: "/b".into(),
+                status: held,
+            },
+        ];
+        assert!(status(Some("v".into()), &folders).paused);
+        // Nothing paused reads false, and the flag does not colour the state
+        // word: a pause is not a failure, and the window draws it separately.
+        let folders = vec![FolderSnapshot {
+            folder: "/a".into(),
+            status: running,
+        }];
+        let mapped = status(Some("v".into()), &folders);
+        assert!(!mapped.paused);
+        assert_eq!(mapped.state, "idle");
     }
 
     #[test]

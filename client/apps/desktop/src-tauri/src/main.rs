@@ -57,6 +57,7 @@ fn main() {
             commands::unlock,
             commands::lock,
             commands::sync_now,
+            commands::set_paused,
             commands::create_vault,
             commands::list_vaults,
             commands::open_folder,

@@ -41,6 +41,10 @@ struct Inner {
     dirty: bool,
     /// Set to end the loop on the next check.
     stop: bool,
+    /// The user's pause: while set, no pass runs. A queued request (`dirty`)
+    /// is left standing rather than consumed, so resuming runs that pass at
+    /// once instead of at the end of an interval.
+    paused: bool,
 }
 
 impl Shared {
@@ -51,15 +55,20 @@ impl Shared {
                 history,
                 dirty: false,
                 stop: false,
+                paused: false,
             }),
             wake: Condvar::new(),
         }
     }
 
-    /// Overwrites the shared snapshot from the agent and wakes any reader.
+    /// Overwrites the shared snapshot from the agent and wakes any reader. The
+    /// pause belongs to the loop, not the agent, so it is re-applied here —
+    /// otherwise the next publish would quietly drop it.
     fn publish<I: Index>(&self, agent: &Agent<I>) {
         let mut inner = self.inner.lock().expect("sync state lock poisoned");
-        inner.status = agent.status();
+        let mut status = agent.status();
+        status.paused = inner.paused;
+        inner.status = status;
         inner.history = agent.history().to_vec();
         self.wake.notify_all();
     }
@@ -79,14 +88,28 @@ impl Shared {
     }
 }
 
-/// Waits out the interval, or until a stop or a manual sync request arrives.
-/// Returns `true` if the loop should stop.
+/// Waits out the interval, or until a stop, a manual sync request, or a resume
+/// arrives. Returns `true` if the loop should stop.
 fn wait_next_tick(shared: &Shared, interval: Duration) -> bool {
     let mut inner = shared.inner.lock().expect("sync state lock poisoned");
-    let started = Instant::now();
+    let mut started = Instant::now();
     loop {
         if inner.stop {
             return true;
+        }
+        // Paused: no pass, however the clock stands. Waiting on the same
+        // condvar means a resume (or stop) is seen at once, and restarting the
+        // interval afterwards gives a resumed loop a full interval before its
+        // next unprompted pass. A standing `dirty` request is deliberately not
+        // consumed here: it is the pass resume runs immediately.
+        if inner.paused {
+            let (guard, _waited) = shared
+                .wake
+                .wait_timeout(inner, interval)
+                .expect("sync state lock poisoned");
+            inner = guard;
+            started = Instant::now();
+            continue;
         }
         if inner.dirty {
             inner.dirty = false;
@@ -231,11 +254,39 @@ impl SyncWorker {
     }
 
     /// Asks for a pass to run now, rather than waiting for the next tick. The
-    /// loop picks it up as soon as its current pass finishes.
+    /// loop picks it up as soon as its current pass finishes — or, if the loop
+    /// is paused, at the moment it resumes.
     pub fn request_sync(&self) {
         let mut inner = self.shared.inner.lock().expect("sync state lock poisoned");
         inner.dirty = true;
         self.shared.wake.notify_all();
+    }
+
+    /// Holds the loop's passes (or lets them run again).
+    ///
+    /// Pausing touches nothing on disk and drops no keys. A pass is a scan, so
+    /// there is no queue to drain: edits made while the loop is held simply sit
+    /// in the folder until the resume pass reads them. Resuming therefore runs
+    /// a pass at once — waiting an interval would make "resume" feel like
+    /// nothing happened.
+    pub fn set_paused(&self, paused: bool) {
+        let mut inner = self.shared.inner.lock().expect("sync state lock poisoned");
+        inner.paused = paused;
+        inner.status.paused = paused;
+        if !paused {
+            inner.dirty = true;
+        }
+        self.shared.wake.notify_all();
+    }
+
+    /// Whether the loop is holding its passes.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.shared
+            .inner
+            .lock()
+            .expect("sync state lock poisoned")
+            .paused
     }
 
     /// Blocks until the status satisfies `pred`, or `timeout` elapses.
@@ -417,6 +468,53 @@ mod tests {
         worker.stop();
         assert!(!events.is_empty());
         assert!(events.iter().all(|e| matches!(e, SyncEvent::Failed { .. })));
+    }
+
+    #[test]
+    fn pausing_holds_every_pass_and_the_request_until_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = idle_agent(dir.path());
+        let worker = agent.spawn_loop(Duration::from_millis(20), quiet_factory(), today());
+        worker
+            .wait_until(|s| s.passes >= 1, Duration::from_secs(2))
+            .expect("first pass");
+
+        worker.set_paused(true);
+        let paused = worker
+            .wait_until(|s| s.paused, Duration::from_secs(2))
+            .expect("the pause is published");
+        assert_eq!(paused.state, SyncState::Idle, "pausing is not a failure");
+
+        // A manual request while paused runs nothing — and is not thrown away:
+        // it is the pass resume runs at once, rather than after an interval.
+        worker.request_sync();
+        thread::sleep(Duration::from_millis(150)); // several intervals' worth
+        let held = worker.status();
+        assert_eq!(held.passes, paused.passes, "no pass runs while paused");
+        assert!(held.paused, "and the pause is still on");
+
+        worker.set_paused(false);
+        let resumed = worker
+            .wait_until(|s| s.passes > held.passes, Duration::from_secs(2))
+            .expect("resume runs the standing request");
+        assert!(!resumed.paused);
+
+        worker.stop();
+    }
+
+    #[test]
+    fn a_paused_loop_still_stops() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = idle_agent(dir.path());
+        // A long interval, so the only pass is the immediate one.
+        let worker = agent.spawn_loop(Duration::from_secs(30), quiet_factory(), today());
+        worker
+            .wait_until(|s| s.passes >= 1, Duration::from_secs(2))
+            .expect("first pass");
+        worker.set_paused(true);
+        assert!(worker.is_paused());
+        // Joining must not wait for a pass that is never coming.
+        worker.stop();
     }
 
     #[test]

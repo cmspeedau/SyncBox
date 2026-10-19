@@ -64,6 +64,13 @@ pub enum SyncState {
 pub struct AgentStatus {
     /// Where the session is in its lifecycle.
     pub state: SyncState,
+    /// The loops are held at the user's request: no pass runs until they are
+    /// resumed, and whatever changed in the folders waits on disk for the pass
+    /// resume runs. Only a background loop can be paused — a single
+    /// [`Agent::sync_once`] has no pause the caller could set — so this is the
+    /// worker's flag, carried in the snapshot the worker publishes rather than
+    /// in the [`Agent`] itself.
+    pub paused: bool,
     /// Unix seconds of the most recent *successful* pass.
     pub last_sync_unix: Option<i64>,
     /// A human-readable reason for the last failure, if any.

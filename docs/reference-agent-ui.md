@@ -10,22 +10,25 @@ adopts the web UI's design language
 ([`reference-web-ui.md`](reference-web-ui.md)): light tinted headers instead
 of the blue gradient bar, no drawn window chrome, 22 px pills.
 
-Status: the **main window is shipped** — M16 S1 rebuilt
+Status: the **main window and the pause are shipped** — M16 S1 rebuilt
 `client/apps/desktop/src/index.html` on this design: tinted bar, gear click
 menu, first-run card (connect → pick from server → auto folder → unlock),
-per-folder rows with state chips, usage line. Four honest deviations: the
-list shows the one space's folders (the client is single-space today, not the
-multi-vault mock); the gear carries only what exists (Sync now, Lock vault,
-Quit — Pause joins in M16 S2, Settings… in S4); the hidden tier's creation row
-writes a header on this machine (`create_vault`) — the mock's name-only-on-
-server version needs an endpoint the console still owns alone; and a Recent
-activity disclosure
-sits under the list until the settings window's Notifications page inherits
-it. Still pending: the separate Unlock and Settings windows (S3/S4 — the main
-window hosts the unlock form itself today, and the one password serves server
-and vault as the backend has always done), the tray
-([`reference-agent-tray.md`](reference-agent-tray.md), S5, gated on
-`libappindicator`), the pause concept, and the drafted dark palette. The
+per-folder rows with state chips, usage line. M16 S2 added the one new agent
+concept: a paused flag the loop honors (`set_paused` over IPC; edits made
+while held wait on disk and the resume pass uploads them at once), drawn as
+the amber dot, the amber banner and the gear's Pause ⇄ Resume item, whose
+label follows the state. Four honest deviations: the list shows the one
+space's folders (the client is single-space today, not the multi-vault mock);
+the gear carries only what exists (Sync now, Pause syncing, Lock vault, Quit —
+Sync now greys out while paused, Settings… joins in S4); the hidden tier's
+creation row writes a header on this machine (`create_vault`) — the mock's
+name-only-on-server version needs an endpoint the console still owns alone;
+and a Recent activity disclosure sits under the list until the settings
+window's Notifications page inherits it. Still pending: the separate Unlock
+and Settings windows (S3/S4 — the main window hosts the unlock form itself
+today, and the one password serves server and vault as the backend has always
+done), the tray ([`reference-agent-tray.md`](reference-agent-tray.md), S5,
+gated on `libappindicator`), and the drafted dark palette. The
 settings window is **not part of this mock** — its design lives in
 [`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
 main window's bar and the tray menu are its entry points.
@@ -83,6 +86,10 @@ window's only command surface:
 
 Menu: white, 1 px `#E6EEF4`, radius 10 px, soft blue shadow, min-width
 160 px, rows 8 × 12 px with `#F3F9FD` hover. Closes on any outside click.
+The shipped window also carries *Sync now* above the pause and *Lock vault*
+below it — real commands the mock's fixture has no use for; *Sync now* greys
+out while the loop is paused, since a control that visibly does nothing is
+worse than one that says it cannot.
 (The tray menu carries the same pause/quit pair natively — see
 [`reference-agent-tray.md`](reference-agent-tray.md); this is the window-side
 equivalents.)
@@ -137,7 +144,7 @@ destroys tray presence; closing unlock cancels the attempt.
 | Idle | green | up to date | — |
 | Syncing | yellow, pulsing | syncing… | the syncing vault's row carries a progress bar + % |
 | Error | red | sync error | red banner with `last_error` + retry countdown |
-| Paused | amber | paused | amber banner; local edits queue |
+| Paused | amber | paused | amber banner; edits wait on disk and the resume pass uploads them at once |
 
 Locking is **per-vault**, not a window state: a locked vault dims its icon
 (0.55) and shows a grey `locked` chip + **Unlock** in its row; clicking the
@@ -148,7 +155,7 @@ Clicking a synced vault's row opens its local folder.
 
 | UI element | Source |
 |---|---|
-| Dot + bar text | `SyncState` (+ a Paused flag — the one new agent concept) |
+| Dot + bar text | `SyncState` (+ `AgentStatus.paused`, which outranks it — an error still outranks the pause) |
 | Error banner | `AgentStatus.last_error`, `last_report` |
 | Vault list rows | `list_vaults` (`VaultChoice`) + a per-vault lock flag; row click on a synced vault opens the local folder |
 | Usage line | `Index::files()`, `Index::referenced_bytes()` — over IPC as the `usage` command since M16 S1 |
@@ -156,7 +163,7 @@ Clicking a synced vault's row opens its local folder.
 | First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |
 | Unlock window → | `unlock` command; main window never touches the password |
 | Settings window (gear menu, tray) | its own reference: [`reference-agent-settings.md`](reference-agent-settings.md) |
-| Gear menu: pause / resume | the Paused flag toggle |
+| Gear menu: pause / resume | the `set_paused` command — the loop's flag, not `SyncState` |
 | Gear menu: quit | process exit (no IPC round-trip needed) |
 
 ## Design tokens

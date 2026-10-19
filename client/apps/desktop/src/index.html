@@ -46,6 +46,7 @@
       .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px #fff; }
       .st-sync .bar .dot { background: var(--warn); animation: pulse 1s infinite; }
       .st-err .bar .dot { background: var(--err); }
+      .st-pause .bar .dot { background: var(--pause); }
       @keyframes pulse { 50% { opacity: 0.4; } }
       .bar .name { font-weight: 700; font-size: 14px; }
       .bar .stxt { font-size: 11.5px; color: var(--muted); margin-left: 2px; }
@@ -68,11 +69,17 @@
       .gmenu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
       .gmenu button.danger { color: #b3413f; }
       .gmenu button.danger:hover { background: #fbeceb; }
+      .gmenu button:disabled { color: #b6c0c9; cursor: default; }
+      .gmenu button:disabled:hover { background: none; }
 
       /* banners */
       .banner { display: none; margin: 10px 14px 0; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
       .banner.e { background: #fdeceb; border: 1px solid #f6c9c6; color: #b91c1c; }
       .st-err .banner.e { display: block; }
+      /* The pause banner is a fact about the session, not a failure, so it sits
+         in amber and only ever shows while the loops are held. */
+      .banner.p { background: #fdf3e3; border: 1px solid #f3ddb0; color: #92600a; }
+      .st-pause .banner.p { display: block; }
 
       /* first-run card */
       .setupcard { display: none; flex: 1; min-height: 0; overflow-y: auto; flex-direction: column; gap: 10px; padding: 26px 22px 14px; }
@@ -173,12 +180,14 @@
 
       <div class="gmenu" id="gmenu">
         <button id="mSync" type="button">Sync now</button>
-        <button id="mLock" type="button">Lock vault</button>
+        <button id="mPause" type="button">Pause syncing</button>
         <div class="sep"></div>
+        <button id="mLock" type="button">Lock vault</button>
         <button class="danger" id="mQuit" type="button">Quit</button>
       </div>
 
       <div class="banner e" id="errBanner"></div>
+      <div class="banner p">Syncing is paused. Changes are saved and will upload on resume.</div>
 
       <!-- first run, and every locked session (same ask: which space, which password) -->
       <div class="setupcard" id="setupCard">
@@ -254,8 +263,11 @@
       // The fixtures speak exactly the backend's words, so the demo exercises
       // the real mapping and not a dialect of its own. `step2` is not a main
       // state — it parks on the setup card, connected to the demo vaults.
-      const DEMO_STATE = { idle: "idle", sync: "syncing", err: "error" };
-      const DEMO_FOLDER = { idle: "idle", sync: "syncing", err: "error" };
+      const DEMO_STATE = { idle: "idle", sync: "syncing", err: "error", pause: "idle" };
+      const DEMO_FOLDER = { idle: "idle", sync: "syncing", err: "error", pause: "idle" };
+      // The pause is a session fact, not a state word the fixture answers per
+      // call: `?demo=pause` opens paused, and the menu can lift it.
+      let demoPaused = demoState() === "pause";
       function demoInvoke(cmd, args) {
         const main = DEMO_STATE[demoState()];
         const S = {
@@ -263,6 +275,7 @@
             main
               ? {
                   state: main,
+                  paused: demoPaused,
                   unlocked: true,
                   vaultId: "demo",
                   lastSyncUnix: Math.floor(Date.now() / 1000) - 320,
@@ -273,7 +286,7 @@
                     { folder: "/home/you/LaptopMirror/Files synced", state: "idle", lastSyncUnix: 1760000000 },
                   ],
                 }
-              : { state: "locked", unlocked: false, vaultId: null, lastSyncUnix: null, lastError: null, passes: 0, folders: [] },
+              : { state: "locked", paused: false, unlocked: false, vaultId: null, lastSyncUnix: null, lastError: null, passes: 0, folders: [] },
           usage: () => ({ files: 824, bytes: 3_600_000_000, folders: [
             { folder: "/home/you/Syncbox/Files synced", files: 412, bytes: 1_800_000_000 },
             { folder: "/home/you/LaptopMirror/Files synced", files: 412, bytes: 1_800_000_000 },
@@ -288,6 +301,10 @@
           ],
           get_prefs: () => ({ showHidden: false }),
           get_autostart: () => false,
+          set_paused: (a) => {
+            demoPaused = !!(a && a.paused);
+            return S.status();
+          },
         };
         return Promise.resolve((S[cmd] || (() => undefined))());
       }
@@ -307,7 +324,7 @@
       let byHand = false;
       let hiddenTier = false;
 
-      const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error" };
+      const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error", paused: "paused" };
 
       function escapeHtml(s) {
         return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -342,12 +359,23 @@
       }
 
       // The backend's state words mapped to the mock's `st-*` classes.
-      const WIN_CLASS = { idle: "idle", syncing: "sync", error: "err" };
+      const WIN_CLASS = { idle: "idle", syncing: "sync", error: "err", paused: "pause" };
+
+      // Which state word the window shows. An error outranks a pause — the last
+      // pass's failure is still news, and pausing does not undo it — while a
+      // pause outranks the loop's settled state: "idle" under a pause would
+      // claim work is happening that the user has stopped.
+      const shownState = (s) => (s.state === "error" ? "error" : s.paused ? "paused" : s.state);
 
       function renderMain(s) {
-        win.className = "win st-" + (WIN_CLASS[s.state] || s.state);
-        $("stxt").textContent = TXT[s.state] || s.state;
+        const shown = shownState(s);
+        win.className = "win st-" + (WIN_CLASS[shown] || shown);
+        $("stxt").textContent = TXT[shown] || shown;
         $("passCnt").textContent = s.passes ? `pass ${s.passes}` : "";
+        $("mPause").textContent = s.paused ? "Resume syncing" : "Pause syncing";
+        // Sync now would be a control that visibly does nothing while the loops
+        // are held: the pause is the switch, and it is right above.
+        $("mSync").disabled = !!s.paused;
         const banner = $("errBanner");
         banner.textContent = s.state === "error" && s.lastError ? "Last pass failed: " + s.lastError : "";
         const folders = s.folders || [];
@@ -626,6 +654,11 @@
         $("gmenu").classList.remove("open");
         try { renderStatus(await invoke("sync_now")); } catch (err) { console.error(err); }
       });
+      $("mPause").addEventListener("click", async () => {
+        $("gmenu").classList.remove("open");
+        const paused = !(lastStatus && lastStatus.paused);
+        try { renderStatus(await invoke("set_paused", { paused })); } catch (err) { console.error(err); }
+      });
       $("mLock").addEventListener("click", async () => {
         $("gmenu").classList.remove("open");
         try { renderStatus(await invoke("lock")); } catch (err) { console.error(err); }
@@ -722,6 +755,11 @@
           }
         }
         await refresh();
+        // `menu=1` opens the gear menu for a screenshot: its items change with
+        // the session (a pause greys out Sync now), and only a look shows it.
+        if (DEMO && new URLSearchParams(location.search).get("menu")) {
+          $("gmenu").classList.add("open");
+        }
         setInterval(refresh, 2000);
       }
       boot();

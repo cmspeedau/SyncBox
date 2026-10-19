@@ -46,11 +46,12 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 
 | Command | Does |
 | --- | --- |
-| `status` | current state (`locked`/`idle`/`syncing`/`error`), last sync, last pass |
+| `status` | current state (`locked`/`idle`/`syncing`/`error`), whether the loops are paused, last sync, last pass |
 | `activity` | recent sync outcomes, for the activity feed |
 | `usage` | files and referenced bytes per synced folder (the row meta + usage line) |
 | `unlock` | open a space — deriving keys for a vault, nothing for a sync space — and start one loop per folder |
-| `sync_now` | ask the loops for an immediate pass (non-blocking) |
+| `sync_now` | ask the loops for an immediate pass (non-blocking; refused while paused) |
+| `set_paused` | hold or release every loop's passes (the gear's Pause ⇄ Resume) |
 | `lock` | stop the loops and drop the keys |
 | `list_vaults` | the server's spaces for the picker: name, mode, derived folder, derived header dir |
 | `create_vault` | create a vault header on this machine, return its root id (hidden tier) |
@@ -60,8 +61,8 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 | `get_autostart` / `set_autostart` | the start-at-login entry |
 
 Unlock, create, and the network calls run on a blocking thread (Argon2id and
-ureq), so the webview never stalls; `status`/`activity`/`usage`/`sync_now` just
-read the shared snapshot the workers publish.
+ureq), so the webview never stalls; `status`/`activity`/`usage`/`sync_now`/
+`set_paused` only read or flip the shared snapshot the workers publish.
 
 ## Current state
 
@@ -73,26 +74,36 @@ static frontend reaches the commands.
 **Built and clippy-clean here, but not launched from CI** — the CI runner is
 headless, so a window can't be opened there; `cargo build` (links
 webkit/gtk/soup) plus the agent + DTO + prefs tests are the CI verification,
-and `index.html` carries a browser preview (`?demo=setup|idle|sync|err`,
-`&hidden=1`, `&pick=1`): every invoke answers from fixtures outside Tauri, so
+and `index.html` carries a browser preview (`?demo=setup|idle|sync|err|pause`,
+`&hidden=1`, `&pick=1`, `&menu=1`): every invoke answers from fixtures outside Tauri, so
 the window can be screenshotted and checked against the mock without the
 shell. Inside Tauri the parameter is unreachable.
 
 **M16 S1 specifics.** The main window is the reference's, with three honest
 deviations: the row list shows the one space's folders (the client is
-single-space today); the gear menu carries only what exists (Sync now, Lock
-vault, Quit — Pause and Settings… join in S2/S4); and a Recent activity
+single-space today); the gear menu carries only what exists (Sync now, Pause
+syncing, Lock vault, Quit — Settings… joins in S4); and a Recent activity
 disclosure stands under the list until the settings window's Notifications
 page inherits it. Unlock is now mode-aware — the same `open_folders` call the
 CLI uses, so a sync space syncs in the clear from the picker with no vault
 header. The space's local state dir is derived (`~/.syncbox/<id>`), so no
 default screen asks for a path; the hidden tier can override it.
 
+**M16 S2 specifics.** The pause is a worker-loop flag, not a `SyncState`:
+`AgentStatus.paused` rides in the snapshot each loop publishes, so `status`
+carries it while a paused idle folder still reports `idle` underneath — the
+window draws the pause over the state word (an error still outranks it). One
+`set_paused` flips every folder loop. A pause consumes nothing: a `sync_now`
+that arrives while paused is refused at the command (the menu greys it out),
+and a standing request runs the moment the loops resume, because resume marks
+the loop dirty instead of waiting out the interval. A lock drops the loops, so
+the state does not survive one — a fresh unlock starts running.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
-pointing at server-named vaults (M10), sync-space modes (M11), and the
-reference main window (M16 S1). **Still deferred:** the separate Unlock and
+pointing at server-named vaults (M10), sync-space modes (M11), the reference
+main window (M16 S1), and the pause (M16 S2). **Still deferred:** the separate Unlock and
 Settings windows (M16 S3/S4 — today the main window hosts the unlock form
-itself), the pause concept (S2), and the **tray icon** — it needs
+itself) and the **tray icon** — it needs
 `libappindicator`, which is absent here, so `tauri` is pulled with
 `default-features = false, features = ["wry"]` precisely so the missing lib
 (and image decoders) aren't required to compile; the window is the whole UI
