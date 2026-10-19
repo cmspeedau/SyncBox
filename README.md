@@ -186,39 +186,24 @@ directory entirely, and came back byte-identical.
 - **Left:**
   - the drafted **dark palette**, and the mock's per-vault **locked rows** — both wait on
     the client remembering a session between launches;
-  - **placeholder / on-demand files** — what the OneDrive baseline calls *Files On Demand*:
-    every file in the space shows in the folder and its bytes arrive when a file is opened,
-    so a 200 GB space costs 200 GB of disk only if the human reads all of it. Half of it is
-    already true — the index knows every file without holding its content, and
-    `syncbox mount` (M5) serves exactly that over FUSE. Missing is a hydrate path in the
-    folder loop (fetch one file's chunks when something opens it) and, for a plain folder
-    rather than a mount, the platform's own placeholder API: FileProvider on macOS, CFAPI on
-    Windows;
-  - the **update publish job** — one CI job that takes the built deb, AppImage and dmg,
-    signs them (`bundle.createUpdaterArtifacts` yields the `.sig`, and the `.zsync` metadata
-    so an update pulls a diff rather than the whole bundle), cuts a GitHub Release so the
-    bytes get an immutable URL, and writes `update.json` — which is the missing piece for
-    every format, not one script per format. The client half is already shipped:
-    `tauri-plugin-updater` handles `deb`, `rpm` and AppImage on Linux, NSIS and MSI on
-    Windows, and replaces the `.app` on macOS, so a hand-written updater script would only
-    reproduce the parts that are already finished — signature checks, privilege escalation,
-    self-replacement, relaunch. Three roads, one manifest:
-    - **AppImage** is the shortest road to a working update: no root, no identity, the
-      bundle replaces itself;
-    - **`.deb`** should be a signed apt repo — `dpkg-scanpackages` or `reprepro` publishing
-      `Packages.gz` and a signed `Release`, one `.sources` file and a key for the user — so
-      updates arrive through `apt-daily` and `unattended-upgrades`, the mechanism Debian
-      users already trust and which works with the app closed. The plugin's in-app
-      `dpkg -i` stays as the bootstrap for whoever has not added the repo;
-    - **`.dmg`** waits on M6, not on code: an unsigned download is a Gatekeeper refusal and
-      the updater refuses an update whose bundle signature differs from the running one, so
-      a Developer ID has to exist before an update can be *installed*, not merely fetched.
-
-    Two keys, two jobs, and they are not interchangeable: the apt key signs the repo's
-    `Release`, the minisign key from `createUpdaterArtifacts` signs the manifest the plugin
-    checks. Publishing to Releases is also where the artefacts *should* live — the artifact
-    pool refills after every PR and carries no retention rule, and a Release is the same
-    bytes with a URL and a lifetime.</newString>
+  - **placeholder / on-demand files** — the OneDrive baseline's *Files On Demand*: every file
+    shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
+    200 GB of disk only if the human reads all of it. Half of it is already true — the index
+    knows every file without holding its content, and `syncbox mount` (M5) serves exactly
+    that over FUSE. Missing: a hydrate path in the folder loop, and outside the mount the
+    platform's own placeholder API (FileProvider on macOS, CFAPI on Windows);
+  - the **update publish job** — CI uploads artefacts today and no manifest says what is
+    newest. One CI job signs the built bundles (`createUpdaterArtifacts`: a `.sig` each,
+    `.zsync` deltas for the AppImage), cuts a GitHub Release so they have an immutable URL,
+    writes `update.json`, and rebuilds the apt index. The client half is shipped —
+    `tauri-plugin-updater` covers deb, rpm, AppImage, NSIS/MSI and macOS `.app` replacement
+    — so this is a publishing gap, not a per-format update script. Three roads off one
+    manifest: **AppImage** is shortest, no root and no identity, the bundle replaces
+    itself; **`.deb`** rides a signed apt repo, so `apt-daily` updates it with the app
+    closed and the plugin's `dpkg -i` is the bootstrap for whoever lacks the repo;
+    **`.dmg`** is gated on M6 — the updater will not install a signature mismatch, so an
+    unsigned build is fetchable but never installable. And two keys that do not substitute:
+    the apt key signs the repo's `Release`, minisign signs what the plugin checks.</newString>
 
 ## License
 

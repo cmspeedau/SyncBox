@@ -243,27 +243,24 @@ runner, which carries the webkit dev libraries and lets tauri do the deb via `ar
 uploads them as build artifacts. They are unsigned, like everything here — publishing
 and signing stay deliberate acts, each to its own runner and identity.
 
-And nothing updates a running install: CI uploads artefacts, a newer build exists as
-one, and the road ends there. The client half is already shipped —
-`tauri-plugin-updater` covers `deb`, `rpm` and AppImage on Linux, NSIS and MSI on
-Windows, and macOS `.app` replacement, and its `install()` knows how to apply each:
-`dpkg -i` with an escalation fallback, the `.app` swapped in place when the old and new
-bundle signatures match, the AppImage replacing itself. The manifest is keyed by target
-(`linux-deb`, `linux-appimage`, `darwin-aarch64`), so there is no per-format update
-script to write. The one missing piece is shared: a **publish job** that signs the
-bundles, cuts a GitHub Release so they get an immutable URL, writes `update.json`, and
-rebuilds the apt index.
-
-The `.deb` road runs through that index — a signed repo (`dpkg-scanpackages` or
-`reprepro` publishing `Packages.gz` and a signed `Release`, one `.sources` file and a key
-for the user) updates through `apt-daily` and `unattended-upgrades`, with the app closed;
-the plugin's in-app `dpkg -i` is the bootstrap for whoever has not added the repo. The
-macOS road is gated on an identity rather than on code: an unsigned download is a
-Gatekeeper refusal, and the updater will not install an update whose signature differs
-from the running bundle. Two keys, and they do not substitute for each other: the apt key
-signs the repo's `Release`, the minisign key behind `createUpdaterArtifacts` signs the
-manifest the plugin checks. Publishing to Releases is also where these bytes belong: the
-artifact pool refills after every PR and has no retention rule.
+And nothing updates a running install: CI uploads artefacts and no manifest says which is
+newest. The client half is shipped — `tauri-plugin-updater` covers `deb`, `rpm` and AppImage
+on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and `install()` knows how
+to apply each (`dpkg -i` with an escalation fallback, the `.app` swapped in place when the
+old and new signatures match, the AppImage replacing itself) — and because the manifest is
+keyed by target (`linux-deb`, `linux-appimage`, `darwin-aarch64`) there is no per-format
+update script to write. The gap is one CI job: sign the bundles, cut a Release so they have
+an immutable URL, write `update.json`, rebuild the apt index. Each platform then takes its
+own road through that manifest — AppImage is the shortest (no root, no identity);
+`linux-deb` rides `apt-daily` and `unattended-upgrades` through a signed repo
+(`dpkg-scanpackages` or `reprepro` publishing `Packages.gz` and a signed `Release`, one
+`.sources` file and a key for the user), with the plugin's in-app `dpkg -i` as the bootstrap
+for whoever has not added it; `darwin-aarch64` needs a Developer ID and notarisation first,
+since the updater will not install a signature mismatch and an unsigned download is a
+Gatekeeper refusal anyway. Two keys sign two different things: the apt key signs the repo's
+`Release`, the minisign key behind `createUpdaterArtifacts` signs what the plugin checks.
+And a Release is where these bytes belong regardless: the artefact pool refills after every
+PR and carries no retention rule.
 
 | Platform | Artefacts | Status |
 | --- | --- | --- |
