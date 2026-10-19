@@ -3,7 +3,9 @@
 The Tauri v2 desktop client: background sync, vault unlock, and the agent UI
 built to `docs/reference-agent-ui.html` — a tinted status bar over a per-folder
 sync list, a gear click menu, and a first-run card that connects to the server,
-picks a space, and takes the folder the server derives.
+picks a space, and takes the folder the server derives. Two more windows of
+their own, per the references: the unlock window a vault password is typed in
+(`docs/reference-agent-ui.md`) and the settings window (`docs/reference-agent-settings.md`).
 
 The app is a **member of the client Cargo workspace** — see `client/Cargo.toml` —
 so `cargo check`/`clippy`/`test --workspace` compile the shell and run its tests, and
@@ -38,6 +40,7 @@ src-tauri/         Rust: Tauri windows + commands over the Agent; icons; tauri.c
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
   index.html       the main window
   unlock.html      the unlock window (its own top-level window; S3)
+  settings.html    the settings window (rail + pages + footer switches; S4)
 ```
 
 The window's *behaviour* lives in `../../crates/agent`, not here, so it is
@@ -56,6 +59,9 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 | `unlock_pending` | unlock the held session with the password the unlock window collected, then close that window |
 | `pending_unlock` | which space the open unlock window is for — name and mode, never a secret |
 | `cancel_unlock` | drop the pending session and close the unlock window |
+| `settings_info` | what this build is (version, platform, licence) and which space is running (name, server, mode, state folder) — no password in it |
+| `open_settings_window` | open the settings window on the gear's *Settings…* (one window, reused) |
+| `close_settings` | close it and hand focus back to the main window (its *Change…* rows run this after `lock`) |
 | `sync_now` | ask the loops for an immediate pass (non-blocking; refused while paused) |
 | `set_paused` | hold or release every loop's passes (the gear's Pause ⇄ Resume) |
 | `lock` | stop the loops and drop the keys |
@@ -81,8 +87,9 @@ static frontend reaches the commands.
 headless, so a window can't be opened there; `cargo build` (links
 webkit/gtk/soup) plus the agent + DTO + prefs tests are the CI verification,
 and `index.html` carries a browser preview (`?demo=setup|step2|idle|sync|err|pause|pending`,
-`&hidden=1`, `&pick=1`, `&menu=1`, `&pending=1`) and `unlock.html` its own
-(`?demo=1`): every invoke answers from fixtures outside Tauri, so the windows
+`&hidden=1`, `&pick=1`, `&menu=1`, `&pending=1`), as do `unlock.html` (`?demo=1`)
+and `settings.html` (`?demo=1`, `&locked=1`): every invoke answers from fixtures
+outside Tauri, so the windows
 can be screenshotted and checked against the mock without the shell. Inside
 Tauri the parameter is unreachable.
 
@@ -123,14 +130,30 @@ with an empty vault password. `create_vault` in the hidden tier has grown its
 own vault-password field, since the card's other password field is no longer
 the vault's.
 
+**M16 S4 specifics.** The settings window (`settings.html`, 640 × 560, opened by
+the gear's *Settings…*) is the reference's `today`-badged subset and nothing
+more: the rail's space card and usage line, Sync Files (each synced folder with
+`Open`, *Change…* which runs `lock` then closes this window so the main window's
+card can pick again, and the pause as one switch), Account (server and space,
+read-only, from `settings_info`), About (version, platform, licence, and the
+space's state folder with `Open`), and the footer's two app-wide switches —
+which is why the main window's temporary footer bar is gone; that window now
+re-reads `get_prefs` on its poll and follows the switch instead of owning it. No
+*Apply settings* button: everything shipped here writes as it is touched. The
+`new`-badged controls are left out rather than drawn dead — no Notifications
+page, choose-folders tree, pause durations, auto-lock timer, device id, server
+version, logs or update check — and "Remove vault from this computer" waits for
+session persistence, since a client that forgets the space on every launch has
+nothing local to remove.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
-main window (M16 S1), the pause (M16 S2), and the separate unlock window
-(M16 S3). **Still deferred:** the Settings window (M16 S4) and the **tray
+main window (M16 S1), the pause (M16 S2), the separate unlock window
+(M16 S3), and the settings window (M16 S4). **Still deferred:** the **tray
 icon** — it needs
 `libappindicator`, which is absent here, so `tauri` is pulled with
 `default-features = false, features = ["wry"]` precisely so the missing lib
-(and image decoders) aren't required to compile; the window is the whole UI
+(and image decoders) aren't required to compile; the three windows are the whole UI
 until a machine carrying the lib builds the app (S5). A Node/Svelte frontend
 behind `frontendDist` (instead of this static one) and code signing remain
 open.
@@ -177,10 +200,11 @@ and signing stay deliberate acts, each to its own runner and identity.
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
 
 **Autostart and single-instance shipped on top of the bundles:** a second launch just
-focuses the running window (`tauri-plugin-single-instance`, registered first), and a
-"Start at login" checkbox in the Vault card writes or removes the XDG autostart entry
-(`tauri-plugin-autostart`, wrapped as the `get_autostart`/`set_autostart` commands and
+focuses the running window (`tauri-plugin-single-instance`, registered first), and
+the *Run at login* switch in the settings window's footer bar writes or removes the
+XDG autostart entry (`tauri-plugin-autostart`, wrapped as the
+`get_autostart`/`set_autostart` commands and
 round-trip-tested headlessly through tauri's mock runtime in a sandboxed `$HOME`).
 The tray icon is what remains: `libappindicator` is absent on both the dev box and the
 CI runner, so until one carries it `tauri` stays on
-`default-features = false, features = ["wry"]` and the window is the whole UI.
+`default-features = false, features = ["wry"]` and the three windows are the whole UI.

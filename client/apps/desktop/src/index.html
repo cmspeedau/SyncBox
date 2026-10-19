@@ -169,9 +169,6 @@
       .setup-btn:hover { background: #0075b3; }
       .setup-btn:disabled { opacity: 0.5; cursor: default; }
       .setup .setup-btn { display: flex; }
-      .footerbar { display: flex; gap: 14px; justify-content: flex-end; background: #f6fafd; border-radius: 8px; padding: 6px 10px; margin-top: 8px; font-size: 10.5px; color: var(--muted); }
-      .footerbar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
-      .footerbar input { accent-color: var(--brand); }
     </style>
   </head>
   <body>
@@ -186,6 +183,8 @@
       </div>
 
       <div class="gmenu" id="gmenu">
+        <button id="mSettings" type="button">Settings…</button>
+        <div class="sep"></div>
         <button id="mSync" type="button">Sync now</button>
         <button id="mPause" type="button">Pause syncing</button>
         <div class="sep"></div>
@@ -258,10 +257,6 @@
         <div class="usage"><span id="usageLeft">—</span><span class="r" id="usageRight"></span></div>
         <button class="setup-btn" id="setupBtn" type="button" disabled>Connect</button>
         <p class="waitmsg hidden" id="waitMsg">Waiting for the unlock window… <button id="waitCancel" type="button">Cancel</button></p>
-        <div class="footerbar">
-          <label><input id="hiddenToggle" type="checkbox" /> Show hidden features</label>
-          <label><input id="autostart" type="checkbox" /> Start at login</label>
-        </div>
       </div>
     </div>
 
@@ -283,6 +278,10 @@
       // Likewise a pending unlock: `?demo=pending` parks on the setup card with
       // the unlock window notionally open, and the Cancel link clears it.
       let demoPending = demoState() === "pending";
+      // `&hidden=1` reveals the advanced controls for a screenshot; the pref
+      // fixture reports the same answer, so the poll agrees with the flag now
+      // that the switch itself lives in the settings window.
+      let demoHidden = !!(DEMO && new URLSearchParams(location.search).get("hidden"));
       function demoInvoke(cmd, args) {
         const main = DEMO_STATE[demoState()];
         const S = {
@@ -314,8 +313,8 @@
             { id: "demo", name: "Files synced", mode: "vault", location: "Syncbox/Files synced", defaultFolder: "/home/you/Syncbox/Files synced", headerDir: "/home/you/.syncbox/demo", archived: false },
             { id: "demo2", name: "Studio archive", mode: "sync", location: "Syncbox/Studio archive", defaultFolder: "/home/you/Syncbox/Studio archive", headerDir: "/home/you/.syncbox/demo2", archived: false },
           ],
-          get_prefs: () => ({ showHidden: false }),
-          get_autostart: () => false,
+          get_prefs: () => ({ showHidden: demoHidden }),
+          open_settings_window: () => null,
           set_paused: (a) => {
             demoPaused = !!(a && a.paused);
             return S.status();
@@ -723,6 +722,10 @@
       document.addEventListener("click", (e) => {
         if (!e.target.closest("#gmenu") && !e.target.closest("#gear")) $("gmenu").classList.remove("open");
       });
+      $("mSettings").addEventListener("click", async () => {
+        $("gmenu").classList.remove("open");
+        try { await invoke("open_settings_window"); } catch (err) { console.error(err); }
+      });
       $("mSync").addEventListener("click", async () => {
         $("gmenu").classList.remove("open");
         try { renderStatus(await invoke("sync_now")); } catch (err) { console.error(err); }
@@ -754,19 +757,9 @@
         }, 1200);
       });
 
-      $("hiddenToggle").addEventListener("change", async () => {
-        hiddenTier = $("hiddenToggle").checked;
-        applyHidden();
-        try { await invoke("set_prefs", { settings: { showHidden: hiddenTier } }); } catch (err) { console.error(err); }
-      });
-
-      $("autostart").addEventListener("change", async () => {
-        const want = $("autostart").checked;
-        try { await invoke("set_autostart", { enabled: want }); } catch (err) {
-          $("autostart").checked = !want;
-          console.error(err);
-        }
-      });
+      /* The two app-wide switches (Run at login, Show hidden features) live in
+         the settings window's footer bar, which is where the reference puts
+         them; this window follows the pref rather than owning it (see refresh). */
 
       /* ---------- polling ---------- */
 
@@ -787,6 +780,14 @@
           const s = await invoke("status");
           if (s.unlocked && (DEMO || tick % 3 === 0)) lastUsage = await invoke("usage");
           if (s.unlocked && (DEMO || tick % 2 === 0)) renderFeed(await invoke("activity"));
+          // The Show-hidden switch lives in the settings window's footer bar
+          // now, so this window follows the pref it writes: revealing an
+          // advanced control over there shows it here, without a restart.
+          const shown = !!(await invoke("get_prefs")).showHidden;
+          if (shown !== hiddenTier) {
+            hiddenTier = shown;
+            applyHidden();
+          }
           // A locked session whose unlock window is open is a state of its own:
           // the card waits rather than look ready for another attempt, and
           // becomes editable again when the window is cancelled or closed.
@@ -801,12 +802,7 @@
 
       async function boot() {
         try {
-          const p = await invoke("get_prefs");
-          hiddenTier = !!p.showHidden;
-          $("hiddenToggle").checked = hiddenTier;
-        } catch (err) { console.error(err); }
-        try {
-          $("autostart").checked = await invoke("get_autostart");
+          hiddenTier = !!(await invoke("get_prefs")).showHidden;
         } catch (err) { console.error(err); }
         applyHidden();
         renderSetup();
@@ -814,7 +810,6 @@
           const params = new URLSearchParams(location.search);
           if (params.get("hidden")) {
             hiddenTier = true;
-            $("hiddenToggle").checked = true;
             applyHidden();
           }
           $("server").value = "https://sync.example.org";

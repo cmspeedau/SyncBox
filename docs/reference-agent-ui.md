@@ -24,10 +24,14 @@ secrets and gave the second one its own window: the unlock window
 `unlock_pending`; while it stands the main window's card says it is waiting and
 offers *Cancel*, and a **sync space** — which has no header to unlock — skips
 the window and unlocks straight from the card with the server password alone.
-Five honest deviations: the list shows the one space's folders (the client is
-single-space today, not the multi-vault mock); the gear carries only what
-exists (Sync now, Pause syncing, Lock vault, Quit — Sync now greys out while
-paused, Settings… joins in S4); the hidden tier's creation row writes a header
+M16 S4 moved the two app-wide switches — *Run at login* and *Show hidden
+features* — out of this window's temporary footer bar and into the settings
+window's footer, where this reference always put them; this window re-reads the
+pref on its poll, so revealing an advanced control over there draws it here
+without a restart. Four honest deviations: the list shows the one space's
+folders (the client is single-space today, not the multi-vault mock); the gear
+carries only what exists (Settings…, Sync now, Pause syncing, Lock vault, Quit —
+Sync now greys out while paused); the hidden tier's creation row writes a header
 on this machine (`create_vault`) — the mock's name-only-on-server version needs
 an endpoint the console still owns alone — and asks for the vault password
 there, in its own field, because it is the machine writing the header; and a
@@ -35,7 +39,7 @@ Recent activity disclosure sits under the list until the settings window's
 Notifications page inherits it. The mock's per-vault **locked rows** are not
 built yet: the client keeps no session between launches, so every start is the
 connect card, and the reference's "row flips to `synced`" is the main view
-arriving instead. Still pending: the Settings window (S4), the tray
+arriving instead. Still pending: the tray
 ([`reference-agent-tray.md`](reference-agent-tray.md), S5, gated on
 `libappindicator`), and the drafted dark palette. The
 settings window is **not part of this mock** — its design lives in
@@ -125,9 +129,9 @@ equivalents.)
 
 Three advanced behaviours belong to this design but are **absent from every
 default screen** until the *Show hidden features* switch is on — a stored
-pref; its switch sits in the main window's footer bar until the settings
-window's footer inherits it (M16 S4), and the advanced controls it reveals
-are designed in
+pref; its switch sits in the settings window's footer bar (M16 S4 — until that
+window existed it sat in the main window's footer bar). The advanced controls it
+reveals are designed in
 [`reference-agent-settings.md`](reference-agent-settings.md):
 
 | Revealed control | Behaviour |
@@ -182,7 +186,7 @@ Clicking a synced vault's row opens its local folder.
 | Pass counter | `AgentStatus.passes` |
 | First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |
 | Unlock window → | `open_unlock_window` (session) · `unlock_pending` (password) · `pending_unlock` (title) · `cancel_unlock`; the main window never touches the vault password |
-| Settings window (gear menu, tray) | its own reference: [`reference-agent-settings.md`](reference-agent-settings.md) |
+| Settings window (gear menu, tray) | `open_settings_window`; its own reference: [`reference-agent-settings.md`](reference-agent-settings.md) |
 | Gear menu: pause / resume | the `set_paused` command — the loop's flag, not `SyncState` |
 | Gear menu: quit | process exit (no IPC round-trip needed) |
 

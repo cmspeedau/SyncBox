@@ -65,10 +65,10 @@ pub async fn unlock(
     vault_password: String,
 ) -> Result<Status, String> {
     let shared = Arc::clone(shared.inner());
-    let (session, _name) = settings.into_parts();
+    let (session, name) = settings.into_parts();
     tauri::async_runtime::spawn_blocking(move || {
         let mut state = shared.lock().map_err(|e| e.to_string())?;
-        state.unlock_vault(session, vault_password)?;
+        state.unlock_vault(session, name, vault_password)?;
         Ok(current_status(&state))
     })
     .await
@@ -119,7 +119,7 @@ pub async fn unlock_pending(
         let Some((session, name)) = state.take_pending() else {
             return Err("nothing is waiting to be unlocked".to_string());
         };
-        match state.unlock_vault(session.clone(), password) {
+        match state.unlock_vault(session.clone(), name.clone(), password) {
             Ok(()) => Ok(current_status(&state)),
             Err(err) => {
                 // Hand it back: the human is still looking at the window.
@@ -210,6 +210,55 @@ fn close_unlock_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(UNLOCK_WINDOW) {
         let _ = window.close();
     }
+}
+
+/// The settings window's label — one window, reused.
+const SETTINGS_WINDOW: &str = "settings";
+
+/// The settings window's one read: what this build is, and which space the
+/// shell is running. Nothing in it is a secret — a window that can ask for this
+/// must not be handed a password with it.
+#[command]
+pub fn settings_info(shared: State<'_, Shared>) -> Result<dto::SettingsInfo, String> {
+    let state = shared.lock().map_err(|e| e.to_string())?;
+    Ok(dto::settings_info(state.running()))
+}
+
+/// Opens the settings window from the gear menu. The reference gives it a window
+/// of its own rather than a page in the main one, so it is a second top-level
+/// window with its own webview, sized as the mock does.
+#[command]
+pub fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
+        window.show().map_err(|e| e.to_string())?;
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        SETTINGS_WINDOW,
+        tauri::WebviewUrl::App("settings.html".into()),
+    )
+    .title("Syncbox — Settings")
+    .inner_size(640.0, 560.0)
+    .min_inner_size(520.0, 420.0)
+    .center()
+    .build()
+    .map_err(|e| format!("could not open the settings window: {e}"))?;
+    Ok(())
+}
+
+/// Closes the settings window and hands focus back to the main window. The
+/// window's *Change…* controls run it after `lock`: the main window's card is
+/// where a space is chosen again, so the window that started it steps aside.
+#[command]
+pub fn close_settings(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        main.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Locks the vault: stops the loops and drops the keys.

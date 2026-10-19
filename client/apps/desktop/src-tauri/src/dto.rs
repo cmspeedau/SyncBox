@@ -10,7 +10,7 @@ use syncbox_agent::{AgentStatus, SyncEvent, SyncState};
 use syncbox_sync::SyncReport;
 use syncbox_transport::dto::SpaceMode;
 
-use crate::state::Session;
+use crate::state::{Running, Session};
 
 /// Vault settings as the frontend submits them (`camelCase`), turned into the
 /// durable [`Session`] plus the space's display name. The *vault* password is
@@ -73,6 +73,55 @@ impl VaultSettings {
             mode,
         };
         (session, name)
+    }
+}
+
+/// What the settings window reads when it opens: what the shell is running, and
+/// what this build is. Every field is a fact the human could already read in the
+/// main window; no password is among them, because a window that can be asked
+/// this must not be handed a secret with it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsInfo {
+    /// This build's version, as `Cargo.toml` states it.
+    pub agent_version: String,
+    /// The OS and architecture, e.g. `linux x86_64` — what support asks for.
+    pub platform: String,
+    /// The licence the binaries ship under.
+    pub licence: String,
+    /// The running space, or `None` while nothing is unlocked: the window then
+    /// has a session to say nothing about.
+    pub space: Option<RunningSpace>,
+}
+
+/// The running space, in the words the settings window prints.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunningSpace {
+    /// What to call it.
+    pub name: String,
+    /// The server origin, as it was typed at first run.
+    pub server: String,
+    /// `"vault"` or `"sync"`.
+    pub mode: &'static str,
+    /// Where this machine keeps the space's header and its per-folder indexes.
+    pub vault_dir: String,
+}
+
+/// The settings window's one read: the build's facts plus the running space, if
+/// there is one.
+#[must_use]
+pub fn settings_info(running: Option<&Running>) -> SettingsInfo {
+    SettingsInfo {
+        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        platform: format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+        licence: "MIT".to_string(),
+        space: running.map(|running| RunningSpace {
+            name: running.name.clone(),
+            server: running.server.clone(),
+            mode: mode_str(running.mode),
+            vault_dir: running.vault_dir.display().to_string(),
+        }),
     }
 }
 
@@ -652,6 +701,33 @@ mod tests {
         let (session, name) = settings.into_parts();
         assert_eq!(session.mode, SpaceMode::Sync);
         assert_eq!(name, "v", "no name given, the id stands in");
+    }
+
+    #[test]
+    fn the_settings_window_sees_the_space_and_the_build_but_no_password() {
+        let locked = settings_info(None);
+        assert!(locked.space.is_none(), "locked: nothing to describe");
+        assert!(
+            !locked.agent_version.is_empty(),
+            "the build says its version"
+        );
+        assert!(!locked.platform.is_empty());
+        assert_eq!(locked.licence, "MIT");
+
+        let running = Running {
+            name: "Files synced".into(),
+            server: "https://sync.example.org".into(),
+            mode: SpaceMode::Vault,
+            vault_dir: PathBuf::from("/home/me/.syncbox/demo"),
+        };
+        let json = serde_json::to_value(settings_info(Some(&running))).unwrap();
+        assert_eq!(json["space"]["name"], "Files synced");
+        assert_eq!(json["space"]["server"], "https://sync.example.org");
+        assert_eq!(json["space"]["mode"], "vault");
+        assert_eq!(json["space"]["vaultDir"], "/home/me/.syncbox/demo");
+        // The whole point of this read: it is safe to hand a window.
+        assert!(json["space"]["password"].is_null());
+        assert!(json["space"]["serverPassword"].is_null());
     }
 
     #[test]

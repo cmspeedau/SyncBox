@@ -1,14 +1,16 @@
 //! Syncbox desktop shell.
 //!
-//! A thin Tauri v2 window over the Tauri-free `syncbox-agent` crate. The commands
+//! A thin Tauri v2 shell over the Tauri-free `syncbox-agent` crate: three
+//! top-level windows — the main window, the unlock window a vault password is
+//! typed in, and the settings window — each with its own webview. The commands
 //! in [`commands`] only read the shared [`state`] or hand blocking work (unlock,
 //! the network) to a thread; every behaviour and its tests live in the agent
-//! crate. The webview talks to these commands through the DTOs in [`dto`].
+//! crate. The webviews talk to these commands through the DTOs in [`dto`].
 //!
 //! The tray is deliberately left out: it needs `libappindicator`, which is absent
 //! on the dev box and on the CI runner (and `tauri`'s `tray-icon` feature links it
-//! at compile time), so `tauri` is built without it and the window is the whole
-//! UI until a machine that carries the lib builds the app. Autostart and
+//! at compile time), so `tauri` is built without it and the three windows are the
+//! whole UI until a machine that carries the lib builds the app. Autostart and
 //! single-instance shipped here — both are pure-Rust plugins, testable headless.
 
 // Prevents an extra console window on Windows in release builds.
@@ -59,6 +61,9 @@ fn main() {
             commands::unlock_pending,
             commands::pending_unlock,
             commands::cancel_unlock,
+            commands::settings_info,
+            commands::open_settings_window,
+            commands::close_settings,
             commands::lock,
             commands::sync_now,
             commands::set_paused,
