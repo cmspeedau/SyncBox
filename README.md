@@ -92,8 +92,9 @@ snapshot schedule, a read-only About panel), the console flagging a setting that
 reverts on a restart, and uptime plus password age on that panel — are in as
 well. **M16**, rebuilding the desktop agent UI on its references, has landed all
 five slices. What's left of it — the drafted dark palette, the mock's per-vault
-locked rows, **placeholder (on-demand) files**, and the **AppImage updater** — is
-set out under [The M16 slices](#the-m16-slices).
+locked rows, **placeholder (on-demand) files**, and the **update publish job** that
+would put a new build in front of a human — is set out under
+[The M16 slices](#the-m16-slices).
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
 (FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
@@ -193,14 +194,31 @@ directory entirely, and came back byte-identical.
     folder loop (fetch one file's chunks when something opens it) and, for a plain folder
     rather than a mount, the platform's own placeholder API: FileProvider on macOS, CFAPI on
     Windows;
-  - the **AppImage updater** — CI hands out a self-contained AppImage as a build artifact
-    today, so nothing carries a human from "a newer build exists" to "I am running it".
-    Two halves: somewhere immutable to fetch from, with a signed manifest (setting
-    `bundle.createUpdaterArtifacts` yields the `.sig` and the `.zsync` delta metadata, so an
-    update pulls a diff rather than the whole bundle), and `tauri-plugin-updater` on the
-    client behind the About page's update row — the control the settings window leaves out
-    precisely because there was nothing to put behind it. A `.deb` install keeps updating
-    through the package manager, so this is the AppImage's road, not a second one.
+  - the **update publish job** — one CI job that takes the built deb, AppImage and dmg,
+    signs them (`bundle.createUpdaterArtifacts` yields the `.sig`, and the `.zsync` metadata
+    so an update pulls a diff rather than the whole bundle), cuts a GitHub Release so the
+    bytes get an immutable URL, and writes `update.json` — which is the missing piece for
+    every format, not one script per format. The client half is already shipped:
+    `tauri-plugin-updater` handles `deb`, `rpm` and AppImage on Linux, NSIS and MSI on
+    Windows, and replaces the `.app` on macOS, so a hand-written updater script would only
+    reproduce the parts that are already finished — signature checks, privilege escalation,
+    self-replacement, relaunch. Three roads, one manifest:
+    - **AppImage** is the shortest road to a working update: no root, no identity, the
+      bundle replaces itself;
+    - **`.deb`** should be a signed apt repo — `dpkg-scanpackages` or `reprepro` publishing
+      `Packages.gz` and a signed `Release`, one `.sources` file and a key for the user — so
+      updates arrive through `apt-daily` and `unattended-upgrades`, the mechanism Debian
+      users already trust and which works with the app closed. The plugin's in-app
+      `dpkg -i` stays as the bootstrap for whoever has not added the repo;
+    - **`.dmg`** waits on M6, not on code: an unsigned download is a Gatekeeper refusal and
+      the updater refuses an update whose bundle signature differs from the running one, so
+      a Developer ID has to exist before an update can be *installed*, not merely fetched.
+
+    Two keys, two jobs, and they are not interchangeable: the apt key signs the repo's
+    `Release`, the minisign key from `createUpdaterArtifacts` signs the manifest the plugin
+    checks. Publishing to Releases is also where the artefacts *should* live — the artifact
+    pool refills after every PR and carries no retention rule, and a Release is the same
+    bytes with a URL and a lifetime.</newString>
 
 ## License
 

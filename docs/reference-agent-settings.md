@@ -146,9 +146,12 @@ not where the window normally opens.
 2. Selective folder sync — per-device subtree selection.
 3. Vault auto-lock after inactivity.
 4. Notification preferences.
-5. Update checker — now tracked as M16 work: `bundle.createUpdaterArtifacts` for the
-   signed manifest and the `.zsync` delta metadata, `tauri-plugin-updater` behind this
-   window's About row. The row stays unwritten until the fetch exists.
+5. Update checker — tracked as M16 work, and the missing half is publishing rather than
+   checking: `tauri-plugin-updater` already ships the client side for this window's About
+   row (`deb`, `rpm` and AppImage on Linux, `.app` replacement on macOS), but it has
+   nothing to fetch until a CI job signs the bundles, cuts a Release with an immutable URL
+   and writes the `update.json` manifest. The row stays unwritten until that exists, so it
+   never announces a version it cannot install.
 6. Files On Demand / placeholder files — also tracked as M16 work (the README's *The M16
    slices*): a hydrate path in the folder loop, and FileProvider / CFAPI for a plain folder
    rather than the FUSE mount. This is what would grow a *Free up space* affordance in the
