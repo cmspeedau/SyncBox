@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Unlock</title>
+    <!--
+      The unlock window, built to docs/reference-agent-ui.html (v2): a padlock
+      title naming the space, one password field, Cancel / Unlock & sync.
+
+      This window is the only place a vault password is ever typed, and the
+      only webview that has ever held it. The main window hands the chosen
+      session to the shell (open_unlock_window) and never sees the password
+      that releases it; the shell hands the shell-side session to
+      unlock_pending, which unlocks and closes this window.
+
+      A preview exists for browsers outside Tauri: open with `?demo=1` and the
+      invokes answer from fixtures, as in the main window.
+    -->
+    <style>
+      :root {
+        --brand: #0082c9;
+        --brand-dark: #006aa3;
+        --ink: #272833;
+        --muted: #7a8694;
+        --faint: #97a3af;
+        --line: #e6eef4;
+        --hover: #f3f9fd;
+        --ok: #16a34a;
+        --err: #dc2626;
+        font-family: system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; margin: 0; }
+      html, body { height: 100%; }
+      body { background: #fff; color: var(--ink); font-size: 13px; }
+      .hidden { display: none !important; }
+
+      .win { height: 100%; display: flex; flex-direction: column; }
+
+      .bar {
+        flex: none; display: flex; align-items: center; gap: 8px;
+        padding: 11px 13px;
+        background: linear-gradient(160deg, #f1f8fd, #dcebfa);
+        border-bottom: 1px solid rgba(0, 90, 140, 0.12);
+      }
+      .bar svg { flex: none; color: #4c7f9c; }
+      .bar .ttl { font-weight: 700; }
+
+      .body { padding: 15px 15px 13px; }
+      .hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+      input[type="password"] {
+        width: 100%; border: 1px solid #b7cfe0; border-radius: 22px;
+        padding: 11px 13px; font: inherit; outline: none; margin-bottom: 11px;
+      }
+      input[type="password"]:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(0, 130, 201, 0.2); }
+      input[type="password"]:disabled { background: #f7fafc; color: var(--faint); }
+
+      .btns { display: flex; gap: 8px; }
+      .btns button {
+        flex: 1; border: 0; border-radius: 22px; padding: 11px;
+        font: 700 13px system-ui, sans-serif; cursor: pointer;
+      }
+      .btns .pri { background: var(--brand-dark); color: #fff; }
+      .btns .pri:hover { background: #0075b3; }
+      .btns .pri:disabled { opacity: 0.55; cursor: default; }
+      .btns .gh { background: #fff; border: 1px solid #d5dee6; color: var(--ink); }
+      .btns .gh:hover { background: var(--hover); }
+
+      .msg { font-size: 12px; color: var(--muted); margin-top: 9px; min-height: 15px; }
+      .msg.err { color: var(--err); }
+      .msg.ok { color: var(--ok); }
+      .fine { font-size: 10.5px; color: var(--faint); margin-top: 8px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="win" id="win">
+      <div class="bar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">
+          <rect x="4" y="10" width="16" height="11" rx="2" />
+          <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+        </svg>
+        <span class="ttl" id="ttl">Unlock</span>
+      </div>
+
+      <div class="body">
+        <p class="hint" id="hint">Enter the vault password. It is used now, to derive the keys — never written down.</p>
+        <input id="pw" type="password" placeholder="Vault password" autocomplete="current-password" spellcheck="false" />
+        <div class="btns">
+          <button class="gh" id="cancel" type="button">Cancel</button>
+          <button class="pri" id="go" type="button">Unlock &amp; sync</button>
+        </div>
+        <p class="msg" id="msg"></p>
+        <p class="fine">own top-level window · own webview · the main window never sees this password</p>
+      </div>
+    </div>
+
+    <script>
+      // Outside Tauri (a plain browser with ?demo=1), the invokes answer from
+      // fixtures so the window can be looked at — as in the main window.
+      const DEMO = !window.__TAURI__ && new URLSearchParams(location.search).has("demo");
+      function demoInvoke(cmd) {
+        if (cmd === "pending_unlock") return Promise.resolve({ name: "Files synced", mode: "vault" });
+        if (cmd === "unlock_pending") return Promise.resolve(null);
+        return Promise.resolve(null);
+      }
+      const invoke = DEMO ? demoInvoke : window.__TAURI__.core.invoke;
+
+      const $ = (id) => document.getElementById(id);
+
+      function setMsg(text, kind) {
+        $("msg").className = "msg" + (kind ? " " + kind : "");
+        $("msg").textContent = text || "";
+      }
+
+      // The space's name is all the shell tells this window; the session itself
+      // stays on the other side of the IPC boundary.
+      async function boot() {
+        try {
+          const pending = await invoke("pending_unlock");
+          if (!pending) {
+            $("ttl").textContent = "Nothing to unlock";
+            $("hint").classList.add("hidden");
+            $("pw").disabled = true;
+            $("go").disabled = true;
+            setMsg("Open this window from the main window to unlock a space.", "err");
+            return;
+          }
+          const title = `Unlock “${pending.name}”`;
+          $("ttl").textContent = title;
+          document.title = title;
+          $("pw").focus();
+        } catch (err) {
+          setMsg(String(err), "err");
+        }
+      }
+
+      async function unlock() {
+        const password = $("pw").value;
+        if (!password) {
+          setMsg("Enter the vault password.", "err");
+          $("pw").focus();
+          return;
+        }
+        setMsg("Deriving keys…");
+        $("go").disabled = true;
+        try {
+          await invoke("unlock_pending", { password });
+          // The shell closes this window on success — a browser preview has
+          // nothing to close, so it says what happened instead.
+          if (DEMO) setMsg("Unlocked (demo). The window would close here.", "ok");
+        } catch (err) {
+          setMsg(String(err), "err");
+          $("go").disabled = false;
+          $("pw").select();
+        }
+      }
+
+      $("go").addEventListener("click", unlock);
+      $("pw").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") unlock();
+      });
+      $("cancel").addEventListener("click", async () => {
+        try {
+          await invoke("cancel_unlock");
+        } catch (err) {
+          console.error(err);
+        }
+      });
+
+      boot();
+    </script>
+  </body>
+</html>

@@ -10,25 +10,34 @@ adopts the web UI's design language
 ([`reference-web-ui.md`](reference-web-ui.md)): light tinted headers instead
 of the blue gradient bar, no drawn window chrome, 22 px pills.
 
-Status: the **main window and the pause are shipped** — M16 S1 rebuilt
-`client/apps/desktop/src/index.html` on this design: tinted bar, gear click
-menu, first-run card (connect → pick from server → auto folder → unlock),
-per-folder rows with state chips, usage line. M16 S2 added the one new agent
-concept: a paused flag the loop honors (`set_paused` over IPC; edits made
-while held wait on disk and the resume pass uploads them at once), drawn as
-the amber dot, the amber banner and the gear's Pause ⇄ Resume item, whose
-label follows the state. Four honest deviations: the list shows the one
-space's folders (the client is single-space today, not the multi-vault mock);
-the gear carries only what exists (Sync now, Pause syncing, Lock vault, Quit —
-Sync now greys out while paused, Settings… joins in S4); the hidden tier's
-creation row writes a header on this machine (`create_vault`) — the mock's
-name-only-on-server version needs an endpoint the console still owns alone;
-and a Recent activity disclosure sits under the list until the settings
-window's Notifications page inherits it. Still pending: the separate Unlock
-and Settings windows (S3/S4 — the main window hosts the unlock form itself
-today, and the one password serves server and vault as the backend has always
-done), the tray ([`reference-agent-tray.md`](reference-agent-tray.md), S5,
-gated on `libappindicator`), and the drafted dark palette. The
+Status: the **main window, the pause and the separate unlock window are
+shipped** — M16 S1 rebuilt `client/apps/desktop/src/index.html` on this
+design: tinted bar, gear click menu, first-run card (connect → pick from
+server → auto folder → unlock), per-folder rows with state chips, usage line.
+M16 S2 added the one new agent concept: a paused flag the loop honors
+(`set_paused` over IPC; edits made while held wait on disk and the resume pass
+uploads them at once), drawn as the amber dot, the amber banner and the gear's
+Pause ⇄ Resume item, whose label follows the state. M16 S3 split the two
+secrets and gave the second one its own window: the unlock window
+(`client/apps/desktop/src/unlock.html`, 340 × 258) is the only webview a
+*vault* password ever enters, opened by `open_unlock_window` and consumed by
+`unlock_pending`; while it stands the main window's card says it is waiting and
+offers *Cancel*, and a **sync space** — which has no header to unlock — skips
+the window and unlocks straight from the card with the server password alone.
+Five honest deviations: the list shows the one space's folders (the client is
+single-space today, not the multi-vault mock); the gear carries only what
+exists (Sync now, Pause syncing, Lock vault, Quit — Sync now greys out while
+paused, Settings… joins in S4); the hidden tier's creation row writes a header
+on this machine (`create_vault`) — the mock's name-only-on-server version needs
+an endpoint the console still owns alone — and asks for the vault password
+there, in its own field, because it is the machine writing the header; and a
+Recent activity disclosure sits under the list until the settings window's
+Notifications page inherits it. The mock's per-vault **locked rows** are not
+built yet: the client keeps no session between launches, so every start is the
+connect card, and the reference's "row flips to `synced`" is the main view
+arriving instead. Still pending: the Settings window (S4), the tray
+([`reference-agent-tray.md`](reference-agent-tray.md), S5, gated on
+`libappindicator`), and the drafted dark palette. The
 settings window is **not part of this mock** — its design lives in
 [`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
 main window's bar and the tray menu are its entry points.
@@ -42,7 +51,7 @@ own reference:
 | Window | Size | Role |
 |---|---|---|
 | Main | 420 × 600 | status bar, vault list, usage line |
-| Unlock | 340 auto | password entry; the only webview that ever sees the password |
+| Unlock | 340 × 258 | password entry; the only webview that ever sees the vault password |
 
 On top of these two windows, the always-present **tray icon** carries a
 small native menu — see [`reference-agent-tray.md`](reference-agent-tray.md).
@@ -137,6 +146,17 @@ Unlock window: padlock title naming the vault, password field, *Cancel* /
 row (click the row or its *Unlock* button). Closing the main window never
 destroys tray presence; closing unlock cancels the attempt.
 
+**As shipped (M16 S3).** One window, reused (`open_unlock_window` stores the
+pending session and focuses the window if it is already up) and consumed by
+`unlock_pending`, which closes it on success and hands the session back to the
+window on failure so a retry works. It learns the space's *name* and nothing
+else (`pending_unlock`) — the session, and the server password in it, stay on
+the shell's side of the IPC boundary. *Cancel* and the main window's *Cancel*
+link both call `cancel_unlock`. The mock opens it from a locked vault row;
+with no session kept between launches there are no locked rows yet, so the
+**Save & unlock** button opens it, and the card it leaves behind says it is
+waiting for the password.
+
 ## Everyday states
 
 | State | Dot | Bar text | Extras |
@@ -161,7 +181,7 @@ Clicking a synced vault's row opens its local folder.
 | Usage line | `Index::files()`, `Index::referenced_bytes()` — over IPC as the `usage` command since M16 S1 |
 | Pass counter | `AgentStatus.passes` |
 | First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |
-| Unlock window → | `unlock` command; main window never touches the password |
+| Unlock window → | `open_unlock_window` (session) · `unlock_pending` (password) · `pending_unlock` (title) · `cancel_unlock`; the main window never touches the vault password |
 | Settings window (gear menu, tray) | its own reference: [`reference-agent-settings.md`](reference-agent-settings.md) |
 | Gear menu: pause / resume | the `set_paused` command — the loop's flag, not `SyncState` |
 | Gear menu: quit | process exit (no IPC round-trip needed) |
