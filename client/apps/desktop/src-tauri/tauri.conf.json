@@ -32,6 +32,13 @@
     "category": "Utility",
     "shortDescription": "File sync, with an encrypted vault as a choice",
     "longDescription": "Syncbox keeps a folder — or a mounted vault — in sync with a Syncbox server. A vault is encrypted on the device before anything leaves it; a sync space is not, and is stored on the server in the clear.",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libayatana-appindicator3-1"
+        ]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

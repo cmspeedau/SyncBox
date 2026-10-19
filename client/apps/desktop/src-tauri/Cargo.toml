@@ -11,16 +11,23 @@ license = "MIT"
 # compile it and its tests, and `cargo tauri build` bundles it from the workspace.
 # Its build needs the Tauri system libraries: webkit2gtk-4.1, gtk-3, libsoup-3.0,
 # javascriptcoregtk-4.1 (present on a desktop; CI's `Client (Rust)` job is pinned to
-# the runner that has them). The tray icon additionally needs libappindicator, so the
-# tray is left behind a feature for now (see README); M6 packaging installs it.
+# the runner that has them). The tray backend opens libayatana-appindicator with
+# `dlopen` at *runtime*, not at link time, so the tray compiles everywhere and the
+# package manager only matters where the app runs — see src/tray.rs.
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# default-features = false drops `tray-icon` (needs libappindicator) and the
-# image decoders; `wry` is the real runtime and must be enabled back explicitly.
-tauri = { version = "2", default-features = false, features = ["wry"] }
+# default-features = false keeps the dependency set small; what the app does use
+# is named: `wry` is the real runtime, `tray-icon` is the tray (its Linux backend
+# dlopens libayatana-appindicator at runtime, costing the build nothing), and
+# `image-png` lets `include_image!` read the tray glyph.
+tauri = { version = "2", default-features = false, features = ["wry", "tray-icon", "image-png"] }
+# The tray probes for the same library the tray backend opens, the same way
+# (`dlopen` by soname), so a machine without it degrades to windows-only
+# instead of taking the panics that are `libappindicator-sys`'s failure mode.
+libloading = "0.8"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"

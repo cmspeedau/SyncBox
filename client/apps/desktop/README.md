@@ -6,6 +6,7 @@ sync list, a gear click menu, and a first-run card that connects to the server,
 picks a space, and takes the folder the server derives. Two more windows of
 their own, per the references: the unlock window a vault password is typed in
 (`docs/reference-agent-ui.md`) and the settings window (`docs/reference-agent-settings.md`).
+And a tray icon for the hours no window is open (`docs/reference-agent-tray.md`).
 
 The app is a **member of the client Cargo workspace** — see `client/Cargo.toml` —
 so `cargo check`/`clippy`/`test --workspace` compile the shell and run its tests, and
@@ -37,6 +38,8 @@ src-tauri/         Rust: Tauri windows + commands over the Agent; icons; tauri.c
   src/commands.rs  the #[tauri::command] surface (thin; blocking work off-thread)
   src/dto.rs       JSON shapes the webview sees, mapped from agent types (tested)
   src/prefs.rs     the stored switches (prefs.json in the app config dir; tested)
+  src/tray.rs      the tray icon and its native menu; the state mirror and the
+                   no-indicator fallback (the badge drawing is tested; the menu is not)
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
   index.html       the main window
   unlock.html      the unlock window (its own top-level window; S3)
@@ -146,17 +149,31 @@ version, logs or update check — and "Remove vault from this computer" waits fo
 session persistence, since a client that forgets the space on every launch has
 nothing local to remove.
 
+**M16 S5 specifics.** The tray (`src/tray.rs` — no HTML, it is a native menu) is
+the reference's rows and nothing more: a disabled header spelling the state,
+*Open Syncbox*, *Open sync folder* (the first chosen folder, through
+`open_folder`, greyed while nothing is unlocked), *Lock vault* ⇄ *Unlock
+vault…*, *Settings…* and *Quit*. Built once, then relabelled: a two-second watch
+thread reads the same `current_status` the window polls and posts what it found
+with `run_on_main_thread`, because menus belong to the event loop's thread. A
+plain icon click raises the window; the menu is what a right-click brings up. The
+glyph's corner badge is painted at runtime from the state (`badge`), the same
+colours the status bar's dot uses. Whether a tray is even *attempted* is decided
+by `indicator_library_present`: `tauri`'s `tray-icon` feature builds with no
+system package at all (the backend `dlopen`s libayatana-appindicator, and
+`libappindicator-sys` panics if neither soname opens), so the app asks the same
+question first and falls back to windows-only with one line on stderr. While a
+tray is up, closing the main window hides it and the loops keep syncing — *Quit*
+is the only thing that ends the process; while none is, the close quits as it
+always did.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
-(M16 S3), and the settings window (M16 S4). **Still deferred:** the **tray
-icon** — it needs
-`libappindicator`, which is absent here, so `tauri` is pulled with
-`default-features = false, features = ["wry"]` precisely so the missing lib
-(and image decoders) aren't required to compile; the three windows are the whole UI
-until a machine carrying the lib builds the app (S5). A Node/Svelte frontend
-behind `frontendDist` (instead of this static one) and code signing remain
-open.
+(M16 S3), the settings window (M16 S4), and the tray (M16 S5). **Still
+deferred:** the drafted dark palette and the mock's per-vault locked rows (both
+M16, above), a Node/Svelte frontend behind `frontendDist` (instead of this static
+one) and code signing.
 
 ## Building the app
 
@@ -205,6 +222,9 @@ the *Run at login* switch in the settings window's footer bar writes or removes 
 XDG autostart entry (`tauri-plugin-autostart`, wrapped as the
 `get_autostart`/`set_autostart` commands and
 round-trip-tested headlessly through tauri's mock runtime in a sandboxed `$HOME`).
-The tray icon is what remains: `libappindicator` is absent on both the dev box and the
-CI runner, so until one carries it `tauri` stays on
-`default-features = false, features = ["wry"]` and the three windows are the whole UI.
+The tray ships with the bundle and cost the build nothing: the backend `dlopen`s
+libayatana-appindicator at runtime, so CI compiles the tray on a runner that has no
+such package. Auto-derivation cannot see a library the binary never links, so the
+`.deb` names `libayatana-appindicator3-1` in `bundle.linux.deb.depends`; an AppImage
+cannot carry it either, so there the tray appears only on a host that already has the
+lib — which the app detects, and degrades from quietly.
