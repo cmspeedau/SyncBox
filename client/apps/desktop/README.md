@@ -174,8 +174,13 @@ pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
 (M16 S3), the settings window (M16 S4), and the tray (M16 S5). **Still
 deferred:** the drafted dark palette and the mock's per-vault locked rows (both
-M16, above), a Node/Svelte frontend behind `frontendDist` (instead of this static
-one) and code signing.
+M16, above); **placeholder / on-demand files**, which want a hydrate path in the
+folder loop and the platform's placeholder API (FileProvider, CFAPI) for a plain
+folder — `syncbox mount` already serves files this way over FUSE; the **AppImage
+updater**, which wants somewhere immutable to fetch a signed manifest from
+(`bundle.createUpdaterArtifacts` yields the `.sig` and the `.zsync` delta metadata)
+and `tauri-plugin-updater` behind the settings window's About row; a Node/Svelte
+frontend behind `frontendDist` (instead of this static one); and code signing.
 
 ## Building the app
 
@@ -237,9 +242,17 @@ runner, which carries the webkit dev libraries and lets tauri do the deb via `ar
 uploads them as build artifacts. They are unsigned, like everything here — publishing
 and signing stay deliberate acts, each to its own runner and identity.
 
+And nothing updates a running install: a newer build exists as an artifact, and the road
+ends there. The AppImage's updater is M16 work — `bundle.createUpdaterArtifacts` for the
+`.sig` and the `.zsync` delta metadata, somewhere immutable to publish them from, and
+`tauri-plugin-updater` behind the settings window's About row. A `.deb` keeps updating
+through the package manager, so that updater is the AppImage's road rather than a
+second one.
+
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
+| Any (updates) | signed manifest + `.zsync` deltas | deferred — M16 work; nothing fetches a newer build today |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
 

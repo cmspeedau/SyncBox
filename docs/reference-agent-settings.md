@@ -115,7 +115,7 @@ else:
 | Remove vault from this computer | ❌ not until there is something to remove: the client keeps no session between launches, so today a locked client has already forgotten the space. The row arrives with persistence, and it must never delete the sync folders |
 | Notifications page | ❌ the whole page is `new`; its four toggles would be four dead switches, so the page is not in the nav. The main window's Recent activity disclosure stays until this page exists |
 | Apply settings | ❌ every shipped control writes at once; the button returns with choose-folders, whose folder work is deliberate |
-| Device id, server version, logs, updates | ❌ `new`; the About page says so in one line rather than showing rows that answer nothing |
+| Device id, server version, logs, updates | ❌ `new`; the About page says so in one line rather than showing rows that answer nothing. The update half is scoped now (M16's list in the README), so the row has something to arrive with |
 
 While nothing is unlocked the window says so and hides the session's rows — the
 two app-wide switches stay live, because they belong to the app and not to a
@@ -146,16 +146,23 @@ not where the window normally opens.
 2. Selective folder sync — per-device subtree selection.
 3. Vault auto-lock after inactivity.
 4. Notification preferences.
-5. Update checker.
-6. ~~Hidden-tier pref (`Show hidden`)~~ — **shipped** (M16 S1: the pref and the
+5. Update checker — now tracked as M16 work: `bundle.createUpdaterArtifacts` for the
+   signed manifest and the `.zsync` delta metadata, `tauri-plugin-updater` behind this
+   window's About row. The row stays unwritten until the fetch exists.
+6. Files On Demand / placeholder files — also tracked as M16 work (the README's *The M16
+   slices*): a hydrate path in the folder loop, and FileProvider / CFAPI for a plain folder
+   rather than the FUSE mount. This is what would grow a *Free up space* affordance in the
+   Sync Files page.
+7. ~~Hidden-tier pref (`Show hidden`)~~ — **shipped** (M16 S1: the pref and the
    controls it gates; M16 S4: its switch, in this window's footer bar).
 
 ## Dropped from the OneDrive baseline on purpose
 
-Multi-account (one server, one vault per sync root), Files On Demand
-(everything syncs), Personal Vault (the whole vault locks), Insider rings,
-in-window storage management (that is the web Files UI), pause-on-battery-
-saver and bandwidth limits (deferred, not rejected).
+Multi-account (one server, one vault per sync root), Personal Vault (the whole
+vault locks), Insider rings, in-window storage management (that is the web Files
+UI), pause-on-battery-saver and bandwidth limits (deferred, not rejected). Files
+On Demand left this list once placeholder files became M16 work: everything
+syncing is a stage this client is at, not a reason never to do it.
 
 ## Design tokens
 

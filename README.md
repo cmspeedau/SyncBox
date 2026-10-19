@@ -91,9 +91,9 @@ rotate the server password), and settings driven from the console (a live
 snapshot schedule, a read-only About panel), the console flagging a setting that
 reverts on a restart, and uptime plus password age on that panel — are in as
 well. **M16**, rebuilding the desktop agent UI on its references, has landed all
-five slices; what's left of it is the drafted dark palette and the mock's
-per-vault locked rows, and both wait on the client remembering a session between
-launches.
+five slices. What's left of it — the drafted dark palette, the mock's per-vault
+locked rows, **placeholder (on-demand) files**, and the **AppImage updater** — is
+set out under [The M16 slices](#the-m16-slices).
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
 (FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
@@ -182,8 +182,25 @@ directory entirely, and came back byte-identical.
   a tray exists to raise it again. Where the desktop carries no indicator library it stays
   windows-only with no crash — the backend `dlopen`s libayatana-appindicator, so the build
   needs no package and CI is unaffected.
-- **Left:** the drafted dark palette, and the mock's per-vault *locked rows* — both wait on
-  the client remembering a session between launches.
+- **Left:**
+  - the drafted **dark palette**, and the mock's per-vault **locked rows** — both wait on
+    the client remembering a session between launches;
+  - **placeholder / on-demand files** — what the OneDrive baseline calls *Files On Demand*:
+    every file in the space shows in the folder and its bytes arrive when a file is opened,
+    so a 200 GB space costs 200 GB of disk only if the human reads all of it. Half of it is
+    already true — the index knows every file without holding its content, and
+    `syncbox mount` (M5) serves exactly that over FUSE. Missing is a hydrate path in the
+    folder loop (fetch one file's chunks when something opens it) and, for a plain folder
+    rather than a mount, the platform's own placeholder API: FileProvider on macOS, CFAPI on
+    Windows;
+  - the **AppImage updater** — CI hands out a self-contained AppImage as a build artifact
+    today, so nothing carries a human from "a newer build exists" to "I am running it".
+    Two halves: somewhere immutable to fetch from, with a signed manifest (setting
+    `bundle.createUpdaterArtifacts` yields the `.sig` and the `.zsync` delta metadata, so an
+    update pulls a diff rather than the whole bundle), and `tauri-plugin-updater` on the
+    client behind the About page's update row — the control the settings window leaves out
+    precisely because there was nothing to put behind it. A `.deb` install keeps updating
+    through the package manager, so this is the AppImage's road, not a second one.
 
 ## License
 
