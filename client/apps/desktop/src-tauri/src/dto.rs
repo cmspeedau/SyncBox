@@ -13,12 +13,18 @@ use syncbox_transport::dto::SpaceMode;
 use crate::state::Session;
 
 /// Vault settings as the frontend submits them (`camelCase`), turned into the
-/// durable [`Session`] plus the password it needs to unlock.
+/// durable [`Session`] plus the space's display name. The *vault* password is
+/// not among these fields: it belongs to the unlock window (see
+/// [`crate::commands::open_unlock_window`]), so the main window's copy of the
+/// session never carries it.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VaultSettings {
     /// Server origin, e.g. `https://sync.example`.
     pub server: String,
+    /// The *server* password — the secret the web login asks for, which buys
+    /// the bearer token every pass dials with. Not the vault password.
+    pub server_password: String,
     /// The server's id for the vault.
     pub vault_id: String,
     /// Directory holding `vault.json`.
@@ -31,15 +37,17 @@ pub struct VaultSettings {
     /// [`SpaceMode::effective`] takes for a server that predates the field.
     #[serde(default)]
     pub mode: Option<String>,
-    /// Vault password (never persisted; only used to unlock this session — and
-    /// a sync space, which has no keys, ignores it here).
-    pub password: String,
+    /// The space's display name, for the unlock window's title. Blank falls
+    /// back to the id, which is all a hand-typed space has.
+    #[serde(default)]
+    pub name: String,
 }
 
 impl VaultSettings {
-    /// Splits into the durable [`Session`] and the (transient) password. An
+    /// Splits into the durable [`Session`] and the space's display name. An
     /// empty or whitespace-only folder is dropped, so "Add folder" then leaving
     /// it blank is harmless.
+    #[must_use]
     pub fn into_parts(self) -> (Session, String) {
         let folders = self
             .folders
@@ -51,15 +59,35 @@ impl VaultSettings {
             Some("sync") => SpaceMode::Sync,
             _ => SpaceMode::Vault,
         };
+        let name = if self.name.trim().is_empty() {
+            self.vault_id.clone()
+        } else {
+            self.name.trim().to_owned()
+        };
         let session = Session {
             server: self.server,
+            server_password: self.server_password,
             vault_id: self.vault_id,
             vault_dir: PathBuf::from(self.vault_dir),
             folders,
             mode,
         };
-        (session, self.password)
+        (session, name)
     }
+}
+
+/// What the unlock window (and the main window's waiting card) may know about a
+/// pending unlock: which space, and in which mode. Deliberately no secret — the
+/// password travels the other way, into the window's own webview.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingInfo {
+    /// The space's display name, for the title.
+    pub name: String,
+    /// `"vault"` or `"sync"`. The window only ever opens for a vault — a sync
+    /// space has no header to unlock — but the shape says which rather than
+    /// assuming it.
+    pub mode: &'static str,
 }
 
 /// Resolves a server-side location against a client's home directory, as the
@@ -573,14 +601,16 @@ mod tests {
     fn settings_map_to_a_session_and_drop_blank_folders() {
         let settings = VaultSettings {
             server: "https://srv".into(),
+            server_password: "server-pw".into(),
             vault_id: "v".into(),
             vault_dir: "/vault".into(),
             folders: vec!["/files".into(), "  ".into(), "/backup".into()],
             mode: None,
-            password: "pw".into(),
+            name: "  Files synced  ".into(),
         };
-        let (session, password) = settings.into_parts();
+        let (session, name) = settings.into_parts();
         assert_eq!(session.server, "https://srv");
+        assert_eq!(session.server_password, "server-pw", "the token's secret");
         assert_eq!(session.vault_id, "v");
         assert_eq!(session.vault_dir, PathBuf::from("/vault"));
         assert_eq!(session.mode, SpaceMode::Vault, "no mode reads vault");
@@ -588,7 +618,23 @@ mod tests {
             session.folders,
             vec![PathBuf::from("/files"), PathBuf::from("/backup")]
         );
-        assert_eq!(password, "pw");
+        assert_eq!(name, "Files synced", "trimmed, for the window's title");
+    }
+
+    #[test]
+    fn a_nameless_space_is_titled_by_its_id() {
+        // A hand-typed space has an id and nothing else to call it.
+        let settings = VaultSettings {
+            server: "https://srv".into(),
+            server_password: "pw".into(),
+            vault_id: "vault-7".into(),
+            vault_dir: "/state".into(),
+            folders: vec!["/files".into()],
+            mode: None,
+            name: String::new(),
+        };
+        let (_, name) = settings.into_parts();
+        assert_eq!(name, "vault-7");
     }
 
     #[test]
@@ -596,15 +642,30 @@ mod tests {
         // The one word that decides whether the session derives keys.
         let json = r#"{
             "server": "https://srv",
+            "serverPassword": "server-pw",
             "vaultId": "v",
             "vaultDir": "/state",
             "folders": ["/files"],
-            "mode": "sync",
-            "password": "pw"
+            "mode": "sync"
         }"#;
         let settings: VaultSettings = serde_json::from_str(json).unwrap();
-        let (session, _) = settings.into_parts();
+        let (session, name) = settings.into_parts();
         assert_eq!(session.mode, SpaceMode::Sync);
+        assert_eq!(name, "v", "no name given, the id stands in");
+    }
+
+    #[test]
+    fn a_pending_unlock_says_which_space_without_a_secret() {
+        let json = serde_json::to_value(PendingInfo {
+            name: "Files synced".into(),
+            mode: "vault",
+        })
+        .unwrap();
+        assert_eq!(json["name"], "Files synced");
+        assert_eq!(json["mode"], "vault");
+        // The window asks who, never what: nothing here is a credential.
+        assert!(json.get("password").is_none());
+        assert!(json.get("serverPassword").is_none());
     }
 
     #[test]

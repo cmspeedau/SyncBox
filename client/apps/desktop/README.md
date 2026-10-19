@@ -29,13 +29,15 @@ agent across the IPC boundary (the DTOs in `src-tauri/src/dto.rs`).
 ## Shape
 
 ```
-src-tauri/         Rust: Tauri window + commands over the Agent; icons; tauri.conf.json
+src-tauri/         Rust: Tauri windows + commands over the Agent; icons; tauri.conf.json
   src/main.rs      window + command registration; the `today()` clock edge
   src/state.rs     shared state: the SyncWorker handles + re-auth client factory
   src/commands.rs  the #[tauri::command] surface (thin; blocking work off-thread)
   src/dto.rs       JSON shapes the webview sees, mapped from agent types (tested)
   src/prefs.rs     the stored switches (prefs.json in the app config dir; tested)
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
+  index.html       the main window
+  unlock.html      the unlock window (its own top-level window; S3)
 ```
 
 The window's *behaviour* lives in `../../crates/agent`, not here, so it is
@@ -49,7 +51,11 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 | `status` | current state (`locked`/`idle`/`syncing`/`error`), whether the loops are paused, last sync, last pass |
 | `activity` | recent sync outcomes, for the activity feed |
 | `usage` | files and referenced bytes per synced folder (the row meta + usage line) |
-| `unlock` | open a space — deriving keys for a vault, nothing for a sync space — and start one loop per folder |
+| `unlock` | open a space — deriving keys for a vault, nothing for a sync space — and start one loop per folder (the main window only calls this for a sync space; a vault goes through the unlock window) |
+| `open_unlock_window` | hold the chosen session and open the unlock window on it (a vault only) |
+| `unlock_pending` | unlock the held session with the password the unlock window collected, then close that window |
+| `pending_unlock` | which space the open unlock window is for — name and mode, never a secret |
+| `cancel_unlock` | drop the pending session and close the unlock window |
 | `sync_now` | ask the loops for an immediate pass (non-blocking; refused while paused) |
 | `set_paused` | hold or release every loop's passes (the gear's Pause ⇄ Resume) |
 | `lock` | stop the loops and drop the keys |
@@ -74,10 +80,11 @@ static frontend reaches the commands.
 **Built and clippy-clean here, but not launched from CI** — the CI runner is
 headless, so a window can't be opened there; `cargo build` (links
 webkit/gtk/soup) plus the agent + DTO + prefs tests are the CI verification,
-and `index.html` carries a browser preview (`?demo=setup|idle|sync|err|pause`,
-`&hidden=1`, `&pick=1`, `&menu=1`): every invoke answers from fixtures outside Tauri, so
-the window can be screenshotted and checked against the mock without the
-shell. Inside Tauri the parameter is unreachable.
+and `index.html` carries a browser preview (`?demo=setup|step2|idle|sync|err|pause|pending`,
+`&hidden=1`, `&pick=1`, `&menu=1`, `&pending=1`) and `unlock.html` its own
+(`?demo=1`): every invoke answers from fixtures outside Tauri, so the windows
+can be screenshotted and checked against the mock without the shell. Inside
+Tauri the parameter is unreachable.
 
 **M16 S1 specifics.** The main window is the reference's, with three honest
 deviations: the row list shows the one space's folders (the client is
@@ -99,11 +106,28 @@ and a standing request runs the moment the loops resume, because resume marks
 the loop dirty instead of waiting out the interval. A lock drops the loops, so
 the state does not survive one — a fresh unlock starts running.
 
+**M16 S3 specifics.** The two passwords are now two secrets asked for in two
+places. The **server** password (the web login's, which buys the bearer token)
+stays in the main window's card; the **vault** password — which derives the
+keys — is typed only in `unlock.html`, its own top-level window with its own
+webview. `open_unlock_window` holds the chosen session in `AppState::pending`
+and opens the window; `unlock_pending` consumes it, unlocks, and closes the
+window (a failed attempt puts the session back so the retry works); a failure
+the human abandons is dropped by `cancel_unlock`, and a lock drops it too. The
+window learns nothing but the space's name and mode (`pending_unlock`), so no
+secret crosses the IPC boundary in that direction. While it stands, the main
+window's card says it is waiting and offers *Cancel* — the fields keep their
+values (the session was snapshotted) but stop being editable. A **sync space**
+has no header to unlock and skips all of it: the card calls `unlock` directly
+with an empty vault password. `create_vault` in the hidden tier has grown its
+own vault-password field, since the card's other password field is no longer
+the vault's.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
-main window (M16 S1), and the pause (M16 S2). **Still deferred:** the separate Unlock and
-Settings windows (M16 S3/S4 — today the main window hosts the unlock form
-itself) and the **tray icon** — it needs
+main window (M16 S1), the pause (M16 S2), and the separate unlock window
+(M16 S3). **Still deferred:** the Settings window (M16 S4) and the **tray
+icon** — it needs
 `libappindicator`, which is absent here, so `tauri` is pulled with
 `default-features = false, features = ["wry"]` precisely so the missing lib
 (and image decoders) aren't required to compile; the window is the whole UI

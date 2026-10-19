@@ -51,19 +51,165 @@ pub fn activity(shared: State<'_, Shared>) -> Result<Vec<Activity>, String> {
 /// How many activity rows the merged feed keeps.
 const HISTORY_LIMIT: usize = 50;
 
-/// Unlocks the vault and starts a background loop per folder. Blocks on key
-/// derivation, so it runs off the main thread.
+/// Unlocks the space and starts a background loop per folder, with the vault
+/// password the caller collected. The main window only calls this for a sync
+/// space, whose password it does not have and which has no header to unlock;
+/// a vault goes through [`open_unlock_window`] instead, so its password never
+/// reaches the main window's webview.
+///
+/// Blocks on key derivation, so it runs off the main thread.
 #[command]
-pub async fn unlock(shared: State<'_, Shared>, settings: VaultSettings) -> Result<Status, String> {
+pub async fn unlock(
+    shared: State<'_, Shared>,
+    settings: VaultSettings,
+    vault_password: String,
+) -> Result<Status, String> {
     let shared = Arc::clone(shared.inner());
-    let (session, password) = settings.into_parts();
+    let (session, _name) = settings.into_parts();
     tauri::async_runtime::spawn_blocking(move || {
         let mut state = shared.lock().map_err(|e| e.to_string())?;
-        state.unlock_vault(session, password)?;
+        state.unlock_vault(session, vault_password)?;
         Ok(current_status(&state))
     })
     .await
     .map_err(|e| format!("unlock task failed: {e}"))?
+}
+
+/// Opens the space's unlock window: a top-level window whose own webview is the
+/// only place the vault password is typed.
+///
+/// The session it will unlock is held in this process, not in the window, and
+/// the window learns nothing but the space's name — so nothing secret crosses
+/// the IPC boundary until the human types it. A sync space has no header to
+/// unlock and is refused here: its caller unlocks directly.
+#[command]
+pub fn open_unlock_window(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    settings: VaultSettings,
+) -> Result<(), String> {
+    let (session, name) = settings.into_parts();
+    if session.folders.is_empty() {
+        return Err("add at least one folder to keep in sync".into());
+    }
+    if !session.mode.is_encrypted() {
+        return Err("a sync space has no vault password to ask for".into());
+    }
+    shared
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_pending(session, name.clone());
+    show_unlock_window(&app, &Arc::clone(shared.inner()), &name)
+}
+
+/// Unlocks the pending session with the password the unlock window collected,
+/// then closes that window. Blocks on key derivation, so off the main thread.
+///
+/// A failed attempt puts the session back, so the window's retry works; a
+/// successful one leaves no pending state behind.
+#[command]
+pub async fn unlock_pending(
+    app: AppHandle,
+    shared: State<'_, Shared>,
+    password: String,
+) -> Result<Status, String> {
+    let shared = Arc::clone(shared.inner());
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let mut state = shared.lock().map_err(|e| e.to_string())?;
+        let Some((session, name)) = state.take_pending() else {
+            return Err("nothing is waiting to be unlocked".to_string());
+        };
+        match state.unlock_vault(session.clone(), password) {
+            Ok(()) => Ok(current_status(&state)),
+            Err(err) => {
+                // Hand it back: the human is still looking at the window.
+                state.set_pending(session, name);
+                Err(err)
+            }
+        }
+    })
+    .await
+    .map_err(|e| format!("unlock task failed: {e}"))?;
+    if outcome.is_ok() {
+        close_unlock_window(&app);
+    }
+    outcome
+}
+
+/// The pending unlock, or `null`: which space the open window is for. Carries
+/// no secret, so the unlock window may title itself with it and the main window
+/// may tell "waiting for the password" from "ready to go".
+#[command]
+pub fn pending_unlock(shared: State<'_, Shared>) -> Result<Option<dto::PendingInfo>, String> {
+    let state = shared.lock().map_err(|e| e.to_string())?;
+    Ok(state.pending_info().map(|(name, mode)| dto::PendingInfo {
+        name: name.to_owned(),
+        mode: dto::mode_str(mode),
+    }))
+}
+
+/// Drops a pending unlock and closes its window: the unlock window's Cancel,
+/// and the main window's way back to the setup card.
+#[command]
+pub fn cancel_unlock(app: AppHandle, shared: State<'_, Shared>) -> Result<(), String> {
+    shared.lock().map_err(|e| e.to_string())?.clear_pending();
+    close_unlock_window(&app);
+    Ok(())
+}
+
+/// The unlock window's label. One window, reused: the pending session behind it
+/// is a single slot, so a second window would have nothing to unlock.
+const UNLOCK_WINDOW: &str = "unlock";
+
+/// The window's title, in the mock's wording: the space's name in quotes.
+fn unlock_title(name: &str) -> String {
+    format!("Unlock “{name}”")
+}
+
+/// Shows the unlock window, focusing the one already open rather than opening a
+/// second.
+fn show_unlock_window(app: &AppHandle, shared: &Shared, name: &str) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(UNLOCK_WINDOW) {
+        window
+            .set_title(&unlock_title(name))
+            .map_err(|e| e.to_string())?;
+        window.show().map_err(|e| e.to_string())?;
+        return window.set_focus().map_err(|e| e.to_string());
+    }
+    let window = tauri::WebviewWindowBuilder::new(
+        app,
+        UNLOCK_WINDOW,
+        tauri::WebviewUrl::App("unlock.html".into()),
+    )
+    .title(unlock_title(name))
+    .inner_size(340.0, 258.0)
+    .resizable(false)
+    .minimizable(false)
+    .maximizable(false)
+    .center()
+    .build()
+    .map_err(|e| format!("could not open the unlock window: {e}"))?;
+
+    // Closing the window — its title bar's X, not only the Cancel button —
+    // gives the attempt up. The pending session carries the server password and
+    // must not outlive the window that was going to use it.
+    let shared = Arc::clone(shared);
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut state) = shared.lock() {
+                state.clear_pending();
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Closes the unlock window if it is open. Its absence is not an error: the
+/// human may have closed it themselves.
+fn close_unlock_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(UNLOCK_WINDOW) {
+        let _ = window.close();
+    }
 }
 
 /// Locks the vault: stops the loops and drops the keys.

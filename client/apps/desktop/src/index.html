@@ -11,8 +11,9 @@
       palette lands with the web console's, in a later slice.
 
       A preview exists for browsers outside Tauri: open with
-      `?demo=setup|idle|sync|err` and every invoke answers from fixtures,
-      exactly the mock's own demo idiom. Inside Tauri the parameter is ignored.
+      `?demo=setup|step2|idle|sync|err|pause|pending` and every invoke answers
+      from fixtures, exactly the mock's own demo idiom. Inside Tauri the
+      parameter is ignored.
     -->
     <style>
       :root {
@@ -97,6 +98,12 @@
       .msg.ok { color: #15803d; }
       .okline { display: none; align-items: center; gap: 7px; background: #e7f6ec; color: #15803d; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
       .step2 .okline { display: flex; }
+
+      /* the card while the unlock window holds the chosen session: the fields
+         keep their values (the session is snapshotted) but stop inviting edits */
+      .setupcard.waiting .fld, .setupcard.waiting .vaults, .setupcard.waiting .okline { opacity: 0.55; pointer-events: none; }
+      .waitmsg { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+      .waitmsg button { border: 0; background: none; color: var(--brand-dark); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; padding: 0; }
 
       .vaults { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
       .vaults label { display: flex; align-items: center; gap: 9px; border: 1px solid #d9e4ec; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
@@ -213,6 +220,10 @@
           <div class="vaults" id="vaultRows"></div>
           <input id="vaultId" type="text" class="hidden" placeholder="vault id from the server" spellcheck="false" style="margin-top:6px;border:1px solid #b7cfe0;border-radius:22px;padding:10px 13px;font:inherit;outline:none;width:100%;" />
           <div class="hgroup" id="gNew"><span class="rtag">SHOW HIDDEN</span>
+            <label class="fld">Vault password — for the header you are creating
+              <input id="vaultPw" type="password" placeholder="Vault password" autocomplete="new-password" />
+            </label>
+            <div class="hint">A header is protected by the vault password, which is asked for here (unlike unlocking, which asks in its own window) because this machine is the one writing it.</div>
             <button class="newrow" id="createHdr" type="button">＋ New vault header <span style="font-weight:400;color:#7a8694;">· on this machine</span></button>
           </div>
         </div>
@@ -246,6 +257,7 @@
       <div class="bottom">
         <div class="usage"><span id="usageLeft">—</span><span class="r" id="usageRight"></span></div>
         <button class="setup-btn" id="setupBtn" type="button" disabled>Connect</button>
+        <p class="waitmsg hidden" id="waitMsg">Waiting for the unlock window… <button id="waitCancel" type="button">Cancel</button></p>
         <div class="footerbar">
           <label><input id="hiddenToggle" type="checkbox" /> Show hidden features</label>
           <label><input id="autostart" type="checkbox" /> Start at login</label>
@@ -268,6 +280,9 @@
       // The pause is a session fact, not a state word the fixture answers per
       // call: `?demo=pause` opens paused, and the menu can lift it.
       let demoPaused = demoState() === "pause";
+      // Likewise a pending unlock: `?demo=pending` parks on the setup card with
+      // the unlock window notionally open, and the Cancel link clears it.
+      let demoPending = demoState() === "pending";
       function demoInvoke(cmd, args) {
         const main = DEMO_STATE[demoState()];
         const S = {
@@ -305,6 +320,15 @@
             demoPaused = !!(a && a.paused);
             return S.status();
           },
+          pending_unlock: () => (demoPending ? { name: "Files synced", mode: "vault" } : null),
+          open_unlock_window: () => {
+            demoPending = true;
+            return null;
+          },
+          cancel_unlock: () => {
+            demoPending = false;
+            return null;
+          },
         };
         return Promise.resolve((S[cmd] || (() => undefined))());
       }
@@ -323,6 +347,10 @@
       let tick = 0;
       let byHand = false;
       let hiddenTier = false;
+      // The unlock window is open for the space this card chose. The session
+      // itself lives in the shell, never here: the card only knows that
+      // somebody else is being asked for the vault password.
+      let waiting = false;
 
       const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error", paused: "paused" };
 
@@ -434,6 +462,13 @@
         $("setupBtn").textContent = step === 1 ? "Connect" : "Save & unlock";
         $("setupBtn").disabled =
           step === 1 && !($("server").value.trim() && $("spw").value.trim());
+        // While the unlock window holds the chosen session, the card says so
+        // instead of inviting a second attempt. The fields keep their values —
+        // the session was snapshotted — but stop being editable, because
+        // editing them would look like it changed what is being unlocked.
+        $("setupBtn").classList.toggle("hidden", waiting);
+        $("waitMsg").classList.toggle("hidden", !waiting);
+        $("setupCard").classList.toggle("waiting", waiting);
       }
 
       function setMsg(text, kind) {
@@ -586,19 +621,37 @@
           setMsg("This computer has no home directory to keep the space's state in — the hidden Vault header folder field can name one.", "err");
           return;
         }
+        const mode = chosen()?.mode || "vault";
+        const settings = {
+          server: $("server").value.trim(),
+          serverPassword: $("spw").value,
+          vaultId: id,
+          vaultDir: dir,
+          folders,
+          mode,
+          name: chosen()?.name || id,
+        };
+        if (mode === "sync") {
+          // A sync space keeps nothing encrypted, so its server password is
+          // the only secret it has and no window needs to ask for another.
+          setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
+          try {
+            const s = await invoke("unlock", { settings, vaultPassword: "" });
+            setMsg("");
+            renderStatus(s);
+          } catch (err) {
+            setMsg(String(err), "err");
+          }
+          return;
+        }
+        // A vault's password is asked for in its own top-level window, so it
+        // never enters this webview: this window cannot unlock on its own, and
+        // says who can.
         setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
         try {
-          const settings = {
-            server: $("server").value.trim(),
-            vaultId: id,
-            vaultDir: dir,
-            folders,
-            mode: chosen()?.mode || "vault",
-            password: $("spw").value,
-          };
-          const s = await invoke("unlock", { settings });
-          setMsg("");
-          renderStatus(s);
+          await invoke("open_unlock_window", { settings });
+          waiting = true;
+          renderSetup();
         } catch (err) {
           setMsg(String(err), "err");
         }
@@ -628,14 +681,34 @@
       $("addFolder").addEventListener("click", () => addFolderRow(""));
 
       // Hidden tier's vault creation stays honest: this writes a header on this
-      // machine; creating a space on the server is the console's job.
+      // machine; creating a space on the server is the console's job. The header
+      // is protected by the vault password, which this card asks for here (it is
+      // writing the header, so there is nothing to ask a second window about).
       $("createHdr").addEventListener("click", async () => {
         const dir = headerDir();
         if (!dir) return;
+        const password = $("vaultPw").value;
+        if (!password) {
+          setMsg("Enter the vault password for the header you are creating.", "err");
+          return;
+        }
         setMsg("Creating the vault header (this takes a moment)…");
         try {
-          const root = await invoke("create_vault", { dir, password: $("spw").value });
+          const root = await invoke("create_vault", { dir, password });
           setMsg(`Vault header created. Root id ${root}. Unlock to sync.`, "ok");
+        } catch (err) {
+          setMsg(String(err), "err");
+        }
+      });
+
+      // Back out of the unlock window without unlocking: the shell drops the
+      // pending session and closes the window, and the next poll restores the
+      // editable card.
+      $("waitCancel").addEventListener("click", async () => {
+        try {
+          await invoke("cancel_unlock");
+          waiting = false;
+          renderSetup();
         } catch (err) {
           setMsg(String(err), "err");
         }
@@ -699,8 +772,13 @@
 
       function renderStatus(s) {
         lastStatus = s;
-        if (s.unlocked) renderMain(s);
-        else { renderSetup(); $("errBanner").textContent = ""; }
+        if (s.unlocked) {
+          waiting = false;
+          renderMain(s);
+        } else {
+          renderSetup();
+          $("errBanner").textContent = "";
+        }
       }
 
       async function refresh() {
@@ -709,6 +787,10 @@
           const s = await invoke("status");
           if (s.unlocked && (DEMO || tick % 3 === 0)) lastUsage = await invoke("usage");
           if (s.unlocked && (DEMO || tick % 2 === 0)) renderFeed(await invoke("activity"));
+          // A locked session whose unlock window is open is a state of its own:
+          // the card waits rather than look ready for another attempt, and
+          // becomes editable again when the window is cancelled or closed.
+          if (!s.unlocked) waiting = !!(await invoke("pending_unlock"));
           renderStatus(s);
         } catch (err) {
           $("stxt").textContent = "ipc unavailable";
@@ -750,6 +832,15 @@
                   radio.checked = true;
                   radio.dispatchEvent(new Event("change", { bubbles: true }));
                 }
+              }, 0);
+            }
+            // `pending=1` parks on the waiting card the Save button leads to,
+            // which a screenshot cannot click its way into.
+            if (params.get("pending")) {
+              setTimeout(() => {
+                demoPending = true;
+                waiting = true;
+                renderSetup();
               }, 0);
             }
           }
