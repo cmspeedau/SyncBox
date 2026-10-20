@@ -192,20 +192,18 @@ directory entirely, and came back byte-identical.
     knows every file without holding its content, and `syncbox mount` (M5) serves exactly
     that over FUSE. Missing: a hydrate path in the folder loop, and outside the mount the
     platform's own placeholder API (FileProvider on macOS, CFAPI on Windows);
-  - the **update publish job** — CI uploads artefacts today and no manifest says what is
-    newest. One CI job signs the bundles (`createUpdaterArtifacts`: a `.sig` beside each
-    updatable artefact), cuts a GitHub Release so they have an immutable URL, writes
-    `update.json`, and rebuilds the apt index. The client half is shipped —
-    `tauri-plugin-updater` covers deb, rpm, AppImage, NSIS/MSI and macOS `.app` replacement
-    — so this is a publishing gap, not a per-format update script. The manifest is keyed by
-    `{os}-{arch}-{bundle}` (`linux-x86_64-appimage`, `linux-x86_64-deb`,
-    `darwin-x86_64-app`) and falls back to `{os}-{arch}`. Three roads: **AppImage** is
-    shortest, no root and no identity, the bundle replaces itself; **`.deb`** rides a
-    signed apt repo, so `apt-daily` updates it with the app closed and the plugin's
-    `dpkg -i` is the bootstrap for whoever lacks the repo; **macOS** updates through the
-    `.app.tar.gz` and is gated on M6 — the updater will not install a signature mismatch,
-    so an unsigned build is fetchable but never installable. And two keys that do not
-    substitute: the apt key signs the repo's `Release`, minisign signs what the plugin checks.
+  - the **update publish job** — `.github/workflows/release.yml` now does the Release
+    half on a `desktop-v*` tag: build with `createUpdaterArtifacts`, sign each bundle,
+    write `update.json`, attach it all to a Release. It has not run — there is no
+    minisign keypair, so no public key sits in the config and nothing fetches. Still
+    missing: the **apt index**, so a `.deb` updates through `apt-daily` with the app
+    closed rather than only through the plugin's `dpkg -i`; and the settings window's
+    About row. The manifest is keyed by `{os}-{arch}-{bundle}` (`linux-x86_64-appimage`,
+    `linux-x86_64-deb`, `darwin-x86_64-app`), falling back to `{os}-{arch}`, and
+    `tauri-plugin-updater` is the client half for all of it. Two keys that do not
+    substitute: the apt key signs the repo's `Release`, minisign signs what the plugin
+    checks. **macOS** updates through the `.app.tar.gz` and stays gated on M6 — the
+    updater will not install a signature mismatch.
 
 ## License
 

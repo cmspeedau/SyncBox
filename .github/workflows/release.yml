@@ -1,0 +1,162 @@
+name: Release
+
+# Publishing is a deliberate act: this workflow runs only for a `desktop-v*` tag,
+# or by hand against an existing one. Pull requests never reach it, and the
+# ordinary CI packaging job stays unsigned.
+#
+# What it does today: build the Linux bundles with `createUpdaterArtifacts`, sign
+# them with the minisign key, write the static `update.json` the updater fetches,
+# and attach all of it to a GitHub Release. The apt repository for `.deb` updates
+# with the app closed is not here yet — see the M16 note in the README.
+#
+# Secrets it requires (Actions -> Settings -> Secrets):
+#   TAURI_SIGNING_PRIVATE_KEY           the minisign private key (`tauri signer generate`)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password, if it has one
+#   TAURI_UPDATER_PUBKEY                the matching public key
+# The public key also belongs in `plugins.updater.pubkey` in tauri.conf.json before a
+# client can check for updates; until it is committed, this workflow supplies it to
+# the bundler so the release can still be signed.
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "An existing tag to publish, e.g. desktop-v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+# Two runs for one tag would race over the same release assets.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  publish:
+    name: Publish the desktop release
+    # The one runner with webkit2gtk-4.1, gtk and real FUSE, and therefore the only
+    # one that can bundle the AppImage. See the fleet note at the top of ci.yml.
+    runs-on: [self-hosted, Linux, desktop]
+    # 4m18s warm for an unsigned package run; a release build also signs and
+    # uploads, so 45 minutes covers a cold linuxdeploy and a slow upload.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A manual run may name an older tag; a tag push is already on one.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+
+      - name: Check the tag, the version and the keys
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set. Generate one with"
+            echo "  cargo tauri signer generate -w ~/.tauri/syncbox.key"
+            echo "and store its contents as the secret. Without it the bundles cannot be signed."
+            exit 1
+          fi
+          if [ -z "${TAURI_UPDATER_PUBKEY:-}" ]; then
+            echo "::error::TAURI_UPDATER_PUBKEY is not set. Store the .pub file's contents;"
+            echo "the bundler needs it beside the private key, and a client needs it to verify."
+            exit 1
+          fi
+
+          # One version lives in one place. The tag has to agree with it, or the
+          # manifest would announce a version the bundle does not carry.
+          version=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' \
+            client/apps/desktop/src-tauri/tauri.conf.json)
+          if [ -z "$version" ]; then
+            echo "::error::could not read version from tauri.conf.json"
+            exit 1
+          fi
+          if [ "$TAG" != "desktop-v${version}" ]; then
+            echo "::error::tag $TAG does not match tauri.conf.json ($version); expected desktop-v${version}"
+            exit 1
+          fi
+          echo "publishing $TAG (version $version)"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Install tauri CLI
+        working-directory: client/apps/desktop
+        run: |
+          if ! command -v cargo-tauri >/dev/null 2>&1; then
+            if [ ! -x "$HOME/.cargo/bin/cargo-tauri" ]; then
+              mkdir -p "$HOME/.cargo/bin"
+              curl -sSL "https://github.com/tauri-apps/tauri/releases/download/tauri-cli-v2.12.3/cargo-tauri-x86_64-unknown-linux-gnu.tgz" \
+                | tar -xz -C "$HOME/.cargo/bin"
+            fi
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo-tauri --version
+
+      - name: Write the updater override
+        env:
+          TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          # The bundler reads the public key from `plugins.updater.pubkey` whenever
+          # createUpdaterArtifacts is on, even though it only needs the private key to
+          # sign. Minisign public keys are base64, so this is also a shape check.
+          case "$TAURI_UPDATER_PUBKEY" in
+            *[!A-Za-z0-9+/=]*)
+              echo "::error::TAURI_UPDATER_PUBKEY is not a minisign public key"
+              exit 1
+              ;;
+          esac
+          printf '{"bundle":{"createUpdaterArtifacts":true},"plugins":{"updater":{"pubkey":"%s"}}}\n' \
+            "$TAURI_UPDATER_PUBKEY" > "$RUNNER_TEMP/updater.json"
+          echo "wrote the updater override for this build"
+
+      - name: Build signed bundles
+        working-directory: client/apps/desktop
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # `createUpdaterArtifacts` is enabled here rather than in the committed
+          # config, so the PR packaging job keeps building unsigned bundles instead
+          # of failing for a key it is not meant to have.
+          cargo-tauri build --bundles deb appimage --config "$RUNNER_TEMP/updater.json"
+
+      - name: Write the update manifest
+        working-directory: client
+        run: |
+          cargo run -p syncbox-release -- manifest \
+            --bundles target/release/bundle \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$TAG" \
+            --version "$VERSION" \
+            --out target/release/bundle/update.json
+          cat target/release/bundle/update.json
+
+      - name: Publish the Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Syncbox ${{ env.VERSION }}
+          make_latest: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            client/target/release/bundle/appimage/*.AppImage
+            client/target/release/bundle/appimage/*.AppImage.sig
+            client/target/release/bundle/deb/*.deb
+            client/target/release/bundle/deb/*.deb.sig
+            client/target/release/bundle/update.json

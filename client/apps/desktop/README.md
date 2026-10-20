@@ -177,10 +177,10 @@ deferred:** the drafted dark palette and the mock's per-vault locked rows (both
 M16, above); **placeholder / on-demand files**, which want a hydrate path in the
 folder loop and the platform's placeholder API (FileProvider, CFAPI) for a plain
 folder — `syncbox mount` already serves files this way over FUSE; the **update
-publish job** — a CI job that signs the bundles, cuts a Release so they get an
-immutable URL and writes the `update.json` manifest, since `tauri-plugin-updater`
-already ships the client half for `deb`, `rpm`, AppImage and macOS `.app`
-replacement and only has nothing to fetch today; a Node/Svelte
+publish job** — `release.yml` now covers the Release half (sign, cut a Release,
+write `update.json`) but has not run: no minisign keypair is stored, so no public
+key sits in the config, and the apt index for app-closed `.deb` updates is still
+missing; a Node/Svelte
 frontend behind `frontendDist` (instead of this static one); and code signing.
 
 ## Building the app
@@ -243,23 +243,34 @@ runner, which carries the webkit dev libraries and lets tauri do the deb via `ar
 uploads them as build artifacts. They are unsigned, like everything here — publishing
 and signing stay deliberate acts, each to its own runner and identity.
 
-And nothing updates a running install: CI uploads artefacts and no manifest says which is
-newest. The client half is shipped — `tauri-plugin-updater` covers `deb`, `rpm` and AppImage
-on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and `install()` knows how
-to apply each (`dpkg -i` with an escalation fallback, the `.app` swapped in place when the
-old and new signatures match, the AppImage replacing itself) — and because the manifest is
-keyed by target there is no per-format update script to write. Those keys carry the
-architecture as well as the bundle: `linux-x86_64-deb`, `linux-x86_64-appimage`,
-`darwin-x86_64-app` for this Intel mini, with a plain `{os}-{arch}` key as the fallback.
-The gap is one CI job: sign the bundles (`createUpdaterArtifacts` writes a `.sig` beside
-the AppImage, the `.deb`, and the macOS `.app.tar.gz`), cut a Release so they have an
-immutable URL, write `update.json`, rebuild the apt index. There is no delta channel —
-the plugin downloads the signed bundle whole; `.zsync` belongs to AppImageUpdate, which
-this is not. Each platform then takes its own road through that manifest — AppImage is the
-shortest (no root, no identity); `linux-x86_64-deb` rides `apt-daily` and
-`unattended-upgrades` through a signed repo (`dpkg-scanpackages` or `reprepro` publishing
-`Packages.gz` and a signed `Release`, one `.sources` file and a key for the user), with the
-plugin's in-app `dpkg -i` as the bootstrap for whoever has not added it;
+And until that tag is cut, nothing updates a running install: the PR job uploads
+artefacts and no manifest says which is newest. The publish half is
+`.github/workflows/release.yml`: a `desktop-v*` tag (or a manual run against one)
+builds with `createUpdaterArtifacts`, so tauri signs the AppImage and the `.deb` with a
+`.sig` beside each, writes `update.json` with `syncbox-release manifest`, and attaches
+bundles, signatures and manifest to a GitHub Release. It has not run yet — no minisign
+keypair is stored, so `plugins.updater.pubkey` is unwritten and no client checks; the
+workflow takes the public key from a secret meanwhile, because the bundler refuses to
+sign without one. To cut a release: generate the keypair once (`cargo tauri signer
+generate -w ~/.tauri/syncbox.key`), store the private key, its password and the public
+key as the three secrets named at the top of `release.yml`, bump the version in
+`tauri.conf.json`, and push the matching `desktop-v<version>` tag. A client will read
+`releases/latest/download/update.json`; the tag is the switch, and PRs never publish.
+The client library is already there — `tauri-plugin-updater` covers `deb`, `rpm` and
+AppImage on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and
+`install()` knows how to apply each (`dpkg -i` with an escalation fallback, the `.app`
+swapped in place when the old and new signatures match, the AppImage replacing itself)
+— and because the manifest is keyed by target there is no per-format update script to
+write. Those keys carry the architecture as well as the bundle: `linux-x86_64-deb`,
+`linux-x86_64-appimage`, `darwin-x86_64-app` for this Intel mini, with a plain
+`{os}-{arch}` key as the fallback.
+There is no delta channel — the plugin downloads the signed bundle whole; `.zsync`
+belongs to AppImageUpdate, which this is not. Each platform then takes its own road
+through that manifest — AppImage is the shortest (no root, no identity); `linux-x86_64-deb`
+rides `apt-daily` and `unattended-upgrades` through a signed repo (`dpkg-scanpackages` or
+`reprepro` publishing `Packages.gz` and a signed `Release`, one `.sources` file and a key
+for the user), with the plugin's in-app `dpkg -i` as the bootstrap for whoever has not
+added it — but that index is the half this job does not build yet;
 `darwin-x86_64-app` updates through the `.app.tar.gz` and needs a Developer ID and
 notarisation first, since the updater will not install a signature mismatch and an
 unsigned `.dmg` download is a Gatekeeper refusal anyway. Two keys sign two different
@@ -270,8 +281,8 @@ belong regardless: the artefact pool refills after every PR and carries no reten
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
-| Any (updates) | signed `update.json` in a Release, apt index | deferred — the M16 publish job; nothing fetches a newer build today |
-| Linux (repo) | `Packages.gz` + signed `Release` | deferred — wants the publish job, then a `.sources` file to document |
+| Any (updates) | signed `update.json` + bundles in a Release | `release.yml` added, not run — needs a minisign keypair, and the pubkey committed for clients |
+| Linux (repo) | `Packages.gz` + signed `Release` | deferred — the job's apt half, for `.deb` updates with the app closed |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
 | macOS (updates) | `.app.tar.gz` + `.sig` (notarised `.dmg` for the download) | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
