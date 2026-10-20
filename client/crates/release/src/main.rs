@@ -1,4 +1,4 @@
-//! `syncbox-release manifest` — write the static update manifest for a release.
+//! `syncbox-release` — the documents a desktop release publishes.
 //!
 //! Run from `client/` by `.github/workflows/release.yml` after `cargo-tauri build`:
 //!
@@ -7,13 +7,20 @@
 //!   --bundles target/release/bundle \
 //!   --repo cmspeedau/SyncBox --tag desktop-v0.2.0 --version 0.2.0 \
 //!   --out target/release/bundle/update.json
+//!
+//! cargo run -p syncbox-release -- apt-index \
+//!   --deb target/release/bundle/deb/Syncbox_0.2.0_amd64.deb \
+//!   --control /tmp/control --out-dir target/release/bundle/apt
 //! ```
 
-use std::{fs, path::PathBuf, process::ExitCode};
+use std::{fs, io::Read, path::PathBuf, process::ExitCode};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use syncbox_release::manifest::{self, Options};
+use syncbox_release::{
+    apt::{self, AptOptions},
+    manifest::{self, Options},
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,6 +36,8 @@ struct Cli {
 enum Command {
     /// Turn the signed bundles into the JSON tauri-plugin-updater fetches
     Manifest(ManifestArgs),
+    /// Turn one .deb into a flat, unsigned apt repository
+    AptIndex(AptArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -74,6 +83,37 @@ struct ManifestArgs {
     out: Option<PathBuf>,
 }
 
+#[derive(Debug, clap::Args)]
+struct AptArgs {
+    /// The .deb the index describes; its name becomes Filename:
+    #[arg(long)]
+    deb: PathBuf,
+
+    /// The control paragraph, as a file or `-` for stdin
+    #[arg(long)]
+    control: String,
+
+    /// Directory to write Packages, Packages.gz and Release into
+    #[arg(long)]
+    out_dir: PathBuf,
+
+    /// Suite: and Codename: in Release
+    #[arg(long, default_value = "stable")]
+    suite: String,
+
+    /// Origin: in Release
+    #[arg(long, default_value = "Syncbox")]
+    origin: String,
+
+    /// Label: in Release
+    #[arg(long, default_value = "Syncbox")]
+    label: String,
+
+    /// RFC 2822 Date:, instead of now
+    #[arg(long)]
+    date: Option<String>,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -86,8 +126,13 @@ fn main() -> ExitCode {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
-    let Command::Manifest(args) = cli.command;
+    match cli.command {
+        Command::Manifest(args) => manifest(args),
+        Command::AptIndex(args) => apt_index(args),
+    }
+}
 
+fn manifest(args: ManifestArgs) -> Result<()> {
     let notes = match (args.notes, args.notes_file) {
         (Some(notes), _) => Some(notes),
         (None, Some(path)) => Some(
@@ -126,5 +171,33 @@ fn run() -> Result<()> {
         }
         None => print!("{json}"),
     }
+    Ok(())
+}
+
+fn apt_index(args: AptArgs) -> Result<()> {
+    let control = if args.control == "-" {
+        let mut control = String::new();
+        std::io::stdin()
+            .read_to_string(&mut control)
+            .context("cannot read the control paragraph from stdin")?;
+        control
+    } else {
+        fs::read_to_string(&args.control)
+            .with_context(|| format!("cannot read the control at {}", args.control))?
+    };
+
+    let index = apt::build(&AptOptions {
+        deb: args.deb,
+        control,
+        out_dir: args.out_dir,
+        suite: args.suite,
+        origin: args.origin,
+        label: args.label,
+        date: args.date,
+    })?;
+
+    eprintln!("wrote {}", index.packages.display());
+    eprintln!("wrote {}", index.packages_gz.display());
+    eprintln!("wrote {}", index.release.display());
     Ok(())
 }

@@ -6,13 +6,18 @@ name: Release
 #
 # What it does today: build the Linux bundles with `createUpdaterArtifacts`, sign
 # them with the minisign key, write the static `update.json` the updater fetches,
-# and attach all of it to a GitHub Release. The apt repository for `.deb` updates
-# with the app closed is not here yet — see the M16 note in the README.
+# and attach all of it to a GitHub Release. With `APT_SIGNING_KEY` it also builds a
+# flat apt repository into that release, so a `.deb` updates with the app closed.
+# The settings window's About row is not here — see the M16 note in the README.
 #
 # Secrets it requires (Actions -> Settings -> Secrets):
 #   TAURI_SIGNING_PRIVATE_KEY           the minisign private key (`tauri signer generate`)
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password, if it has one
 #   TAURI_UPDATER_PUBKEY                the matching public key
+#   APT_SIGNING_KEY                     optional: the archive's gpg private key, ASCII armoured
+#   APT_SIGNING_KEY_PASSPHRASE          its passphrase, if it has one
+# Without APT_SIGNING_KEY the release is still cut, with a warning and no apt repo:
+# the in-app `.deb` update works from `update.json`, the app-closed one does not.
 # The public key also belongs in `plugins.updater.pubkey` in tauri.conf.json before a
 # client can check for updates; until it is committed, this workflow supplies it to
 # the bundler so the release can still be signed.
@@ -145,6 +150,47 @@ jobs:
             --out target/release/bundle/update.json
           cat target/release/bundle/update.json
 
+      - name: Build the apt repository
+        id: apt
+        working-directory: client
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APT_SIGNING_KEY:-}" ]; then
+            echo "::warning::APT_SIGNING_KEY is not set; this release will not carry the apt repository"
+            exit 0
+          fi
+
+          debs=(target/release/bundle/deb/*.deb)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "::error::expected one .deb, found ${#debs[@]}"
+            exit 1
+          fi
+          deb="${debs[0]}"
+
+          # tauri writes control.tar.gz with the control file at its root; `ar` is
+          # in binutils, which the desktop runner already has (tauri builds the
+          # deb with the ar crate, not with dpkg, so dpkg-deb is not available).
+          ar p "$deb" control.tar.gz | tar -xzOf - control > "$RUNNER_TEMP/control"
+
+          out=target/release/bundle/apt
+          cargo run -p syncbox-release -- apt-index \
+            --deb "$deb" --control "$RUNNER_TEMP/control" --out-dir "$out"
+
+          export GNUPGHOME="$RUNNER_TEMP/apt-gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          printf '%s' "$APT_SIGNING_KEY" | gpg --batch --quiet --import
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "${APT_SIGNING_KEY_PASSPHRASE:-}" \
+            --armor --detach-sign --output "$out/Release.gpg" "$out/Release"
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "${APT_SIGNING_KEY_PASSPHRASE:-}" \
+            --clearsign --output "$out/InRelease" "$out/Release"
+          gpg --batch --armor --export > "$out/syncbox-archive-keyring.asc"
+          echo "published=yes" >> "$GITHUB_OUTPUT"
+
       - name: Publish the Release
         uses: softprops/action-gh-release@v2
         with:
@@ -160,3 +206,19 @@ jobs:
             client/target/release/bundle/deb/*.deb
             client/target/release/bundle/deb/*.deb.sig
             client/target/release/bundle/update.json
+
+      - name: Publish the apt repository
+        if: steps.apt.outputs.published == 'yes'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Syncbox ${{ env.VERSION }}
+          fail_on_unmatched_files: true
+          overwrite_files: true
+          files: |
+            client/target/release/bundle/apt/Packages
+            client/target/release/bundle/apt/Packages.gz
+            client/target/release/bundle/apt/Release
+            client/target/release/bundle/apt/Release.gpg
+            client/target/release/bundle/apt/InRelease
+            client/target/release/bundle/apt/syncbox-archive-keyring.asc

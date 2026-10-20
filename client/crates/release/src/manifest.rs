@@ -11,11 +11,12 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
+
+use crate::time;
 
 /// Everything the manifest needs that cannot be read off the bundle directory.
 #[derive(Debug, Clone)]
@@ -118,7 +119,7 @@ pub fn build(opts: &Options) -> Result<Manifest> {
         notes: opts.notes.clone(),
         pub_date: match &opts.pub_date {
             Some(date) => date.clone(),
-            None => now_rfc3339()?,
+            None => time::rfc3339(time::now()?),
         },
         platforms,
     })
@@ -234,41 +235,6 @@ fn read_signature(bundle: &Path) -> Result<String> {
         bail!("{} is empty", sig.display());
     }
     Ok(text)
-}
-
-fn now_rfc3339() -> Result<String> {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("the system clock is before 1970")?
-        .as_secs();
-    Ok(rfc3339(seconds))
-}
-
-/// RFC 3339 in UTC with second precision, without pulling in a date library.
-fn rfc3339(seconds: u64) -> String {
-    let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
-    let rest = seconds % 86_400;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        rest / 3_600,
-        (rest % 3_600) / 60,
-        rest % 60
-    )
-}
-
-/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to a calendar date.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
 #[cfg(test)]
@@ -435,12 +401,5 @@ mod tests {
 
         let error = build(&options(dir.path())).unwrap_err().to_string();
         assert!(error.contains("not URL-safe"), "{error}");
-    }
-
-    #[test]
-    fn rfc3339_matches_known_instants() {
-        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
-        assert_eq!(rfc3339(1_767_225_600), "2026-01-01T00:00:00Z");
     }
 }
