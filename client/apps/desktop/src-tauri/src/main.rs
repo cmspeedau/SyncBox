@@ -1,17 +1,18 @@
-//! Syncbox desktop shell.
+//! The Syncbox desktop shell.
 //!
 //! A thin Tauri v2 shell over the Tauri-free `syncbox-agent` crate: three
 //! top-level windows — the main window, the unlock window a vault password is
-//! typed in, and the settings window — each with its own webview. The commands
-//! in [`commands`] only read the shared [`state`] or hand blocking work (unlock,
-//! the network) to a thread; every behaviour and its tests live in the agent
-//! crate. The webviews talk to these commands through the DTOs in [`dto`].
+//! typed in, and the settings window — each with its own webview, plus a tray
+//! icon for the time no window is open. The commands in [`commands`] only read
+//! the shared [`state`] or hand blocking work (unlock, the network) to a thread;
+//! every behaviour and its tests live in the agent crate. The webviews talk to
+//! these commands through the DTOs in [`dto`].
 //!
-//! The tray is deliberately left out: it needs `libappindicator`, which is absent
-//! on the dev box and on the CI runner (and `tauri`'s `tray-icon` feature links it
-//! at compile time), so `tauri` is built without it and the three windows are the
-//! whole UI until a machine that carries the lib builds the app. Autostart and
-//! single-instance shipped here — both are pure-Rust plugins, testable headless.
+//! The tray lives in [`tray`]: it needs no system package to build (its backend
+//! `dlopen`s libayatana-appindicator), and where that library is missing at
+//! runtime the three windows are the whole UI, exactly as before the tray.
+//! Autostart and single-instance shipped here too — both are pure-Rust plugins,
+//! testable headless.
 
 // Prevents an extra console window on Windows in release builds.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -20,6 +21,7 @@ mod commands;
 mod dto;
 mod prefs;
 mod state;
+mod tray;
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,6 +54,35 @@ fn main() {
         // capability file stays empty.
         .plugin(tauri_plugin_opener::init())
         .manage(shared)
+        // Whether a tray exists to raise the window again. Managed before
+        // `setup` so the close handler below can always read it.
+        .manage(tray::Presence::default())
+        .setup(|app| {
+            let presence = app.state::<tray::Presence>();
+            let shared = app.state::<state::Shared>();
+            tray::install(app.handle(), shared.inner(), &presence);
+            Ok(())
+        })
+        // Closing the main window is not quitting: while a tray exists to bring
+        // the window back, the close hides it and the sync loops keep running.
+        // `Quit` — the tray menu's, or the gear menu's — ends the process. With
+        // no tray the close quits as it always did: a hidden window nothing can
+        // raise would be a window the human cannot get back.
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window
+                    .app_handle()
+                    .state::<tray::Presence>()
+                    .hiding_on_close()
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::status,
             commands::activity,

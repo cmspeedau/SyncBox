@@ -39,9 +39,11 @@ Recent activity disclosure sits under the list until the settings window's
 Notifications page inherits it. The mock's per-vault **locked rows** are not
 built yet: the client keeps no session between launches, so every start is the
 connect card, and the reference's "row flips to `synced`" is the main view
-arriving instead. Still pending: the tray
-([`reference-agent-tray.md`](reference-agent-tray.md), S5, gated on
-`libappindicator`), and the drafted dark palette. The
+arriving instead. The tray shipped in S5
+([`reference-agent-tray.md`](reference-agent-tray.md)), with its one honest
+condition: it is there only where the desktop carries an indicator host, and
+where it is not, closing the window quits as before. Still pending: the
+drafted dark palette. The
 settings window is **not part of this mock** — its design lives in
 [`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
 main window's bar and the tray menu are its entry points.

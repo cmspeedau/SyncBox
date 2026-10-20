@@ -6,6 +6,7 @@ sync list, a gear click menu, and a first-run card that connects to the server,
 picks a space, and takes the folder the server derives. Two more windows of
 their own, per the references: the unlock window a vault password is typed in
 (`docs/reference-agent-ui.md`) and the settings window (`docs/reference-agent-settings.md`).
+And a tray icon for the hours no window is open (`docs/reference-agent-tray.md`).
 
 The app is a **member of the client Cargo workspace** — see `client/Cargo.toml` —
 so `cargo check`/`clippy`/`test --workspace` compile the shell and run its tests, and
@@ -37,6 +38,8 @@ src-tauri/         Rust: Tauri windows + commands over the Agent; icons; tauri.c
   src/commands.rs  the #[tauri::command] surface (thin; blocking work off-thread)
   src/dto.rs       JSON shapes the webview sees, mapped from agent types (tested)
   src/prefs.rs     the stored switches (prefs.json in the app config dir; tested)
+  src/tray.rs      the tray icon and its native menu; the state mirror and the
+                   no-indicator fallback (the badge drawing is tested; the menu is not)
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
   index.html       the main window
   unlock.html      the unlock window (its own top-level window; S3)
@@ -146,17 +149,38 @@ version, logs or update check — and "Remove vault from this computer" waits fo
 session persistence, since a client that forgets the space on every launch has
 nothing local to remove.
 
+**M16 S5 specifics.** The tray (`src/tray.rs` — no HTML, it is a native menu) is
+the reference's rows and nothing more: a disabled header spelling the state,
+*Open Syncbox*, *Open sync folder* (the first chosen folder, through
+`open_folder`, greyed while nothing is unlocked), *Lock vault* ⇄ *Unlock
+vault…*, *Settings…* and *Quit*. Built once, then relabelled: a two-second watch
+thread reads the same `current_status` the window polls and posts what it found
+with `run_on_main_thread`, because menus belong to the event loop's thread — and
+posts **only when the state moved**, since the appindicator backend writes the
+tray image out as a fresh PNG for every `set_icon`. A
+plain icon click raises the window; the menu is what a right-click brings up. The
+glyph's corner badge is painted at runtime from the state (`badge`), the same
+colours the status bar's dot uses. Whether a tray is even *attempted* is decided
+by `indicator_library_present`: `tauri`'s `tray-icon` feature builds with no
+system package at all (the backend `dlopen`s libayatana-appindicator, and
+`libappindicator-sys` panics if neither soname opens), so the app asks the same
+question first and falls back to windows-only with one line on stderr. While a
+tray is up, closing the main window hides it and the loops keep syncing — *Quit*
+is the only thing that ends the process; while none is, the close quits as it
+always did.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
-(M16 S3), and the settings window (M16 S4). **Still deferred:** the **tray
-icon** — it needs
-`libappindicator`, which is absent here, so `tauri` is pulled with
-`default-features = false, features = ["wry"]` precisely so the missing lib
-(and image decoders) aren't required to compile; the three windows are the whole UI
-until a machine carrying the lib builds the app (S5). A Node/Svelte frontend
-behind `frontendDist` (instead of this static one) and code signing remain
-open.
+(M16 S3), the settings window (M16 S4), and the tray (M16 S5). **Still
+deferred:** the drafted dark palette and the mock's per-vault locked rows (both
+M16, above); **placeholder / on-demand files**, which want a hydrate path in the
+folder loop and the platform's placeholder API (FileProvider, CFAPI) for a plain
+folder — `syncbox mount` already serves files this way over FUSE; the **update
+publish job** — `release.yml` now covers both halves (sign, cut a Release, write
+`update.json`, and a flat apt repo when its key is set) but has not run: no minisign
+keypair is stored, so no public key sits in the config; a Node/Svelte
+frontend behind `frontendDist` (instead of this static one); and code signing.
 
 ## Building the app
 
@@ -176,6 +200,31 @@ Its unit tests run with
 `cargo test --manifest-path client/apps/desktop/src-tauri/Cargo.toml` (they need the
 GUI libs to link but open no window).
 
+## Running it
+
+`client/target/debug/syncbox-desktop` runs against the desktop session it is started
+from. Two things worth knowing from running it on the KDE/Wayland dev box:
+
+* WebKitGTK aborts the process with `Error 71 (Protocol error) dispatching to Wayland
+  display` while the webview is being created, unless the environment carries
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1`. That is a WebKitGTK/compositor pairing, not
+  something the shell controls; the run that fails dies *after* the tray registered
+  fine, so it is not the tray's doing.
+* The tray appears only where `libayatana-appindicator3.so.1` is installed (on Arch:
+  `libayatana-appindicator`). Whether it registered is checkable without looking at
+  the panel:
+
+  ```sh
+  busctl --user call org.kde.StatusNotifierWatcher /StatusNotifierWatcher \
+    org.freedesktop.DBus.Properties Get ss org.kde.StatusNotifierWatcher \
+    RegisteredStatusNotifierItems
+  ```
+
+  A line ending `…/org/ayatana/NotificationItem/tray_icon_tray_app_main` is the
+  agent's. The image the panel was given lands as a PNG under
+  `/run/user/<uid>/tray-icon/`, which is the quickest way to see the badge as the
+  tray actually has it.
+
 ## Packaging (M6)
 
 **Linux — building and shipping from CI.** `tauri.conf.json` carries real bundle
@@ -193,10 +242,63 @@ runner, which carries the webkit dev libraries and lets tauri do the deb via `ar
 uploads them as build artifacts. They are unsigned, like everything here — publishing
 and signing stay deliberate acts, each to its own runner and identity.
 
+And until that tag is cut, nothing updates a running install: the PR job uploads
+artefacts and no manifest says which is newest. The publish half is
+`.github/workflows/release.yml`: a `desktop-v*` tag (or a manual run against one)
+builds with `createUpdaterArtifacts`, so tauri signs the AppImage and the `.deb` with a
+`.sig` beside each, writes `update.json` with `syncbox-release manifest`, and attaches
+bundles, signatures and manifest to a GitHub Release. When `APT_SIGNING_KEY` is set it
+also writes a flat apt repository into that release — `Packages`, `Packages.gz`, a
+signed `Release` (`Release.gpg` and `InRelease`) and the archive key — so an installed
+`.deb` updates with the app closed:
+
+```sources
+Types: deb
+URIs: https://github.com/cmspeedau/SyncBox/releases/latest/download
+Suites: ./
+Signed-By: /etc/apt/keyrings/syncbox-archive-keyring.asc
+```
+
+The repository is flat because a Release's assets cannot fake `dists/` and `pool/`:
+`Filename:` names an asset in the same release, and the keyring is
+`syncbox-archive-keyring.asc` from that URL. It has not run yet — no minisign keypair is
+stored, so `plugins.updater.pubkey` is unwritten and no client checks; the workflow takes
+the public key from a secret meanwhile, because the bundler refuses to sign without one.
+To cut a release: generate the keypair once (`cargo tauri signer generate
+-w ~/.tauri/syncbox.key`), store the private key, its password and the public key as the
+three secrets named at the top of `release.yml` (plus the apt key and its passphrase if
+you want the repository), bump the version in `tauri.conf.json`, and push the matching
+`desktop-v<version>` tag. A client will read `releases/latest/download/update.json`; the
+tag is the switch, and PRs never publish.
+The client library is already there — `tauri-plugin-updater` covers `deb`, `rpm` and
+AppImage on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and
+`install()` knows how to apply each (`dpkg -i` with an escalation fallback, the `.app`
+swapped in place when the old and new signatures match, the AppImage replacing itself)
+— and because the manifest is keyed by target there is no per-format update script to
+write. Those keys carry the architecture as well as the bundle: `linux-x86_64-deb`,
+`linux-x86_64-appimage`, `darwin-x86_64-app` for this Intel mini, with a plain
+`{os}-{arch}` key as the fallback.
+There is no delta channel — the plugin downloads the signed bundle whole; `.zsync`
+belongs to AppImageUpdate, which this is not. Each platform then takes its own road
+through that manifest — AppImage is the shortest (no root, no identity); `linux-x86_64-deb`
+rides `apt-daily` and `unattended-upgrades` through a signed repo (`dpkg-scanpackages` or
+`reprepro` publishing `Packages.gz` and a signed `Release`, one `.sources` file and a key
+for the user), with the plugin's in-app `dpkg -i` as the bootstrap for whoever has not
+added it — and that index now ships in the same release when the apt key is set;
+`darwin-x86_64-app` updates through the `.app.tar.gz` and needs a Developer ID and
+notarisation first, since the updater will not install a signature mismatch and an
+unsigned `.dmg` download is a Gatekeeper refusal anyway. Two keys sign two different
+things: the apt key signs the repo's `Release`, the minisign key behind
+`createUpdaterArtifacts` signs what the plugin checks. And a Release is where these bytes
+belong regardless: the artefact pool refills after every PR and carries no retention rule.
+
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
+| Any (updates) | signed `update.json` + bundles in a Release | `release.yml` added, not run — needs a minisign keypair, and the pubkey committed for clients |
+| Linux (repo) | `Packages.gz` + signed `Release` | `release.yml` added, unrun — built when `APT_SIGNING_KEY` is set |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
+| macOS (updates) | `.app.tar.gz` + `.sig` (notarised `.dmg` for the download) | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
 
 **Autostart and single-instance shipped on top of the bundles:** a second launch just
@@ -205,6 +307,9 @@ the *Run at login* switch in the settings window's footer bar writes or removes 
 XDG autostart entry (`tauri-plugin-autostart`, wrapped as the
 `get_autostart`/`set_autostart` commands and
 round-trip-tested headlessly through tauri's mock runtime in a sandboxed `$HOME`).
-The tray icon is what remains: `libappindicator` is absent on both the dev box and the
-CI runner, so until one carries it `tauri` stays on
-`default-features = false, features = ["wry"]` and the three windows are the whole UI.
+The tray ships with the bundle and cost the build nothing: the backend `dlopen`s
+libayatana-appindicator at runtime, so CI compiles the tray on a runner that has no
+such package. Auto-derivation cannot see a library the binary never links, so the
+`.deb` names `libayatana-appindicator3-1` in `bundle.linux.deb.depends`; an AppImage
+cannot carry it either, so there the tray appears only on a host that already has the
+lib — which the app detects, and degrades from quietly.

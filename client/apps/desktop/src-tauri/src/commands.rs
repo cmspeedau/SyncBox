@@ -300,7 +300,7 @@ pub fn set_paused(shared: State<'_, Shared>, paused: bool) -> Result<Status, Str
 }
 
 /// The aggregated status of a state's workers, or the locked shape when none run.
-fn current_status(state: &AppState) -> Status {
+pub(crate) fn current_status(state: &AppState) -> Status {
     let workers = state.workers();
     let Some(first) = workers.first() else {
         return dto::locked();
