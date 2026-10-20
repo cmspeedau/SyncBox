@@ -194,16 +194,16 @@ directory entirely, and came back byte-identical.
     platform's own placeholder API (FileProvider on macOS, CFAPI on Windows);
   - the **update publish job** — `.github/workflows/release.yml` now does the Release
     half on a `desktop-v*` tag: build with `createUpdaterArtifacts`, sign each bundle,
-    write `update.json`, attach it all to a Release. It has not run — there is no
-    minisign keypair, so no public key sits in the config and nothing fetches. Still
-    missing: the **apt index**, so a `.deb` updates through `apt-daily` with the app
-    closed rather than only through the plugin's `dpkg -i`; and the settings window's
-    About row. The manifest is keyed by `{os}-{arch}-{bundle}` (`linux-x86_64-appimage`,
-    `linux-x86_64-deb`, `darwin-x86_64-app`), falling back to `{os}-{arch}`, and
-    `tauri-plugin-updater` is the client half for all of it. Two keys that do not
-    substitute: the apt key signs the repo's `Release`, minisign signs what the plugin
-    checks. **macOS** updates through the `.app.tar.gz` and stays gated on M6 — the
-    updater will not install a signature mismatch.
+    write `update.json`, attach it all to a Release, and — when `APT_SIGNING_KEY` is
+    set — a flat signed apt repo so a `.deb` updates through `apt-daily` with the app
+    closed. It has not run — there is no minisign keypair, so no public key sits in the
+    config and nothing fetches. What is left is the settings window's **About row**, and
+    the keys. The manifest is keyed by `{os}-{arch}-{bundle}`
+    (`linux-x86_64-appimage`, `linux-x86_64-deb`, `darwin-x86_64-app`), falling back to
+    `{os}-{arch}`, and `tauri-plugin-updater` is the client half for all of it. Two keys
+    that do not substitute: the apt key signs the repo's `Release`, minisign signs what
+    the plugin checks. **macOS** updates through the `.app.tar.gz` and stays gated on
+    M6 — the updater will not install a signature mismatch.
 
 ## License
 
