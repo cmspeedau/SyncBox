@@ -8,6 +8,7 @@ members = [
   "crates/transport",
   "crates/agent",
   "crates/mount",
+  "crates/release",
   "apps/cli",
   "apps/desktop/src-tauri",
 ]
