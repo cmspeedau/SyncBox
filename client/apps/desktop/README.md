@@ -248,27 +248,32 @@ newest. The client half is shipped — `tauri-plugin-updater` covers `deb`, `rpm
 on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and `install()` knows how
 to apply each (`dpkg -i` with an escalation fallback, the `.app` swapped in place when the
 old and new signatures match, the AppImage replacing itself) — and because the manifest is
-keyed by target (`linux-deb`, `linux-appimage`, `darwin-aarch64`) there is no per-format
-update script to write. The gap is one CI job: sign the bundles, cut a Release so they have
-an immutable URL, write `update.json`, rebuild the apt index. Each platform then takes its
-own road through that manifest — AppImage is the shortest (no root, no identity);
-`linux-deb` rides `apt-daily` and `unattended-upgrades` through a signed repo
-(`dpkg-scanpackages` or `reprepro` publishing `Packages.gz` and a signed `Release`, one
-`.sources` file and a key for the user), with the plugin's in-app `dpkg -i` as the bootstrap
-for whoever has not added it; `darwin-aarch64` needs a Developer ID and notarisation first,
-since the updater will not install a signature mismatch and an unsigned download is a
-Gatekeeper refusal anyway. Two keys sign two different things: the apt key signs the repo's
-`Release`, the minisign key behind `createUpdaterArtifacts` signs what the plugin checks.
-And a Release is where these bytes belong regardless: the artefact pool refills after every
-PR and carries no retention rule.
+keyed by target there is no per-format update script to write. Those keys carry the
+architecture as well as the bundle: `linux-x86_64-deb`, `linux-x86_64-appimage`,
+`darwin-x86_64-app` for this Intel mini, with a plain `{os}-{arch}` key as the fallback.
+The gap is one CI job: sign the bundles (`createUpdaterArtifacts` writes a `.sig` beside
+the AppImage, the `.deb`, and the macOS `.app.tar.gz`), cut a Release so they have an
+immutable URL, write `update.json`, rebuild the apt index. There is no delta channel —
+the plugin downloads the signed bundle whole; `.zsync` belongs to AppImageUpdate, which
+this is not. Each platform then takes its own road through that manifest — AppImage is the
+shortest (no root, no identity); `linux-x86_64-deb` rides `apt-daily` and
+`unattended-upgrades` through a signed repo (`dpkg-scanpackages` or `reprepro` publishing
+`Packages.gz` and a signed `Release`, one `.sources` file and a key for the user), with the
+plugin's in-app `dpkg -i` as the bootstrap for whoever has not added it;
+`darwin-x86_64-app` updates through the `.app.tar.gz` and needs a Developer ID and
+notarisation first, since the updater will not install a signature mismatch and an
+unsigned `.dmg` download is a Gatekeeper refusal anyway. Two keys sign two different
+things: the apt key signs the repo's `Release`, the minisign key behind
+`createUpdaterArtifacts` signs what the plugin checks. And a Release is where these bytes
+belong regardless: the artefact pool refills after every PR and carries no retention rule.
 
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
-| Any (updates) | signed manifest in a Release, `.zsync` deltas, apt index | deferred — the M16 publish job; nothing fetches a newer build today |
+| Any (updates) | signed `update.json` in a Release, apt index | deferred — the M16 publish job; nothing fetches a newer build today |
 | Linux (repo) | `Packages.gz` + signed `Release` | deferred — wants the publish job, then a `.sources` file to document |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
-| macOS (updates) | notarised dmg + Developer ID | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
+| macOS (updates) | `.app.tar.gz` + `.sig` (notarised `.dmg` for the download) | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
 
 **Autostart and single-instance shipped on top of the bundles:** a second launch just

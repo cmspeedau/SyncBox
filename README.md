@@ -193,17 +193,19 @@ directory entirely, and came back byte-identical.
     that over FUSE. Missing: a hydrate path in the folder loop, and outside the mount the
     platform's own placeholder API (FileProvider on macOS, CFAPI on Windows);
   - the **update publish job** — CI uploads artefacts today and no manifest says what is
-    newest. One CI job signs the built bundles (`createUpdaterArtifacts`: a `.sig` each,
-    `.zsync` deltas for the AppImage), cuts a GitHub Release so they have an immutable URL,
-    writes `update.json`, and rebuilds the apt index. The client half is shipped —
+    newest. One CI job signs the bundles (`createUpdaterArtifacts`: a `.sig` beside each
+    updatable artefact), cuts a GitHub Release so they have an immutable URL, writes
+    `update.json`, and rebuilds the apt index. The client half is shipped —
     `tauri-plugin-updater` covers deb, rpm, AppImage, NSIS/MSI and macOS `.app` replacement
-    — so this is a publishing gap, not a per-format update script. Three roads off one
-    manifest: **AppImage** is shortest, no root and no identity, the bundle replaces
-    itself; **`.deb`** rides a signed apt repo, so `apt-daily` updates it with the app
-    closed and the plugin's `dpkg -i` is the bootstrap for whoever lacks the repo;
-    **`.dmg`** is gated on M6 — the updater will not install a signature mismatch, so an
-    unsigned build is fetchable but never installable. And two keys that do not substitute:
-    the apt key signs the repo's `Release`, minisign signs what the plugin checks.
+    — so this is a publishing gap, not a per-format update script. The manifest is keyed by
+    `{os}-{arch}-{bundle}` (`linux-x86_64-appimage`, `linux-x86_64-deb`,
+    `darwin-x86_64-app`) and falls back to `{os}-{arch}`. Three roads: **AppImage** is
+    shortest, no root and no identity, the bundle replaces itself; **`.deb`** rides a
+    signed apt repo, so `apt-daily` updates it with the app closed and the plugin's
+    `dpkg -i` is the bootstrap for whoever lacks the repo; **macOS** updates through the
+    `.app.tar.gz` and is gated on M6 — the updater will not install a signature mismatch,
+    so an unsigned build is fetchable but never installable. And two keys that do not
+    substitute: the apt key signs the repo's `Release`, minisign signs what the plugin checks.
 
 ## License
 
