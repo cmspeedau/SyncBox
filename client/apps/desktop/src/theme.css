@@ -1,0 +1,163 @@
+/*
+  The agent's palette, shared by all three windows. The light column is the
+  mock's; the dark column is the one drafted in docs/reference-web-ui.md. A
+  window pins a theme by setting `data-theme="light"` or `"dark"` on <html>;
+  with no attribute it follows the desktop's colour scheme.
+
+  The dark values are written twice on purpose: once for a pinned theme and
+  once for the media query, because CSS cannot share a declaration block
+  between an attribute selector and a media query.
+*/
+:root {
+  color-scheme: light;
+  font-family: system-ui, sans-serif;
+
+  --paper: #ffffff;
+  --card: #ffffff;
+  --fill: #f3f9fd;
+  --bar-soft: #f6fafd;
+  --line: #e6eef4;
+  --input-line: #b7cfe0;
+  --ink: #272833;
+  --muted: #7a8694;
+  --faint: #97a3af;
+
+  --brand: #0082c9;
+  --brand-dark: #006aa3;
+  --on-brand: #ffffff;
+  --brand-hover: #0075b3;
+
+  --bar-a: #f1f8fd;
+  --bar-b: #dcebfa;
+  --bar-line: rgba(0, 90, 140, 0.12);
+  --bar-hover: #e3eef7;
+  --rail-hover: rgba(255, 255, 255, 0.6);
+  --shadow: rgba(0, 80, 130, 0.18);
+  --accent-line: #7db4d8;
+
+  --ok: #16a34a;
+  --ok-bg: #e7f6ec;
+  --ok-ink: #15803d;
+  --warn: #f59e0b;
+  --err: #dc2626;
+  --err-bg: #fdeceb;
+  --err-line: #f6c9c6;
+  --err-ink: #b91c1c;
+  --pause: #d97706;
+  --pause-bg: #fdf3e3;
+  --pause-line: #f3ddb0;
+  --pause-ink: #92600a;
+
+  --synced-bg: #e8f3fb;
+  --synced-ink: #006aa3;
+  --locked-bg: #eef1f4;
+  --locked-ink: #66727e;
+  --switch-off: #cbd5e1;
+  --knob: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --paper: #0b1016;
+    --card: #101820;
+    --fill: #131c24;
+    --bar-soft: #0e151c;
+    --line: #1e2831;
+    --input-line: #2a3a47;
+    --ink: #e6edf3;
+    --muted: #8b98a6;
+    --faint: #7b8794;
+
+    --brand: #0b8bd2;
+    --brand-dark: #0b8bd2;
+    --on-brand: #0b1016;
+    --brand-hover: #2aa5e8;
+
+    --bar-a: #16222e;
+    --bar-b: #111e29;
+    --bar-line: rgba(11, 139, 210, 0.18);
+    --bar-hover: #1b2a37;
+    --rail-hover: rgba(255, 255, 255, 0.06);
+    --shadow: rgba(0, 0, 0, 0.55);
+    --accent-line: #2e6c8e;
+
+    --ok: #4ade80;
+    --ok-bg: #10241a;
+    --ok-ink: #6ee7a0;
+    --warn: #fbbf24;
+    --err: #f87171;
+    --err-bg: #2a1416;
+    --err-line: #5a2a2d;
+    --err-ink: #f19a9a;
+    --pause: #fbbf24;
+    --pause-bg: #2a2110;
+    --pause-line: #5a4a1e;
+    --pause-ink: #e8c06a;
+
+    --synced-bg: #123a54;
+    --synced-ink: #7cc0ea;
+    --locked-bg: #222b34;
+    --locked-ink: #9aa7b3;
+    --switch-off: #33404c;
+    --knob: #ffffff;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --paper: #0b1016;
+  --card: #101820;
+  --fill: #131c24;
+  --bar-soft: #0e151c;
+  --line: #1e2831;
+  --input-line: #2a3a47;
+  --ink: #e6edf3;
+  --muted: #8b98a6;
+  --faint: #7b8794;
+
+  --brand: #0b8bd2;
+  --brand-dark: #0b8bd2;
+  --on-brand: #0b1016;
+  --brand-hover: #2aa5e8;
+
+  --bar-a: #16222e;
+  --bar-b: #111e29;
+  --bar-line: rgba(11, 139, 210, 0.18);
+  --bar-hover: #1b2a37;
+  --rail-hover: rgba(255, 255, 255, 0.06);
+  --shadow: rgba(0, 0, 0, 0.55);
+  --accent-line: #2e6c8e;
+
+  --ok: #4ade80;
+  --ok-bg: #10241a;
+  --ok-ink: #6ee7a0;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --err-bg: #2a1416;
+  --err-line: #5a2a2d;
+  --err-ink: #f19a9a;
+  --pause: #fbbf24;
+  --pause-bg: #2a2110;
+  --pause-line: #5a4a1e;
+  --pause-ink: #e8c06a;
+
+  --synced-bg: #123a54;
+  --synced-ink: #7cc0ea;
+  --locked-bg: #222b34;
+  --locked-ink: #9aa7b3;
+  --switch-off: #33404c;
+  --knob: #ffffff;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+html,
+body {
+  background: var(--paper);
+  color: var(--ink);
+}

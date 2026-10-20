@@ -15,24 +15,14 @@
       unlock_pending, which unlocks and closes this window.
 
       A preview exists for browsers outside Tauri: open with `?demo=1` and the
-      invokes answer from fixtures, as in the main window.
+      invokes answer from fixtures, as in the main window. `&theme=dark` or
+      `&theme=light` pins a palette for a screenshot.
     -->
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      :root {
-        --brand: #0082c9;
-        --brand-dark: #006aa3;
-        --ink: #272833;
-        --muted: #7a8694;
-        --faint: #97a3af;
-        --line: #e6eef4;
-        --hover: #f3f9fd;
-        --ok: #16a34a;
-        --err: #dc2626;
-        font-family: system-ui, sans-serif;
-      }
       * { box-sizing: border-box; margin: 0; }
       html, body { height: 100%; }
-      body { background: #fff; color: var(--ink); font-size: 13px; }
+      body { font-size: 13px; }
       .hidden { display: none !important; }
 
       .win { height: 100%; display: flex; flex-direction: column; }
@@ -40,31 +30,33 @@
       .bar {
         flex: none; display: flex; align-items: center; gap: 8px;
         padding: 11px 13px;
-        background: linear-gradient(160deg, #f1f8fd, #dcebfa);
-        border-bottom: 1px solid rgba(0, 90, 140, 0.12);
+        background: linear-gradient(160deg, var(--bar-a), var(--bar-b));
+        border-bottom: 1px solid var(--bar-line);
       }
-      .bar svg { flex: none; color: #4c7f9c; }
+      .bar svg { flex: none; color: var(--muted); }
       .bar .ttl { font-weight: 700; }
 
       .body { padding: 15px 15px 13px; }
       .hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
       input[type="password"] {
-        width: 100%; border: 1px solid #b7cfe0; border-radius: 22px;
+        width: 100%; border: 1px solid var(--input-line); border-radius: 22px;
         padding: 11px 13px; font: inherit; outline: none; margin-bottom: 11px;
+        background: var(--fill); color: var(--ink);
       }
+      input[type="password"]::placeholder { color: var(--faint); }
       input[type="password"]:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(0, 130, 201, 0.2); }
-      input[type="password"]:disabled { background: #f7fafc; color: var(--faint); }
+      input[type="password"]:disabled { background: var(--fill); color: var(--faint); }
 
       .btns { display: flex; gap: 8px; }
       .btns button {
         flex: 1; border: 0; border-radius: 22px; padding: 11px;
         font: 700 13px system-ui, sans-serif; cursor: pointer;
       }
-      .btns .pri { background: var(--brand-dark); color: #fff; }
-      .btns .pri:hover { background: #0075b3; }
+      .btns .pri { background: var(--brand-dark); color: var(--on-brand); }
+      .btns .pri:hover { background: var(--brand-hover); }
       .btns .pri:disabled { opacity: 0.55; cursor: default; }
-      .btns .gh { background: #fff; border: 1px solid #d5dee6; color: var(--ink); }
-      .btns .gh:hover { background: var(--hover); }
+      .btns .gh { background: var(--card); border: 1px solid var(--input-line); color: var(--ink); }
+      .btns .gh:hover { background: var(--fill); }
 
       .msg { font-size: 12px; color: var(--muted); margin-top: 9px; min-height: 15px; }
       .msg.err { color: var(--err); }
@@ -97,8 +89,11 @@
     <script>
       // Outside Tauri (a plain browser with ?demo=1), the invokes answer from
       // fixtures so the window can be looked at — as in the main window.
-      const DEMO = !window.__TAURI__ && new URLSearchParams(location.search).has("demo");
+      const params = new URLSearchParams(location.search);
+      const DEMO = !window.__TAURI__ && params.has("demo");
+      const demoTheme = (DEMO && params.get("theme")) || "system";
       function demoInvoke(cmd) {
+        if (cmd === "get_prefs") return Promise.resolve({ showHidden: false, theme: demoTheme });
         if (cmd === "pending_unlock") return Promise.resolve({ name: "Files synced", mode: "vault" });
         if (cmd === "unlock_pending") return Promise.resolve(null);
         return Promise.resolve(null);
@@ -106,6 +101,11 @@
       const invoke = DEMO ? demoInvoke : window.__TAURI__.core.invoke;
 
       const $ = (id) => document.getElementById(id);
+
+      function applyTheme(mode) {
+        if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+        else delete document.documentElement.dataset.theme;
+      }
 
       function setMsg(text, kind) {
         $("msg").className = "msg" + (kind ? " " + kind : "");
@@ -115,6 +115,10 @@
       // The space's name is all the shell tells this window; the session itself
       // stays on the other side of the IPC boundary.
       async function boot() {
+        // Follow the stored palette; a failure here must not stop the unlock.
+        try {
+          applyTheme((await invoke("get_prefs")).theme);
+        } catch (err) { console.error(err); }
         try {
           const pending = await invoke("pending_unlock");
           if (!pending) {

@@ -48,8 +48,7 @@ credential. The list is still one space's folders at a time — unlocking anothe
 replaces the running space rather than syncing both. The tray shipped in S5
 ([`reference-agent-tray.md`](reference-agent-tray.md)), with its one honest
 condition: it is there only where the desktop carries an indicator host, and
-where it is not, closing the window quits as before. Still pending: the
-drafted dark palette. The
+where it is not, closing the window quits as before. The
 settings window is **not part of this mock** — its design lives in
 [`reference-agent-settings.md`](reference-agent-settings.md); the gear in the
 main window's bar and the tray menu are its entry points.
@@ -217,9 +216,10 @@ Geometry: window radius 12 px (OS title bar sits above — the design has no
 chrome), pills 22 px, vault rows 8 px radius; state dot 9 px with a 3 px
 white halo; locked row icon dim 0.55.
 
-Dark mode follows the **drafted dark palette** in
-[`reference-web-ui.md`](reference-web-ui.md) — drafted, not shippable until
-a build renders it.
+Dark mode is the **drafted dark palette** in
+[`reference-web-ui.md`](reference-web-ui.md), shipped in the agent's
+`src/theme.css`. Settings → About → Appearance pins System / Light / Dark;
+System follows the desktop.
 
 ## Design sources
 

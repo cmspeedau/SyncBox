@@ -153,9 +153,9 @@ Type: 13 px base system sans; names 12.5 px (single-line ellipsis); meta
 
 The shipped console already has a full `light-dark()` palette and a
 system/light/dark override; the references must keep up, not the other way
-round. These dark values are **drafted** — no build ships dark pixels from
-this table until a console or agent build renders it and the values are
-confirmed in review.
+round. The agent's `theme.css` now ships the dark column below (M16), while
+this reference mock still draws light only; the console's own palette remains
+authoritative for the console.
 
 | Token | Light | Dark (drafted) |
 |---|---|---|

@@ -91,7 +91,8 @@ the activity feed share one source.
 ### About
 
 Device ID (support handle), agent version, server version, `Open logs…`,
-`Check for updates` `new`.
+`Check for updates` `new`. The shipped window puts its **Appearance** control
+above those facts: the agent's palette, pinned to System / Light / Dark.
 
 ### As shipped (M16 S4)
 
@@ -109,6 +110,7 @@ else:
 | Footer: Show hidden features | ✅ `get_prefs` / `set_prefs` |
 | About: version, platform, licence | ✅ `settings_info` — the build's own facts, so the window needs no new endpoint |
 | About: state folder + `Open` | ✅ `settings_info.vaultDir` through `open_folder`; support asks where the state lives |
+| About: Appearance (theme) | ✅ M16 leftovers: `get_prefs` / `set_prefs`; System / Light / Dark, System following the desktop |
 | Choose folders | ❌ `new` (a per-device selection rule the loop must honor) |
 | Pause durations | ❌ `new` (needs a resume-at) |
 | Vault auto-lock | ❌ `new` (an inactivity timer) |
