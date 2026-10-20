@@ -203,7 +203,7 @@ directory entirely, and came back byte-identical.
     closed and the plugin's `dpkg -i` is the bootstrap for whoever lacks the repo;
     **`.dmg`** is gated on M6 — the updater will not install a signature mismatch, so an
     unsigned build is fetchable but never installable. And two keys that do not substitute:
-    the apt key signs the repo's `Release`, minisign signs what the plugin checks.</newString>
+    the apt key signs the repo's `Release`, minisign signs what the plugin checks.
 
 ## License
 
