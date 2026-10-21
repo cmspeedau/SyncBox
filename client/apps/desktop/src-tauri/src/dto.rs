@@ -10,6 +10,7 @@ use syncbox_agent::{AgentStatus, SyncEvent, SyncState};
 use syncbox_sync::SyncReport;
 use syncbox_transport::dto::SpaceMode;
 
+use crate::spaces::Space;
 use crate::state::{Running, Session};
 
 /// Vault settings as the frontend submits them (`camelCase`), turned into the
@@ -137,6 +138,51 @@ pub struct PendingInfo {
     /// space has no header to unlock — but the shape says which rather than
     /// assuming it.
     pub mode: &'static str,
+}
+
+/// One remembered space, as the main window draws its locked row. Every field
+/// is also safe to hand a window: no password or token survives a launch.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSpace {
+    /// The server's id for the space.
+    pub id: String,
+    /// What to call it.
+    pub name: String,
+    /// The server origin it lives on.
+    pub server: String,
+    /// `"vault"` or `"sync"`.
+    pub mode: &'static str,
+    /// The state directory this machine keeps for it.
+    pub vault_dir: String,
+    /// The plaintext folders it was syncing.
+    pub folders: Vec<String>,
+    /// Whether this is the space whose loops are running now.
+    pub running: bool,
+}
+
+/// Maps the remembered spaces for the main window, marking the one that is
+/// running. Order is the registry's: newest unlocked first.
+#[must_use]
+pub fn saved_spaces(spaces: &[Space], running: Option<&Running>) -> Vec<SavedSpace> {
+    spaces
+        .iter()
+        .map(|space| SavedSpace {
+            id: space.vault_id.clone(),
+            name: space.name.clone(),
+            server: space.server.clone(),
+            mode: mode_str(space.mode),
+            vault_dir: space.vault_dir.display().to_string(),
+            folders: space
+                .folders
+                .iter()
+                .map(|folder| folder.display().to_string())
+                .collect(),
+            running: running.is_some_and(|running| {
+                running.server == space.server && running.vault_id == space.vault_id
+            }),
+        })
+        .collect()
 }
 
 /// Resolves a server-side location against a client's home directory, as the
@@ -592,6 +638,48 @@ mod tests {
     }
 
     #[test]
+    fn remembered_spaces_mark_the_running_row_and_carry_no_secret() {
+        let remembered = vec![
+            Space {
+                server: "https://sync.example".into(),
+                vault_id: "demo".into(),
+                name: "Files synced".into(),
+                mode: SpaceMode::Vault,
+                vault_dir: PathBuf::from("/home/me/.syncbox/demo"),
+                folders: vec![PathBuf::from("/home/me/Syncbox/Files synced")],
+            },
+            Space {
+                server: "https://other.example".into(),
+                vault_id: "photos".into(),
+                name: "Photos".into(),
+                mode: SpaceMode::Sync,
+                vault_dir: PathBuf::from("/home/me/.syncbox/photos"),
+                folders: vec![PathBuf::from("/home/me/Syncbox/Photos")],
+            },
+        ];
+        let running = Running {
+            name: "Files synced".into(),
+            vault_id: "demo".into(),
+            server: "https://sync.example".into(),
+            mode: SpaceMode::Vault,
+            vault_dir: PathBuf::from("/home/me/.syncbox/demo"),
+        };
+        let json = serde_json::to_value(saved_spaces(&remembered, Some(&running))).unwrap();
+        assert_eq!(json[0]["id"], "demo");
+        assert_eq!(json[0]["running"], true, "the running space is marked");
+        assert_eq!(json[0]["folders"][0], "/home/me/Syncbox/Files synced");
+        assert_eq!(json[1]["mode"], "sync");
+        assert_eq!(
+            json[1]["running"], false,
+            "the same id on another server is not the running one"
+        );
+        // The rows are safe to hand the main window.
+        assert!(json[0].get("serverPassword").is_none());
+        assert!(json[0].get("password").is_none());
+        assert!(json[0].get("token").is_none());
+    }
+
+    #[test]
     fn activity_rows_carry_done_and_failed_shapes() {
         let entries = vec![
             (
@@ -716,6 +804,7 @@ mod tests {
 
         let running = Running {
             name: "Files synced".into(),
+            vault_id: "demo".into(),
             server: "https://sync.example.org".into(),
             mode: SpaceMode::Vault,
             vault_dir: PathBuf::from("/home/me/.syncbox/demo"),

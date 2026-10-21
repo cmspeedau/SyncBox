@@ -40,6 +40,7 @@ src-tauri/         Rust: Tauri windows + commands over the Agent; icons; tauri.c
   src/prefs.rs     the stored switches (prefs.json in the app config dir; tested)
   src/tray.rs      the tray icon and its native menu; the state mirror and the
                    no-indicator fallback (the badge drawing is tested; the menu is not)
+  src/spaces.rs    remembered spaces for the locked rows (spaces.json; metadata only)
 src/               static HTML/CSS/JS frontend (embedded as `frontendDist`)
   index.html       the main window
   unlock.html      the unlock window (its own top-level window; S3)
@@ -57,6 +58,7 @@ own logic is the DTO mapping, which is pure and tested (`cargo test` in `src-tau
 | `status` | current state (`locked`/`idle`/`syncing`/`error`), whether the loops are paused, last sync, last pass |
 | `activity` | recent sync outcomes, for the activity feed |
 | `usage` | files and referenced bytes per synced folder (the row meta + usage line) |
+| `saved_spaces` | the spaces this machine has opened before, newest first, with the running one marked — metadata only, so a row comes back locked |
 | `unlock` | open a space — deriving keys for a vault, nothing for a sync space — and start one loop per folder (the main window only calls this for a sync space; a vault goes through the unlock window) |
 | `open_unlock_window` | hold the chosen session and open the unlock window on it (a vault only) |
 | `unlock_pending` | unlock the held session with the password the unlock window collected, then close that window |
@@ -88,8 +90,8 @@ static frontend reaches the commands.
 
 **Built and clippy-clean here, but not launched from CI** — the CI runner is
 headless, so a window can't be opened there; `cargo build` (links
-webkit/gtk/soup) plus the agent + DTO + prefs tests are the CI verification,
-and `index.html` carries a browser preview (`?demo=setup|step2|idle|sync|err|pause|pending`,
+webkit/gtk/soup) plus the agent + DTO + prefs + spaces tests are the CI verification,
+and `index.html` carries a browser preview (`?demo=setup|step2|idle|sync|err|pause|pending|locked`,
 `&hidden=1`, `&pick=1`, `&menu=1`, `&pending=1`), as do `unlock.html` (`?demo=1`)
 and `settings.html` (`?demo=1`, `&locked=1`): every invoke answers from fixtures
 outside Tauri, so the windows
@@ -97,8 +99,9 @@ can be screenshotted and checked against the mock without the shell. Inside
 Tauri the parameter is unreachable.
 
 **M16 S1 specifics.** The main window is the reference's, with three honest
-deviations: the row list shows the one space's folders (the client is
-single-space today); the gear menu carries only what exists (Sync now, Pause
+deviations: the row list shows the running space's folders and locked rows for
+the other remembered spaces (one space runs at a time, not the mock's multi-vault
+session); the gear menu carries only what exists (Sync now, Pause
 syncing, Lock vault, Quit — Settings… joins in S4); and a Recent activity
 disclosure stands under the list until the settings window's Notifications
 page inherits it. Unlock is now mode-aware — the same `open_folders` call the
@@ -137,7 +140,8 @@ the vault's.
 the gear's *Settings…*) is the reference's `today`-badged subset and nothing
 more: the rail's space card and usage line, Sync Files (each synced folder with
 `Open`, *Change…* which runs `lock` then closes this window so the main window's
-card can pick again, and the pause as one switch), Account (server and space,
+rows can pick again (its locked rows or *Add a space…*), and the pause as one
+switch), Account (server and space,
 read-only, from `settings_info`), About (version, platform, licence, and the
 space's state folder with `Open`), and the footer's two app-wide switches —
 which is why the main window's temporary footer bar is gone; that window now
@@ -145,9 +149,24 @@ re-reads `get_prefs` on its poll and follows the switch instead of owning it. No
 *Apply settings* button: everything shipped here writes as it is touched. The
 `new`-badged controls are left out rather than drawn dead — no Notifications
 page, choose-folders tree, pause durations, auto-lock timer, device id, server
-version, logs or update check — and "Remove vault from this computer" waits for
-session persistence, since a client that forgets the space on every launch has
-nothing local to remove.
+version, logs or update check — and "Remove vault from this computer" awaits a
+`forget_space` command (the remembered metadata now exists, but the row must
+never delete the sync folders).
+
+**M16 locked-rows specifics.** `spaces.json` in the config dir remembers every
+space this machine has unlocked — server, id, name, mode, state dir and folders,
+never a password or token (`src/spaces.rs`; a broken file reads as empty). Each
+successful `unlock` / `unlock_pending` writes its entry, newest first.
+`saved_spaces` hands the list to the main window, which draws the running space's
+folders and then a dimmed, `locked` row for every other remembered space. A
+row's *Unlock* opens the resume card: the address is fixed, the picker and folder
+editor are not asked, and the human types that server's password again (it was
+never stored); the card then calls `list_vaults` to confirm the space still
+exists and either `unlock`s a sync space or opens the unlock window for a vault.
+The gear's *Add a space…* appears in this state so the picker stays reachable;
+*Back to vaults* returns without connecting. The price of storing no credential
+is re-typing the server password after a launch; the gain is that nothing
+sensitive sits in the config dir.
 
 **M16 S5 specifics.** The tray (`src/tray.rs` — no HTML, it is a native menu) is
 the reference's rows and nothing more: a disabled header spelling the state,
@@ -172,15 +191,16 @@ always did.
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
-(M16 S3), the settings window (M16 S4), and the tray (M16 S5). **Still
-deferred:** the drafted dark palette and the mock's per-vault locked rows (both
-M16, above); **placeholder / on-demand files**, which want a hydrate path in the
-folder loop and the platform's placeholder API (FileProvider, CFAPI) for a plain
-folder — `syncbox mount` already serves files this way over FUSE; the **update
-publish job** — `release.yml` now covers both halves (sign, cut a Release, write
-`update.json`, and a flat apt repo when its key is set) but has not run: no minisign
-keypair is stored, so no public key sits in the config; a Node/Svelte
-frontend behind `frontendDist` (instead of this static one); and code signing.
+(M16 S3), the settings window (M16 S4), the tray (M16 S5), and remembered spaces
+drawn as locked rows (metadata only). **Still deferred:** the drafted dark
+palette (M16, above); **placeholder / on-demand files**, which want a hydrate path
+in the folder loop and the platform's placeholder API (FileProvider, CFAPI) for a
+plain folder — `syncbox mount` already serves files this way over FUSE; the
+**update publish job** — `release.yml` now covers both halves (sign, cut a
+Release, write `update.json`, and a flat apt repo when its key is set) but has not
+run: no minisign keypair is stored, so no public key sits in the config; a
+Node/Svelte frontend behind `frontendDist` (instead of this static one); and code
+signing.
 
 ## Building the app
 

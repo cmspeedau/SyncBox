@@ -18,6 +18,8 @@ use syncbox_agent::{index_path_for, Agent, Folder, SyncWorker};
 use syncbox_transport::dto::SpaceMode;
 use syncbox_transport::{Client, UreqHttp};
 
+use crate::spaces::{self, Space};
+
 /// How often the loops run a pass when nothing is requested. A manual `Sync now`
 /// and file-change pushes run ahead of this.
 pub const SYNC_INTERVAL: Duration = Duration::from_secs(60);
@@ -75,6 +77,9 @@ pub struct Running {
     /// The space's display name, as `list_vaults` called it (or the id, for a
     /// hand-typed space).
     pub name: String,
+    /// The server's id for the space — its durable handle, and what marks the
+    /// remembered row as the running one.
+    pub vault_id: String,
     /// The server origin the loops dial.
     pub server: String,
     /// What the space stores: a vault, or a sync space in the clear.
@@ -93,6 +98,10 @@ pub struct AppState {
     running: Option<Running>,
     /// The session whose vault password window is open, if any.
     pending: Option<Pending>,
+    /// The spaces this machine has opened before, newest first — metadata only,
+    /// so a row can come back locked without a credential being kept. Loaded at
+    /// start-up and updated on every successful unlock.
+    known: Vec<Space>,
 }
 
 impl AppState {
@@ -143,6 +152,7 @@ impl AppState {
 
         self.running = Some(Running {
             name,
+            vault_id: session.vault_id.clone(),
             server: session.server.clone(),
             mode: session.mode,
             vault_dir: session.vault_dir.clone(),
@@ -227,6 +237,24 @@ impl AppState {
     #[must_use]
     pub fn running(&self) -> Option<&Running> {
         self.running.as_ref()
+    }
+
+    /// The spaces this machine remembers, newest first. Metadata only: a window
+    /// that reads this gets names, modes and paths, never a credential.
+    #[must_use]
+    pub fn known(&self) -> &[Space] {
+        &self.known
+    }
+
+    /// Replaces the remembered spaces — start-up's read from disk.
+    pub fn set_known(&mut self, known: Vec<Space>) {
+        self.known = known;
+    }
+
+    /// Remembers a successfully unlocked space, newest first. Returns the entry
+    /// it replaced, if the same server and id were already known.
+    pub fn remember(&mut self, space: Space) -> Option<Space> {
+        spaces::remember(&mut self.known, space)
     }
 
     /// Holds every folder's passes, or lets them run again.
@@ -327,6 +355,40 @@ mod tests {
         assert!(
             state.vault_dir().is_none(),
             "so there are no indexes to read"
+        );
+    }
+
+    #[test]
+    fn a_remembered_space_is_kept_newest_first() {
+        use crate::spaces::Space;
+
+        let mut state = AppState::default();
+        assert!(state.known().is_empty(), "nothing remembered yet");
+        let space = Space {
+            server: "https://sync.example".into(),
+            vault_id: "v1".into(),
+            name: "Files synced".into(),
+            mode: SpaceMode::Vault,
+            vault_dir: PathBuf::from("/home/me/.syncbox/v1"),
+            folders: vec![PathBuf::from("/home/me/Syncbox")],
+        };
+        state.remember(space.clone());
+        assert_eq!(state.known().len(), 1);
+        assert!(
+            state.running().is_none(),
+            "remembering a space is not unlocking it"
+        );
+
+        let mut other = space;
+        other.vault_id = "v2".into();
+        state.remember(other);
+        assert_eq!(
+            state
+                .known()
+                .iter()
+                .map(|s| s.vault_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["v2", "v1"]
         );
     }
 

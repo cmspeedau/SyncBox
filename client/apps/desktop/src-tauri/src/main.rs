@@ -20,6 +20,7 @@
 mod commands;
 mod dto;
 mod prefs;
+mod spaces;
 mod state;
 mod tray;
 
@@ -53,16 +54,27 @@ fn main() {
         // webview calls our `open_folder`, never the plugin directly), so the
         // capability file stays empty.
         .plugin(tauri_plugin_opener::init())
+        // One setup: read the spaces this machine opened before (a missing or
+        // broken file is simply no rows) before the first window polls, then
+        // install the tray. The shared state is managed below, before setup
+        // runs; the tray's presence is managed for the close handler.
+        .setup({
+            let shared = Arc::clone(&shared);
+            move |app| {
+                if let Ok(config) = app.path().app_config_dir() {
+                    if let Ok(mut state) = shared.lock() {
+                        state.set_known(spaces::load(&config.join("spaces.json")));
+                    }
+                }
+                let presence = app.state::<tray::Presence>();
+                tray::install(app.handle(), &shared, &presence);
+                Ok(())
+            }
+        })
         .manage(shared)
         // Whether a tray exists to raise the window again. Managed before
         // `setup` so the close handler below can always read it.
         .manage(tray::Presence::default())
-        .setup(|app| {
-            let presence = app.state::<tray::Presence>();
-            let shared = app.state::<state::Shared>();
-            tray::install(app.handle(), shared.inner(), &presence);
-            Ok(())
-        })
         // Closing the main window is not quitting: while a tray exists to bring
         // the window back, the close hides it and the sync loops keep running.
         // `Quit` — the tray menu's, or the gear menu's — ends the process. With
@@ -85,6 +97,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::status,
+            commands::saved_spaces,
             commands::activity,
             commands::usage,
             commands::unlock,

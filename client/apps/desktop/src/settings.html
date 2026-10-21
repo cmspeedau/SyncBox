@@ -154,7 +154,7 @@
           <div class="card needs-session">
             <b>Space</b>
             <div class="crow"><span class="lbl" id="spaceLine">—</span><span class="sp"><span class="chip" id="modeChip">—</span></span></div>
-            <div class="cd">One space per machine until the client can keep more than one. To sync a different one, <i>Change…</i> re-runs first run — its picker lists the server's spaces.</div>
+            <div class="cd">One space runs at a time; the main window keeps the others as locked rows. To sync a different one, <i>Change…</i> re-runs first run — its picker lists the server's spaces.</div>
           </div>
         </section>
 
@@ -338,8 +338,9 @@
       });
 
       // Both Change… rows mean the same thing, as they do in the reference: the
-      // session is locked and the main window's card — where a space is chosen —
-      // takes over. This window has nothing left to describe, so it closes.
+      // session is locked and the main window's rows — its locked rows and *Add
+      // a space…* — take over. This window has nothing left to describe, so it
+      // closes.
       for (const btn of document.querySelectorAll("[data-change]")) {
         btn.addEventListener("click", async () => {
           try {
