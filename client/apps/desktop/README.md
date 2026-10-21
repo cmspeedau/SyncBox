@@ -142,10 +142,11 @@ more: the rail's space card and usage line, Sync Files (each synced folder with
 `Open`, *Change…* which runs `lock` then closes this window so the main window's
 rows can pick again (its locked rows or *Add a space…*), and the pause as one
 switch), Account (server and space,
-read-only, from `settings_info`), About (version, platform, licence, and the
-space's state folder with `Open`), and the footer's two app-wide switches —
-which is why the main window's temporary footer bar is gone; that window now
-re-reads `get_prefs` on its poll and follows the switch instead of owning it. No
+read-only, from `settings_info`), About (Appearance — the System/Light/Dark
+theme — version, platform, licence, and the space's state folder with `Open`),
+and the footer's two app-wide switches — which is why the main window's temporary
+footer bar is gone; that window now re-reads `get_prefs` on its poll and follows
+the switches and the theme instead of owning them. No
 *Apply settings* button: everything shipped here writes as it is touched. The
 `new`-badged controls are left out rather than drawn dead — no Notifications
 page, choose-folders tree, pause durations, auto-lock timer, device id, server
@@ -188,19 +189,27 @@ tray is up, closing the main window hides it and the loops keep syncing — *Qui
 is the only thing that ends the process; while none is, the close quits as it
 always did.
 
+**M16 palette specifics.** `src/theme.css` holds both columns of the palette in
+[`docs/reference-web-ui.md`](../../../docs/reference-web-ui.md) — the light one
+the mock draws and the drafted dark one — keyed off `prefers-color-scheme`
+unless `<html>` carries a pinned `data-theme`. Settings → About → Appearance
+writes that pin to `prefs.json` (`theme`: `system`, `light` or `dark`); the main
+window follows the pref on its 2-second poll, and the unlock window reads it
+when it opens. The browser previews take `&theme=dark` or `&theme=light`.
+
 **Shipped since M4:** autostart and single-instance (M6, below), the operator
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
-(M16 S3), the settings window (M16 S4), the tray (M16 S5), and remembered spaces
-drawn as locked rows (metadata only). **Still deferred:** the drafted dark
-palette (M16, above); **placeholder / on-demand files**, which want a hydrate path
-in the folder loop and the platform's placeholder API (FileProvider, CFAPI) for a
-plain folder — `syncbox mount` already serves files this way over FUSE; the
-**update publish job** — `release.yml` now covers both halves (sign, cut a
-Release, write `update.json`, and a flat apt repo when its key is set) but has not
-run: no minisign keypair is stored, so no public key sits in the config; a
-Node/Svelte frontend behind `frontendDist` (instead of this static one); and code
-signing.
+(M16 S3), the settings window (M16 S4), the tray (M16 S5), remembered spaces
+drawn as locked rows (metadata only), and the dark palette with its Appearance
+control (M16 leftovers). **Still deferred:** **placeholder / on-demand files**,
+which want a hydrate path in the folder loop and the platform's placeholder API
+(FileProvider, CFAPI) for a plain folder — `syncbox mount` already serves files
+this way over FUSE; the **update publish job** — `release.yml` now covers both
+halves (sign, cut a Release, write `update.json`, and a flat apt repo when its key
+is set) but has not run: no minisign keypair is stored, so no public key sits in
+the config; a Node/Svelte frontend behind `frontendDist` (instead of this static
+one); and code signing.
 
 ## Building the app
 

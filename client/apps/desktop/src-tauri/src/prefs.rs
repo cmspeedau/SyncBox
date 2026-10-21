@@ -10,6 +10,37 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// Which palette a window paints. `System` leaves the decision to
+/// `prefers-color-scheme`; the other two pin it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    /// Follow the desktop's light/dark setting.
+    #[default]
+    System,
+    /// Always the light palette.
+    Light,
+    /// Always the dark palette.
+    Dark,
+}
+
+/// Reads a theme forgivingly: a word this build does not know reads as
+/// `System` rather than failing the whole file (the same downgrade rule as an
+/// unknown field).
+impl<'de> Deserialize<'de> for Theme {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(match raw.as_str() {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        })
+    }
+}
+
 /// The stored switches. `camelCase` on disk matches what the webview exchanges.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -17,6 +48,8 @@ pub struct Prefs {
     /// Reveal the advanced tier (create-vault, by-hand vault id, extra sync
     /// folders). Gates controls that really exist; stores nothing else.
     pub show_hidden: bool,
+    /// The window palette; `System` follows the desktop.
+    pub theme: Theme,
 }
 
 /// Reads the preferences; anything wrong on disk reads as the defaults.
@@ -56,9 +89,17 @@ mod tests {
             Prefs::default(),
             "absent reads as the defaults"
         );
-        let prefs = Prefs { show_hidden: true };
+        let prefs = Prefs {
+            show_hidden: true,
+            theme: Theme::Dark,
+        };
         save(&file, &prefs).expect("first save creates the dir");
         assert_eq!(load(&file), prefs);
+        assert_eq!(
+            serde_json::to_string(&prefs).unwrap(),
+            r#"{"showHidden":true,"theme":"dark"}"#,
+            "the webview exchanges the theme as a lowercase word"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -80,6 +121,17 @@ mod tests {
         // A newer build's file: its extra fields must not break this one.
         fs::write(&file, r#"{"showHidden":true,"nextPassAt":123}"#).unwrap();
         assert!(load(&file).show_hidden, "known fields still read");
+        assert_eq!(
+            load(&file).theme,
+            Theme::System,
+            "a file older than the theme field follows the desktop"
+        );
+
+        // A word this build does not know must not sink the known switches.
+        fs::write(&file, r#"{"showHidden":true,"theme":"neon"}"#).unwrap();
+        let loaded = load(&file);
+        assert!(loaded.show_hidden, "known fields still read");
+        assert_eq!(loaded.theme, Theme::System, "unknown theme reads as system");
 
         let _ = fs::remove_dir_all(&dir);
     }
