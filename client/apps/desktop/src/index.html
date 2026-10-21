@@ -7,32 +7,20 @@
     <!--
       The desktop main window, built to docs/reference-agent-ui.html (v2):
       tinted status bar, gear click menu, one row per synced folder, usage
-      line, first-run card. The light palette is the mock's; the drafted dark
-      palette lands with the web console's, in a later slice.
+      line, first-run card. The palette lives in theme.css; with no pinned
+      theme it follows the desktop's colour scheme.
 
       A preview exists for browsers outside Tauri: open with
       `?demo=setup|step2|idle|sync|err|pause|pending` and every invoke answers
-      from fixtures, exactly the mock's own demo idiom. Inside Tauri the
-      parameter is ignored.
+      from fixtures, exactly the mock's own demo idiom. Add `&theme=dark` or
+      `&theme=light` to pin a palette for a screenshot. Inside Tauri the
+      parameters are ignored.
     -->
+    <link rel="stylesheet" href="theme.css" />
     <style>
-      :root {
-        --brand: #0082c9;
-        --brand-dark: #006aa3;
-        --ink: #272833;
-        --muted: #7a8694;
-        --faint: #97a3af;
-        --line: #e6eef4;
-        --hover: #f3f9fd;
-        --ok: #16a34a;
-        --warn: #f59e0b;
-        --err: #dc2626;
-        --pause: #d97706;
-        font-family: system-ui, sans-serif;
-      }
       * { box-sizing: border-box; margin: 0; }
       html, body { height: 100%; }
-      body { background: #fff; color: var(--ink); font-size: 13px; }
+      body { font-size: 13px; }
       .hidden { display: none !important; }
 
       .win { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
@@ -41,18 +29,19 @@
       .bar {
         flex: none; display: flex; align-items: center; gap: 9px;
         padding: 12px 14px;
-        background: linear-gradient(160deg, #f1f8fd, #dcebfa);
-        border-bottom: 1px solid rgba(0, 90, 140, 0.12);
+        background: linear-gradient(160deg, var(--bar-a), var(--bar-b));
+        border-bottom: 1px solid var(--bar-line);
       }
-      .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px #fff; }
+      .bar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px var(--paper); }
       .st-sync .bar .dot { background: var(--warn); animation: pulse 1s infinite; }
       .st-err .bar .dot { background: var(--err); }
       .st-pause .bar .dot { background: var(--pause); }
+      .st-locked .bar .dot { background: var(--faint); box-shadow: none; }
       @keyframes pulse { 50% { opacity: 0.4; } }
       .bar .name { font-weight: 700; font-size: 14px; }
       .bar .stxt { font-size: 11.5px; color: var(--muted); margin-left: 2px; }
-      .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: #5a6a77; display: grid; place-items: center; cursor: pointer; }
-      .gear:hover { background: #e3eef7; color: var(--brand-dark); }
+      .gear { margin-left: auto; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+      .gear:hover { background: var(--bar-hover); color: var(--brand-dark); }
       .setup .bar .dot, .setup .bar .stxt, .setup .gear { display: none; }
       .setup .bar { justify-content: center; }
       .setup .bar .name { margin-left: auto; margin-right: auto; }
@@ -60,26 +49,26 @@
       /* gear click menu */
       .gmenu {
         position: absolute; right: 10px; top: 52px; z-index: 5;
-        background: #fff; border: 1px solid var(--line); border-radius: 10px;
-        box-shadow: 0 8px 24px rgba(0, 80, 130, 0.18); padding: 4px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        box-shadow: 0 8px 24px var(--shadow); padding: 4px;
         display: none; min-width: 160px;
       }
       .gmenu.open { display: block; }
       .gmenu button { display: block; width: 100%; text-align: left; border: 0; background: none; font: inherit; font-size: 12.5px; color: var(--ink); padding: 8px 12px; border-radius: 7px; cursor: pointer; }
-      .gmenu button:hover { background: var(--hover); }
+      .gmenu button:hover { background: var(--fill); }
       .gmenu .sep { height: 1px; background: var(--line); margin: 4px 6px; }
-      .gmenu button.danger { color: #b3413f; }
-      .gmenu button.danger:hover { background: #fbeceb; }
-      .gmenu button:disabled { color: #b6c0c9; cursor: default; }
+      .gmenu button.danger { color: var(--err-ink); }
+      .gmenu button.danger:hover { background: var(--err-bg); }
+      .gmenu button:disabled { color: var(--faint); cursor: default; }
       .gmenu button:disabled:hover { background: none; }
 
       /* banners */
       .banner { display: none; margin: 10px 14px 0; border-radius: 8px; padding: 8px 10px; font-size: 12px; }
-      .banner.e { background: #fdeceb; border: 1px solid #f6c9c6; color: #b91c1c; }
+      .banner.e { background: var(--err-bg); border: 1px solid var(--err-line); color: var(--err-ink); }
       .st-err .banner.e { display: block; }
       /* The pause banner is a fact about the session, not a failure, so it sits
          in amber and only ever shows while the loops are held. */
-      .banner.p { background: #fdf3e3; border: 1px solid #f3ddb0; color: #92600a; }
+      .banner.p { background: var(--pause-bg); border: 1px solid var(--pause-line); color: var(--pause-ink); }
       .st-pause .banner.p { display: block; }
 
       /* first-run card */
@@ -89,14 +78,15 @@
       .setupcard .t { text-align: center; }
       .setupcard .t b { font-size: 15px; }
       .setupcard .t p { color: var(--muted); font-size: 12px; margin-top: 4px; }
-      .fld { font-size: 11.5px; color: #5b6672; margin-top: 8px; }
-      .fld input[type="text"], .fld input[type="password"] { width: 100%; margin-top: 5px; border: 1px solid #b7cfe0; border-radius: 22px; padding: 10px 13px; font: inherit; outline: none; }
+      .fld { font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+      .fld input[type="text"], .fld input[type="password"] { width: 100%; margin-top: 5px; border: 1px solid var(--input-line); border-radius: 22px; padding: 10px 13px; font: inherit; outline: none; background: var(--fill); color: var(--ink); }
+      .fld input::placeholder { color: var(--faint); }
       .fld input:focus { border-color: var(--brand); box-shadow: 0 0 0 2px rgba(0, 130, 201, 0.2); }
       .hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
       .msg { font-size: 12px; color: var(--muted); margin-top: 8px; }
-      .msg.err { color: #b91c1c; }
-      .msg.ok { color: #15803d; }
-      .okline { display: none; align-items: center; gap: 7px; background: #e7f6ec; color: #15803d; border-radius: 8px; padding: 7px 10px; font-size: 12px; }
+      .msg.err { color: var(--err-ink); }
+      .msg.ok { color: var(--ok-ink); }
+      .okline { display: none; align-items: center; gap: 7px; background: var(--ok-bg); color: var(--ok-ink); border-radius: 8px; padding: 7px 10px; font-size: 12px; }
       .step2 .okline { display: flex; }
 
       /* the card while the unlock window holds the chosen session: the fields
@@ -106,30 +96,38 @@
       .waitmsg button { border: 0; background: none; color: var(--brand-dark); font: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; padding: 0; }
 
       .vaults { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
-      .vaults label { display: flex; align-items: center; gap: 9px; border: 1px solid #d9e4ec; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
-      .vaults label:hover { background: var(--hover); }
+      .vaults label { display: flex; align-items: center; gap: 9px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+      .vaults label:hover { background: var(--fill); }
       .vaults label input { accent-color: var(--brand); }
       .vaults .vn { font-weight: 600; }
       .vaults .vm { color: var(--muted); font-size: 11.5px; }
 
-      .autof { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--hover); border: 1px solid #dbe7f0; border-radius: 14px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
-      .autof .auto { margin-left: auto; background: #e8f3fb; color: var(--brand-dark); border-radius: 20px; padding: 1px 8px; font-size: 9px; font-weight: 700; flex: none; font-family: inherit; white-space: nowrap; }
-      .autof .auto.byhand { background: #eef1f4; color: #66727e; }
+      /* a remembered space, before its server password is typed again */
+      .resumebox { border: 1px solid var(--line); background: var(--fill); border-radius: 10px; padding: 9px 12px; margin-top: 2px; }
+      .resumebox .rn { font-weight: 700; font-size: 13px; }
+      .resumebox .rm { color: var(--muted); font-size: 11.5px; margin-top: 2px; overflow-wrap: anywhere; }
+      .setupcard.resume #serverFld, .setupcard.resume #vaultFld, .setupcard.resume #folderFld,
+      .setupcard.resume #hdrFld, .setupcard.resume .step1-only { display: none; }
+      .setupcard.resume .t b { font-size: 15px; }
+
+      .autof { font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; background: var(--fill); border: 1px solid var(--line); border-radius: 14px; padding: 7px 10px; display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+      .autof .auto { margin-left: auto; background: var(--synced-bg); color: var(--synced-ink); border-radius: 20px; padding: 1px 8px; font-size: 9px; font-weight: 700; flex: none; font-family: inherit; white-space: nowrap; }
+      .autof .auto.byhand { background: var(--locked-bg); color: var(--locked-ink); }
       .frow { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
-      .frow input { flex: 1; border: 1px solid #b7cfe0; border-radius: 14px; padding: 6px 10px; font: 11.5px ui-monospace, Menlo, monospace; outline: none; }
+      .frow input { flex: 1; border: 1px solid var(--input-line); border-radius: 14px; padding: 6px 10px; font: 11.5px ui-monospace, Menlo, monospace; outline: none; background: var(--fill); color: var(--ink); }
       .frow button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; }
-      .frow button:hover { color: #b3413f; }
+      .frow button:hover { color: var(--err-ink); }
 
       /* hidden tier — advanced controls, dashed exactly like the mock */
-      .hgroup { display: none; border: 1px dashed #7db4d8; border-radius: 10px; padding: 9px 8px 8px; position: relative; margin-top: 8px; }
+      .hgroup { display: none; border: 1px dashed var(--accent-line); border-radius: 10px; padding: 9px 8px 8px; position: relative; margin-top: 8px; }
       .hgroup.show { display: block; }
-      .hgroup .rtag { position: absolute; top: -7px; left: 10px; background: #fff; color: var(--brand-dark); font-size: 8.5px; font-weight: 700; padding: 0 5px; letter-spacing: 0.04em; }
-      .seg { display: flex; background: #fff; border: 1px solid #b7cfe0; border-radius: 20px; padding: 3px; gap: 3px; }
+      .hgroup .rtag { position: absolute; top: -7px; left: 10px; background: var(--paper); color: var(--brand-dark); font-size: 8.5px; font-weight: 700; padding: 0 5px; letter-spacing: 0.04em; }
+      .seg { display: flex; background: var(--card); border: 1px solid var(--input-line); border-radius: 20px; padding: 3px; gap: 3px; }
       .seg button { flex: 1; border: 0; background: none; font: inherit; font-size: 11.5px; padding: 5px 0; border-radius: 17px; color: var(--muted); cursor: pointer; }
-      .seg button.on { background: var(--brand-dark); color: #fff; font-weight: 700; }
-      .newrow { border: 1px dashed #7db4d8; border-radius: 14px; color: var(--brand-dark); font-weight: 700; font-size: 11.5px; text-align: center; padding: 7px; cursor: pointer; background: #fff; }
+      .seg button.on { background: var(--brand-dark); color: var(--on-brand); font-weight: 700; }
+      .newrow { border: 1px dashed var(--accent-line); border-radius: 14px; color: var(--brand-dark); font-weight: 700; font-size: 11.5px; text-align: center; padding: 7px; cursor: pointer; background: var(--card); }
       .newrow:disabled { opacity: 0.5; cursor: default; }
-      .addf { border: 1px dashed #7db4d8; color: var(--brand-dark); font-weight: 700; font-size: 11px; border-radius: 16px; padding: 6px; text-align: center; margin-top: 6px; cursor: pointer; }
+      .addf { border: 1px dashed var(--accent-line); color: var(--brand-dark); font-weight: 700; font-size: 11px; border-radius: 16px; padding: 6px; text-align: center; margin-top: 6px; cursor: pointer; }
 
       /* vault list */
       .mid { flex: 1; min-height: 0; display: none; flex-direction: column; padding: 12px 14px 6px; }
@@ -138,16 +136,19 @@
       .mid h3 .cnt { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
       .vlist { list-style: none; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 3px; }
       .vrow { display: flex; align-items: center; gap: 9px; padding: 9px 8px; border-radius: 8px; font-size: 12.5px; cursor: pointer; }
-      .vrow:hover { background: var(--hover); }
+      .vrow:hover { background: var(--fill); }
       .vrow .vic { flex: none; width: 22px; }
       .vrow .vic svg { width: 22px; height: 22px; display: block; }
       .vrow .vname { font-weight: 600; white-space: nowrap; }
       .vrow .vmeta { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .vrow .vr { margin-left: auto; flex: none; display: flex; align-items: center; gap: 8px; }
-      .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: #e8f3fb; color: var(--brand-dark); flex: none; white-space: nowrap; }
-      .chip.grey { background: #eef1f4; color: #66727e; }
-      .chip.amber { background: #fdf3e3; color: #92600a; }
-      .chip.red { background: #fdeceb; color: #b91c1c; }
+      .vrow.locked .vic { opacity: 0.55; }
+      .mini { border: 1px solid var(--input-line); background: var(--card); color: var(--brand-dark); border-radius: 12px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer; }
+      .mini:hover { background: var(--fill); }
+      .chip { font-size: 11px; padding: 2px 8px; border-radius: 10px; background: var(--synced-bg); color: var(--synced-ink); flex: none; white-space: nowrap; }
+      .chip.grey { background: var(--locked-bg); color: var(--locked-ink); }
+      .chip.amber { background: var(--pause-bg); color: var(--pause-ink); }
+      .chip.red { background: var(--err-bg); color: var(--err-ink); }
 
       /* activity disclosure — the feed lives here until the settings window's
          Notifications page gives it a home of its own (reference-agent-settings) */
@@ -165,8 +166,8 @@
       .usage { display: none; font-size: 11.5px; color: var(--muted); margin-bottom: 8px; }
       .win:not(.setup) .usage { display: flex; }
       .usage .r { margin-left: auto; }
-      .setup-btn { width: 100%; border: 0; border-radius: 22px; padding: 13px; font-weight: 700; font-size: 13.5px; cursor: pointer; display: none; align-items: center; justify-content: center; gap: 9px; background: var(--brand-dark); color: #fff; box-shadow: 0 3px 10px rgba(0, 80, 130, 0.35); }
-      .setup-btn:hover { background: #0075b3; }
+      .setup-btn { width: 100%; border: 0; border-radius: 22px; padding: 13px; font-weight: 700; font-size: 13.5px; cursor: pointer; display: none; align-items: center; justify-content: center; gap: 9px; background: var(--brand-dark); color: var(--on-brand); box-shadow: 0 3px 10px var(--shadow); }
+      .setup-btn:hover { background: var(--brand-hover); }
       .setup-btn:disabled { opacity: 0.5; cursor: default; }
       .setup .setup-btn { display: flex; }
     </style>
@@ -183,6 +184,7 @@
       </div>
 
       <div class="gmenu" id="gmenu">
+        <button id="mAdd" type="button" class="hidden">Add a space…</button>
         <button id="mSettings" type="button">Settings…</button>
         <div class="sep"></div>
         <button id="mSync" type="button">Sync now</button>
@@ -197,11 +199,15 @@
 
       <!-- first run, and every locked session (same ask: which space, which password) -->
       <div class="setupcard" id="setupCard">
-        <span class="logo"><svg width="52" height="34" viewBox="0 0 40 24" fill="none" stroke="#0082c9" stroke-width="2.4"><circle cx="12" cy="14" r="6.5"/><circle cx="27" cy="14" r="6.5"/><circle cx="20" cy="4" r="2.2" fill="#0082c9" stroke="none"/></svg></span>
+        <span class="logo"><svg width="52" height="34" viewBox="0 0 40 24" fill="none" stroke="currentColor" stroke-width="2.4" style="color:var(--brand)"><circle cx="12" cy="14" r="6.5"/><circle cx="27" cy="14" r="6.5"/><circle cx="20" cy="4" r="2.2" fill="currentColor" stroke="none"/></svg></span>
         <div class="t"><b>Welcome to Syncbox</b><p>Zero-knowledge sync. Connect to your server to choose the space you want on this machine.</p></div>
         <div class="okline"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m5 13 4 4L19 7"/></svg><span id="okTxt"></span></div>
+        <div class="resumebox hidden" id="resumeBox">
+          <div class="rn" id="resumeName"></div>
+          <div class="rm" id="resumeMeta"></div>
+        </div>
 
-        <label class="fld">Server address
+        <label class="fld" id="serverFld">Server address
           <input id="server" type="text" placeholder="https://sync.example.org" spellcheck="false" />
         </label>
         <label class="fld">Server password
@@ -217,13 +223,13 @@
             </div>
           </div>
           <div class="vaults" id="vaultRows"></div>
-          <input id="vaultId" type="text" class="hidden" placeholder="vault id from the server" spellcheck="false" style="margin-top:6px;border:1px solid #b7cfe0;border-radius:22px;padding:10px 13px;font:inherit;outline:none;width:100%;" />
+          <input id="vaultId" type="text" class="hidden" placeholder="vault id from the server" spellcheck="false" style="margin-top:6px;" />
           <div class="hgroup" id="gNew"><span class="rtag">SHOW HIDDEN</span>
             <label class="fld">Vault password — for the header you are creating
               <input id="vaultPw" type="password" placeholder="Vault password" autocomplete="new-password" />
             </label>
             <div class="hint">A header is protected by the vault password, which is asked for here (unlike unlocking, which asks in its own window) because this machine is the one writing it.</div>
-            <button class="newrow" id="createHdr" type="button">＋ New vault header <span style="font-weight:400;color:#7a8694;">· on this machine</span></button>
+            <button class="newrow" id="createHdr" type="button">＋ New vault header <span style="font-weight:400;color:var(--muted);">· on this machine</span></button>
           </div>
         </div>
 
@@ -257,6 +263,7 @@
         <div class="usage"><span id="usageLeft">—</span><span class="r" id="usageRight"></span></div>
         <button class="setup-btn" id="setupBtn" type="button" disabled>Connect</button>
         <p class="waitmsg hidden" id="waitMsg">Waiting for the unlock window… <button id="waitCancel" type="button">Cancel</button></p>
+        <p class="waitmsg hidden" id="backMsg"><button id="setupBack" type="button">Back to vaults</button></p>
       </div>
     </div>
 
@@ -282,8 +289,25 @@
       // fixture reports the same answer, so the poll agrees with the flag now
       // that the switch itself lives in the settings window.
       let demoHidden = !!(DEMO && new URLSearchParams(location.search).get("hidden"));
+      // A demo unlock (the resume card's button) flips the fixture to a running
+      // session, so the browser preview can show the row list after it.
+      let demoUnlocked = false;
+      // Which fixture row the demo unlock marked running; `null` falls back to
+      // the demo vault when a state (idle, sync…) was requested directly.
+      let demoRunningId = null;
+      // `&theme=dark|light` pins the palette in the browser preview; inside
+      // Tauri the stored preference is the only source.
+      const demoTheme = (DEMO && new URLSearchParams(location.search).get("theme")) || "system";
       function demoInvoke(cmd, args) {
-        const main = DEMO_STATE[demoState()];
+        const main = demoUnlocked ? "idle" : DEMO_STATE[demoState()];
+        const runningId = demoRunningId || (main ? "demo" : null);
+        const folders =
+          runningId === "demo2"
+            ? [{ folder: "/home/you/Syncbox/Studio archive", state: DEMO_FOLDER[demoState()] || "idle", lastSyncUnix: 1760000000 }]
+            : [
+                { folder: "/home/you/Syncbox/Files synced", state: DEMO_FOLDER[demoState()], lastSyncUnix: 1760000000 },
+                { folder: "/home/you/LaptopMirror/Files synced", state: "idle", lastSyncUnix: 1760000000 },
+              ];
         const S = {
           status: () =>
             main
@@ -291,20 +315,20 @@
                   state: main,
                   paused: demoPaused,
                   unlocked: true,
-                  vaultId: "demo",
+                  vaultId: runningId,
                   lastSyncUnix: Math.floor(Date.now() / 1000) - 320,
                   lastError: demoState() === "err" ? "Connection refused: sync.example.org" : null,
                   passes: 57,
-                  folders: [
-                    { folder: "/home/you/Syncbox/Files synced", state: DEMO_FOLDER[demoState()], lastSyncUnix: 1760000000 },
-                    { folder: "/home/you/LaptopMirror/Files synced", state: "idle", lastSyncUnix: 1760000000 },
-                  ],
+                  folders,
                 }
               : { state: "locked", paused: false, unlocked: false, vaultId: null, lastSyncUnix: null, lastError: null, passes: 0, folders: [] },
-          usage: () => ({ files: 824, bytes: 3_600_000_000, folders: [
-            { folder: "/home/you/Syncbox/Files synced", files: 412, bytes: 1_800_000_000 },
-            { folder: "/home/you/LaptopMirror/Files synced", files: 412, bytes: 1_800_000_000 },
-          ] }),
+          usage: () => ({ files: runningId === "demo2" ? 480 : 824, bytes: runningId === "demo2" ? 1_200_000_000 : 3_600_000_000, folders:
+            runningId === "demo2"
+              ? [{ folder: "/home/you/Syncbox/Studio archive", files: 480, bytes: 1_200_000_000 }]
+              : [
+                  { folder: "/home/you/Syncbox/Files synced", files: 412, bytes: 1_800_000_000 },
+                  { folder: "/home/you/LaptopMirror/Files synced", files: 412, bytes: 1_800_000_000 },
+                ] }),
           activity: () => [
             { folder: "/home/you/Syncbox/Files synced", kind: "done", atUnix: Math.floor(Date.now() / 1000) - 320, error: null, report: { uploaded: 2, downloaded: 1, conflicts: 0, deleted: 0, skipped: 0, chunksUploaded: 3, bytesUploaded: 4096, quiet: false } },
             { folder: "/home/you/Syncbox/Files synced", kind: "failed", atUnix: Math.floor(Date.now() / 1000) - 1200, error: "Connection reset", report: null },
@@ -313,7 +337,16 @@
             { id: "demo", name: "Files synced", mode: "vault", location: "Syncbox/Files synced", defaultFolder: "/home/you/Syncbox/Files synced", headerDir: "/home/you/.syncbox/demo", archived: false },
             { id: "demo2", name: "Studio archive", mode: "sync", location: "Syncbox/Studio archive", defaultFolder: "/home/you/Syncbox/Studio archive", headerDir: "/home/you/.syncbox/demo2", archived: false },
           ],
-          get_prefs: () => ({ showHidden: demoHidden }),
+          saved_spaces: () => [
+            { id: "demo", name: "Files synced", server: "https://sync.example.org", mode: "vault", vaultDir: "/home/you/.syncbox/demo", folders: ["/home/you/Syncbox/Files synced"], running: demoRunningId ? demoRunningId === "demo" : !!main },
+            { id: "demo2", name: "Studio archive", server: "https://sync.example.org", mode: "sync", vaultDir: "/home/you/.syncbox/demo2", folders: ["/home/you/Syncbox/Studio archive"], running: demoRunningId === "demo2" },
+          ],
+          unlock: (a) => {
+            demoUnlocked = true;
+            demoRunningId = (a && a.settings && a.settings.vaultId) || "demo";
+            return S.status();
+          },
+          get_prefs: () => ({ showHidden: demoHidden, theme: demoTheme }),
           open_settings_window: () => null,
           set_paused: (a) => {
             demoPaused = !!(a && a.paused);
@@ -336,6 +369,13 @@
       const $ = (id) => document.getElementById(id);
       const win = $("win");
 
+      // A pinned theme is one attribute on <html>; with none, theme.css lets
+      // the desktop's colour scheme decide.
+      function applyTheme(mode) {
+        if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+        else delete document.documentElement.dataset.theme;
+      }
+
       // The server's facts about its spaces, keyed by id: the id is the
       // server's handle, never printed where the name exists.
       const choices = new Map();
@@ -350,6 +390,14 @@
       // itself lives in the shell, never here: the card only knows that
       // somebody else is being asked for the vault password.
       let waiting = false;
+      // The spaces this machine remembers, newest first, from `saved_spaces`.
+      // Metadata only: a remembered space is drawn as a locked row until the
+      // human types its server password again.
+      let saved = [];
+      // The locked row the card is unlocking, if any; and whether the card was
+      // opened to add a space rather than to resume one.
+      let resumeSpace = null;
+      let addingSpace = false;
 
       const TXT = { idle: "up to date", syncing: "syncing…", error: "sync error", paused: "paused" };
 
@@ -385,6 +433,71 @@
         return u ? ` · ${fmtFiles(u.files)} files · ${fmtBytes(u.bytes)}` : "";
       }
 
+      function folderRowHtml(f) {
+        const right =
+          openFlash === f.folder
+            ? '<span class="chip">opening folder…</span>'
+            : f.state === "syncing"
+              ? '<span class="chip amber">syncing</span>'
+              : f.state === "error"
+                ? '<span class="chip red">error</span>'
+                : '<span class="chip">synced</span>';
+        return (
+          `<li class="vrow" data-folder="${escapeHtml(f.folder)}" title="${escapeHtml(f.folder)}">` +
+          `<span class="vic">${VIC}</span>` +
+          `<span class="vname">${escapeHtml(basename(f.folder))}</span>` +
+          `<span class="vmeta">${escapeHtml(rowMeta(f.folder))}</span>` +
+          `<span class="vr">${right}</span></li>`
+        );
+      }
+
+      // A remembered space that is not running: the mock's dimmed row with a
+      // grey chip and an Unlock button. Its meta says where it lives and what
+      // it stores; the sizes belong to the folder rows, which need an index.
+      function savedRowHtml(space, index) {
+        const host = String(space.server || "").replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        const what = space.mode === "sync" ? "sync space" : "encrypted vault";
+        const folders = (space.folders || []).length;
+        return (
+          `<li class="vrow locked" data-saved="${index}" title="${escapeHtml(space.server || "")}">` +
+          `<span class="vic">${VIC}</span>` +
+          `<span class="vname">${escapeHtml(space.name || space.id)}</span>` +
+          `<span class="vmeta">${escapeHtml(` · ${host} · ${what}${folders ? ` · ${folders} folder${folders === 1 ? "" : "s"}` : ""}`)}</span>` +
+          `<span class="vr"><span class="chip grey">locked</span><button class="mini" type="button" data-unlock="${index}">Unlock</button></span></li>`
+        );
+      }
+
+      // The list under the header: the running space's folders, then a locked
+      // row for every other space this machine remembers.
+      function renderList(folders) {
+        const running = saved
+          .map((space, index) => ({ space, index }))
+          .filter(({ space }) => !space.running)
+          .map(({ space, index }) => savedRowHtml(space, index))
+          .join("");
+        $("vlist").innerHTML = folders.map(folderRowHtml).join("") + running;
+      }
+
+      // The window with only remembered rows: every space is locked, so the
+      // gear's session commands have nothing to act on until one is unlocked.
+      function renderLocked() {
+        win.className = "win st-locked";
+        $("stxt").textContent = "locked";
+        $("passCnt").textContent = saved.length ? `${saved.length} saved` : "";
+        $("errBanner").textContent = "";
+        $("waitMsg").classList.add("hidden");
+        $("backMsg").classList.add("hidden");
+        $("mPause").textContent = "Pause syncing";
+        $("mPause").disabled = true;
+        $("mSync").disabled = true;
+        $("mLock").disabled = true;
+        $("mAdd").classList.remove("hidden");
+        renderList([]);
+        $("usageLeft").textContent =
+          `${saved.length} space${saved.length === 1 ? "" : "s"} · locked`;
+        $("usageRight").textContent = "";
+      }
+
       // The backend's state words mapped to the mock's `st-*` classes.
       const WIN_CLASS = { idle: "idle", syncing: "sync", error: "err", paused: "pause" };
 
@@ -397,6 +510,8 @@
       function renderMain(s) {
         const shown = shownState(s);
         win.className = "win st-" + (WIN_CLASS[shown] || shown);
+        $("waitMsg").classList.add("hidden");
+        $("backMsg").classList.add("hidden");
         $("stxt").textContent = TXT[shown] || shown;
         $("passCnt").textContent = s.passes ? `pass ${s.passes}` : "";
         $("mPause").textContent = s.paused ? "Resume syncing" : "Pause syncing";
@@ -405,27 +520,12 @@
         $("mSync").disabled = !!s.paused;
         const banner = $("errBanner");
         banner.textContent = s.state === "error" && s.lastError ? "Last pass failed: " + s.lastError : "";
-        const folders = s.folders || [];
-        $("vlist").innerHTML = folders
-          .map((f) => {
-            const right =
-              openFlash === f.folder
-                ? '<span class="chip">opening folder…</span>'
-                : f.state === "syncing"
-                  ? '<span class="chip amber">syncing</span>'
-                  : f.state === "error"
-                    ? '<span class="chip red">error</span>'
-                    : '<span class="chip">synced</span>';
-            return (
-              `<li class="vrow" data-folder="${escapeHtml(f.folder)}" title="${escapeHtml(f.folder)}">` +
-              `<span class="vic">${VIC}</span>` +
-              `<span class="vname">${escapeHtml(basename(f.folder))}</span>` +
-              `<span class="vmeta">${escapeHtml(rowMeta(f.folder))}</span>` +
-              `<span class="vr">${right}</span></li>`
-            );
-          })
-          .join("");
-        const name = (lastStatus && choices.get(lastStatus.vaultId)?.name) || "";
+        $("mPause").disabled = false;
+        $("mLock").disabled = false;
+        $("mAdd").classList.add("hidden");
+        renderList(s.folders || []);
+        const running = saved.find((space) => space.running);
+        const name = running?.name || (lastStatus && choices.get(lastStatus.vaultId)?.name) || "";
         $("usageLeft").textContent =
           lastUsage && lastUsage.folders.length
             ? `${[name, fmtBytes(lastUsage.bytes), `${lastUsage.folders.length} folder${lastUsage.folders.length === 1 ? "" : "s"}`].filter(Boolean).join(" · ")}`
@@ -458,9 +558,20 @@
 
       function renderSetup() {
         win.className = "win setup";
-        $("setupBtn").textContent = step === 1 ? "Connect" : "Save & unlock";
-        $("setupBtn").disabled =
-          step === 1 && !($("server").value.trim() && $("spw").value.trim());
+        const resuming = !!resumeSpace;
+        $("setupCard").classList.toggle("resume", resuming);
+        $("setupCard").classList.toggle("step2", step === 2 && !resuming);
+        $("resumeBox").classList.toggle("hidden", !resuming);
+        if (resuming) {
+          $("resumeName").textContent = resumeSpace.name || resumeSpace.id;
+          const what = resumeSpace.mode === "sync" ? "sync space — kept in the clear" : "encrypted vault";
+          $("resumeMeta").textContent = `${resumeSpace.server} · ${what}`;
+        }
+        $("server").readOnly = resuming;
+        $("setupBtn").textContent = resuming ? "Unlock" : step === 1 ? "Connect" : "Save & unlock";
+        $("setupBtn").disabled = resuming
+          ? !$("spw").value.trim()
+          : step === 1 && !($("server").value.trim() && $("spw").value.trim());
         // While the unlock window holds the chosen session, the card says so
         // instead of inviting a second attempt. The fields keep their values —
         // the session was snapshotted — but stop being editable, because
@@ -468,6 +579,7 @@
         $("setupBtn").classList.toggle("hidden", waiting);
         $("waitMsg").classList.toggle("hidden", !waiting);
         $("setupCard").classList.toggle("waiting", waiting);
+        $("backMsg").classList.toggle("hidden", !(saved.length && (addingSpace || resuming) && !waiting));
       }
 
       function setMsg(text, kind) {
@@ -480,8 +592,9 @@
         // The three dashed groups the switch reveals.
         for (const id of ["gSeg", "gNew", "gFolders"]) $(id).classList.toggle("show", hiddenTier);
         // The header field is a .fld, not a dashed group: visible on step 2
-        // only, and only for eyes that asked for it.
-        $("hdrFld").classList.toggle("hidden", !(hiddenTier && step === 2));
+        // only, and only for eyes that asked for it (never on a resume, whose
+        // state directory is the one the space already had).
+        $("hdrFld").classList.toggle("hidden", !(hiddenTier && step === 2 && !resumeSpace));
       }
 
       function chosenId() {
@@ -560,12 +673,116 @@
         renderSetup();
       }
 
+      // Back to the card's first question: used when opening it to add a space
+      // after a previous picker, and by a locked row that resumes a remembered
+      // space (whose picker and folder editor are not asked again).
+      function resetSetup() {
+        step = 1;
+        byHand = false;
+        choices.clear();
+        $("vaultRows").innerHTML = "";
+        $("vaultId").value = "";
+        $("vaultId").classList.add("hidden");
+        $("segServer").classList.add("on");
+        $("segHand").classList.remove("on");
+        $("vaultRows").classList.remove("hidden");
+        $("editFolders").innerHTML = "";
+        $("autoFolder").innerHTML = "";
+        $("setupCard").classList.remove("step2");
+        $("vaultFld").classList.add("hidden");
+        $("folderFld").classList.add("hidden");
+        $("hdrFld").classList.add("hidden");
+      }
+
+      function beginResume(space) {
+        if (!space) return;
+        resetSetup();
+        resumeSpace = space;
+        addingSpace = false;
+        waiting = false;
+        $("server").value = space.server || "";
+        $("spw").value = "";
+        setMsg(`Enter the server password to unlock “${space.name || space.id}”.`);
+        renderSetup();
+        $("spw").focus();
+      }
+
       /* ---------- wiring ---------- */
 
       $("server").addEventListener("input", renderSetup);
       $("spw").addEventListener("input", renderSetup);
 
+      // Hands a fully-built session to the shell. A sync space has no header to
+      // unlock, so its server password is the only secret and it starts at once;
+      // a vault's password is asked for in its own top-level window, so it never
+      // enters this webview.
+      async function startUnlock(settings) {
+        setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
+        if (settings.mode === "sync") {
+          try {
+            await invoke("unlock", { settings, vaultPassword: "" });
+            setMsg("");
+            resumeSpace = null;
+            addingSpace = false;
+            await refresh();
+          } catch (err) {
+            setMsg(String(err), "err");
+          }
+          return;
+        }
+        try {
+          await invoke("open_unlock_window", { settings });
+          waiting = true;
+          renderSetup();
+        } catch (err) {
+          setMsg(String(err), "err");
+        }
+      }
+
       $("setupBtn").addEventListener("click", async () => {
+        // A remembered space: the address, state dir and folders are its own,
+        // but this shell stored no credential, so the server password is typed
+        // again before the vault window can ask for the second secret.
+        if (resumeSpace) {
+          const space = resumeSpace;
+          const password = $("spw").value;
+          setMsg("Checking the server…");
+          try {
+            const vaults = await invoke("list_vaults", { server: space.server, password });
+            const found = vaults.find((v) => v.id === space.id && !v.archived);
+            if (!found) {
+              setMsg("That space is no longer on this server — add it again from the space picker.", "err");
+              return;
+            }
+            const folders =
+              space.folders && space.folders.length
+                ? space.folders
+                : found.defaultFolder
+                  ? [found.defaultFolder]
+                  : [];
+            if (!folders.length) {
+              setMsg("This space has no folder on this machine — add it again from the space picker.", "err");
+              return;
+            }
+            const dir = space.vaultDir || found.headerDir || "";
+            if (!dir) {
+              setMsg("This computer has no home directory to keep the space's state in — the hidden Vault header folder field can name one when adding it.", "err");
+              return;
+            }
+            await startUnlock({
+              server: space.server,
+              serverPassword: password,
+              vaultId: space.id,
+              vaultDir: dir,
+              folders,
+              mode: found.mode || space.mode,
+              name: found.name || space.name || space.id,
+            });
+          } catch (err) {
+            setMsg(String(err), "err");
+          }
+          return;
+        }
         if (step === 1) {
           setMsg("Asking the server for its spaces…");
           const server = $("server").value.trim();
@@ -621,7 +838,7 @@
           return;
         }
         const mode = chosen()?.mode || "vault";
-        const settings = {
+        await startUnlock({
           server: $("server").value.trim(),
           serverPassword: $("spw").value,
           vaultId: id,
@@ -629,31 +846,7 @@
           folders,
           mode,
           name: chosen()?.name || id,
-        };
-        if (mode === "sync") {
-          // A sync space keeps nothing encrypted, so its server password is
-          // the only secret it has and no window needs to ask for another.
-          setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
-          try {
-            const s = await invoke("unlock", { settings, vaultPassword: "" });
-            setMsg("");
-            renderStatus(s);
-          } catch (err) {
-            setMsg(String(err), "err");
-          }
-          return;
-        }
-        // A vault's password is asked for in its own top-level window, so it
-        // never enters this webview: this window cannot unlock on its own, and
-        // says who can.
-        setMsg(DEMO ? "(demo) Unlocking…" : "Unlocking…");
-        try {
-          await invoke("open_unlock_window", { settings });
-          waiting = true;
-          renderSetup();
-        } catch (err) {
-          setMsg(String(err), "err");
-        }
+        });
       });
 
       $("vaultRows").addEventListener("change", () => renderFolderLine());
@@ -702,15 +895,41 @@
 
       // Back out of the unlock window without unlocking: the shell drops the
       // pending session and closes the window, and the next poll restores the
-      // editable card.
+      // editable card (or the locked rows it came from).
       $("waitCancel").addEventListener("click", async () => {
         try {
           await invoke("cancel_unlock");
           waiting = false;
-          renderSetup();
+          resumeSpace = null;
+          addingSpace = false;
+          setMsg("");
+          await refresh();
         } catch (err) {
           setMsg(String(err), "err");
         }
+      });
+
+      // Back out of the card to the remembered rows, when there are any.
+      $("setupBack").addEventListener("click", async () => {
+        addingSpace = false;
+        resumeSpace = null;
+        setMsg("");
+        await refresh();
+      });
+
+      // The gear's way to a different space: the picker, on the server this
+      // machine last used (the address stays editable).
+      $("mAdd").addEventListener("click", () => {
+        $("gmenu").classList.remove("open");
+        resetSetup();
+        addingSpace = true;
+        resumeSpace = null;
+        waiting = false;
+        $("server").value = (saved[0] && saved[0].server) || "";
+        $("spw").value = "";
+        setMsg("");
+        renderSetup();
+        $("spw").focus();
       });
 
       /* gear click menu — only items that really exist */
@@ -737,15 +956,28 @@
       });
       $("mLock").addEventListener("click", async () => {
         $("gmenu").classList.remove("open");
-        try { renderStatus(await invoke("lock")); } catch (err) { console.error(err); }
+        try {
+          await invoke("lock");
+          // Re-read the rows: the space just locked is remembered, not running,
+          // so it belongs in the list the next render draws.
+          await refresh();
+        } catch (err) {
+          console.error(err);
+        }
       });
       $("mQuit").addEventListener("click", () => {
         $("gmenu").classList.remove("open");
         invoke("quit").catch(() => {});
       });
 
-      // Row click reveals the folder; the flash mirrors the mock.
+      // Row click reveals the folder; a locked row opens the resume card, and
+      // the flash mirrors the mock.
       $("vlist").addEventListener("click", async (e) => {
+        const savedRow = e.target.closest("[data-saved]");
+        if (savedRow) {
+          beginResume(saved[Number(savedRow.dataset.saved)]);
+          return;
+        }
         const row = e.target.closest("[data-folder]");
         if (!row) return;
         const folder = row.dataset.folder;
@@ -764,26 +996,39 @@
       /* ---------- polling ---------- */
 
       function renderStatus(s) {
+        if (!s) return;
         lastStatus = s;
         if (s.unlocked) {
           waiting = false;
+          resumeSpace = null;
+          addingSpace = false;
           renderMain(s);
-        } else {
-          renderSetup();
-          $("errBanner").textContent = "";
+          return;
         }
+        $("errBanner").textContent = "";
+        // A card the human opened (first run, Add a space…, a locked row, or
+        // the unlock window's wait) outranks the locked rows behind it.
+        if (addingSpace || resumeSpace || waiting) renderSetup();
+        else if (saved.length) renderLocked();
+        else renderSetup();
       }
 
       async function refresh() {
         tick += 1;
         try {
           const s = await invoke("status");
+          // The remembered rows are cheap metadata; read them with every tick
+          // so a lock or a new space shows without a restart.
+          saved = (await invoke("saved_spaces")) || [];
           if (s.unlocked && (DEMO || tick % 3 === 0)) lastUsage = await invoke("usage");
           if (s.unlocked && (DEMO || tick % 2 === 0)) renderFeed(await invoke("activity"));
-          // The Show-hidden switch lives in the settings window's footer bar
-          // now, so this window follows the pref it writes: revealing an
-          // advanced control over there shows it here, without a restart.
-          const shown = !!(await invoke("get_prefs")).showHidden;
+          // The Show-hidden switch and the theme live in the settings window
+          // now, so this window follows the prefs it writes: revealing an
+          // advanced control or pinning a palette over there shows here
+          // without a restart.
+          const prefs = await invoke("get_prefs");
+          applyTheme(prefs.theme);
+          const shown = !!prefs.showHidden;
           if (shown !== hiddenTier) {
             hiddenTier = shown;
             applyHidden();
@@ -802,7 +1047,9 @@
 
       async function boot() {
         try {
-          hiddenTier = !!(await invoke("get_prefs")).showHidden;
+          const prefs = await invoke("get_prefs");
+          hiddenTier = !!prefs.showHidden;
+          applyTheme(prefs.theme);
         } catch (err) { console.error(err); }
         applyHidden();
         renderSetup();

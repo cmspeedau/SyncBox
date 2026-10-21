@@ -16,6 +16,7 @@ use syncbox_transport::{Client, UreqHttp};
 
 use crate::dto::{self, Activity, FolderSnapshot, Status, VaultChoice, VaultSettings};
 use crate::prefs::{self, Prefs};
+use crate::spaces::{self, Space};
 use crate::state::{AppState, Shared};
 
 /// The current sync status (state, last pass, any error), aggregated across the
@@ -24,6 +25,16 @@ use crate::state::{AppState, Shared};
 pub fn status(shared: State<'_, Shared>) -> Result<Status, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
     Ok(current_status(&state))
+}
+
+/// The spaces this machine has opened before, newest first, with the running one
+/// marked. Metadata only — nothing here is a credential — so the main window can
+/// draw a locked row for each and ask for the server password only when one is
+/// clicked.
+#[command]
+pub fn saved_spaces(shared: State<'_, Shared>) -> Result<Vec<dto::SavedSpace>, String> {
+    let state = shared.lock().map_err(|e| e.to_string())?;
+    Ok(dto::saved_spaces(state.known(), state.running()))
 }
 
 /// The recent sync activity feed across folders, oldest first.
@@ -60,15 +71,24 @@ const HISTORY_LIMIT: usize = 50;
 /// Blocks on key derivation, so it runs off the main thread.
 #[command]
 pub async fn unlock(
+    app: AppHandle,
     shared: State<'_, Shared>,
     settings: VaultSettings,
     vault_password: String,
 ) -> Result<Status, String> {
     let shared = Arc::clone(shared.inner());
     let (session, name) = settings.into_parts();
+    let path = spaces_path(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let mut state = shared.lock().map_err(|e| e.to_string())?;
+        let remembered = Space::from_session(&session, &name);
         state.unlock_vault(session, name, vault_password)?;
+        // The session works whether or not the registry can be written, so a
+        // failed save costs the next launch's locked row, never this unlock.
+        state.remember(remembered);
+        if let Ok(path) = path {
+            let _ = spaces::save(&path, state.known());
+        }
         Ok(current_status(&state))
     })
     .await
@@ -114,13 +134,22 @@ pub async fn unlock_pending(
     password: String,
 ) -> Result<Status, String> {
     let shared = Arc::clone(shared.inner());
+    let path = spaces_path(&app);
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let mut state = shared.lock().map_err(|e| e.to_string())?;
         let Some((session, name)) = state.take_pending() else {
             return Err("nothing is waiting to be unlocked".to_string());
         };
+        let remembered = Space::from_session(&session, &name);
         match state.unlock_vault(session.clone(), name.clone(), password) {
-            Ok(()) => Ok(current_status(&state)),
+            Ok(()) => {
+                state.remember(remembered);
+                // Best effort: see `unlock`.
+                if let Ok(path) = path {
+                    let _ = spaces::save(&path, state.known());
+                }
+                Ok(current_status(&state))
+            }
             Err(err) => {
                 // Hand it back: the human is still looking at the window.
                 state.set_pending(session, name);
@@ -459,6 +488,14 @@ fn prefs_path(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_config_dir()
         .map(|dir| dir.join("prefs.json"))
+        .map_err(|e| e.to_string())
+}
+
+/// Where the remembered spaces live: `spaces.json`, beside `prefs.json`.
+fn spaces_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_config_dir()
+        .map(|dir| dir.join("spaces.json"))
         .map_err(|e| e.to_string())
 }
 

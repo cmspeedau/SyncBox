@@ -183,9 +183,13 @@ directory entirely, and came back byte-identical.
   a tray exists to raise it again. Where the desktop carries no indicator library it stays
   windows-only with no crash — the backend `dlopen`s libayatana-appindicator, so the build
   needs no package and CI is unaffected.
+- **Leftover — remembered spaces.** Each opened space is written to `spaces.json` (server,
+  id, name, mode, state dir and folders; never a password or token), and the main window
+  draws every remembered space that is not running as a dimmed locked row. *Unlock* asks
+  for the server password again — nothing was kept — then opens the vault window, or
+  unlocks a sync space directly. One space still runs at a time.
 - **Left:**
-  - the drafted **dark palette**, and the mock's per-vault **locked rows** — both wait on
-    the client remembering a session between launches;
+  - the drafted **dark palette**;
   - **placeholder / on-demand files** — the OneDrive baseline's *Files On Demand*: every file
     shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
     200 GB of disk only if the human reads all of it. Half of it is already true — the index

@@ -28,18 +28,24 @@ M16 S4 moved the two app-wide switches — *Run at login* and *Show hidden
 features* — out of this window's temporary footer bar and into the settings
 window's footer, where this reference always put them; this window re-reads the
 pref on its poll, so revealing an advanced control over there draws it here
-without a restart. Four honest deviations: the list shows the one space's
-folders (the client is single-space today, not the multi-vault mock); the gear
+without a restart. Four honest deviations: the list shows the one running
+space's folders plus the other remembered spaces as locked rows (the client runs
+one space at a time, not the multi-vault mock's session); the gear
 carries only what exists (Settings…, Sync now, Pause syncing, Lock vault, Quit —
 Sync now greys out while paused); the hidden tier's creation row writes a header
 on this machine (`create_vault`) — the mock's name-only-on-server version needs
 an endpoint the console still owns alone — and asks for the vault password
 there, in its own field, because it is the machine writing the header; and a
 Recent activity disclosure sits under the list until the settings window's
-Notifications page inherits it. The mock's per-vault **locked rows** are not
-built yet: the client keeps no session between launches, so every start is the
-connect card, and the reference's "row flips to `synced`" is the main view
-arriving instead. The tray shipped in S5
+Notifications page inherits it. The mock's per-vault **locked rows** are
+shipped (M16 leftovers): the shell remembers each space it has opened in
+`spaces.json` — server, id, name, mode, state dir and folders, never a password
+or token — and draws every remembered space that is not running as a dimmed row
+with a grey `locked` chip and *Unlock*. With no credential kept, *Unlock* asks
+for that server's password in the main card first and then opens the vault
+window for the second secret; the mock's one-click row assumes a stored
+credential. The list is still one space's folders at a time — unlocking another
+replaces the running space rather than syncing both. The tray shipped in S5
 ([`reference-agent-tray.md`](reference-agent-tray.md)), with its one honest
 condition: it is there only where the desktop carries an indicator host, and
 where it is not, closing the window quits as before. Still pending: the
@@ -158,10 +164,11 @@ pending session and focuses the window if it is already up) and consumed by
 window on failure so a retry works. It learns the space's *name* and nothing
 else (`pending_unlock`) — the session, and the server password in it, stay on
 the shell's side of the IPC boundary. *Cancel* and the main window's *Cancel*
-link both call `cancel_unlock`. The mock opens it from a locked vault row;
-with no session kept between launches there are no locked rows yet, so the
-**Save & unlock** button opens it, and the card it leaves behind says it is
-waiting for the password.
+link both call `cancel_unlock`. The mock opens it from a locked vault row; as
+shipped, that row's *Unlock* first asks for the server password in the main card
+and then opens this window (the shell kept no credential), while the picker's
+**Save & unlock** reaches it directly. The card leaves behind says it is waiting
+for the password.
 
 ## Everyday states
 
@@ -173,8 +180,11 @@ waiting for the password.
 | Paused | amber | paused | amber banner; edits wait on disk and the resume pass uploads them at once |
 
 Locking is **per-vault**, not a window state: a locked vault dims its icon
-(0.55) and shows a grey `locked` chip + **Unlock** in its row; clicking the
-row opens the unlock window. The dot tracks the sync engine, never the lock.
+(0.55) and shows a grey `locked` chip + **Unlock** in its row; clicking the row
+opens the unlock window. As shipped, the list draws the running space's folders
+and then a locked row for each other remembered space; *Unlock* first asks for
+that server's password in the resume card (no credential is kept), then opens
+the unlock window. The dot tracks the sync engine, never the lock.
 Clicking a synced vault's row opens its local folder.
 
 ## Backend mapping
@@ -183,7 +193,8 @@ Clicking a synced vault's row opens its local folder.
 |---|---|
 | Dot + bar text | `SyncState` (+ `AgentStatus.paused`, which outranks it — an error still outranks the pause) |
 | Error banner | `AgentStatus.last_error`, `last_report` |
-| Vault list rows | `list_vaults` (`VaultChoice`) + a per-vault lock flag; row click on a synced vault opens the local folder |
+| Vault list rows | `list_vaults` (`VaultChoice`) for the picker; `saved_spaces` for the remembered rows (metadata only, so a row comes back locked); row click on a synced vault opens the local folder |
+| Remembered spaces | `saved_spaces` reads `spaces.json` (`state::known`) and marks the running one; `unlock` / `unlock_pending` write the entry after a successful unlock — never a password or token |
 | Usage line | `Index::files()`, `Index::referenced_bytes()` — over IPC as the `usage` command since M16 S1 |
 | Pass counter | `AgentStatus.passes` |
 | First run: server password | `POST /api/v1/auth/token` → bearer token (same secret as the web login) |

@@ -102,7 +102,7 @@ else:
 |---|---|
 | Rail name + usage line | ✅ from `settings_info` (the space's name) and `usage` (files, referenced bytes) — no storage **bar**, because nothing reports a quota to divide by |
 | Sync folder rows + `Open` | ✅ `open_folder`, one row per synced folder from `status.folders` |
-| *Change…* (Sync Files and Account) | ✅ both rows run `lock` then `close_settings`: the main window's card is where a space is chosen again, so the settings window closes itself and hands focus back |
+| *Change…* (Sync Files and Account) | ✅ both rows run `lock` then `close_settings`: the main window's rows are where a space is chosen again (the locked rows, or *Add a space…*), so the settings window closes itself and hands focus back |
 | Pause syncing | ✅ the switch only — `set_paused`, the loop's flag, no durations (a duration is a resume-at timestamp, which the agent has nowhere to keep) |
 | Server, Vault rows | ✅ read-only from `settings_info`; the mode rides as a chip (`encrypted vault` / `sync space`), the same word the picker uses |
 | Footer: Run at login | ✅ `get_autostart` / `set_autostart` |
@@ -112,7 +112,7 @@ else:
 | Choose folders | ❌ `new` (a per-device selection rule the loop must honor) |
 | Pause durations | ❌ `new` (needs a resume-at) |
 | Vault auto-lock | ❌ `new` (an inactivity timer) |
-| Remove vault from this computer | ❌ not until there is something to remove: the client keeps no session between launches, so today a locked client has already forgotten the space. The row arrives with persistence, and it must never delete the sync folders |
+| Remove vault from this computer | ❌ the shell now remembers spaces (metadata only) for the locked rows, so there is config to forget; the row waits on a `forget_space` command, and it must never delete the sync folders |
 | Notifications page | ❌ the whole page is `new`; its four toggles would be four dead switches, so the page is not in the nav. The main window's Recent activity disclosure stays until this page exists |
 | Apply settings | ❌ every shipped control writes at once; the button returns with choose-folders, whose folder work is deliberate |
 | Device id, server version, logs, updates | ❌ `new`; the About page says so in one line rather than showing rows that answer nothing. The update half is scoped now (M16's list in the README), so the row has something to arrive with |
