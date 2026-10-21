@@ -91,9 +91,9 @@ rotate the server password), and settings driven from the console (a live
 snapshot schedule, a read-only About panel), the console flagging a setting that
 reverts on a restart, and uptime plus password age on that panel — are in as
 well. **M16**, rebuilding the desktop agent UI on its references, has landed all
-five slices. What's left of it — the drafted dark palette, the mock's per-vault
-locked rows, **placeholder (on-demand) files**, and the **update publish job** that
-would put a new build in front of a human — is set out under
+five slices, the remembered-space rows and the dark palette. What's left of it —
+**placeholder (on-demand) files** and the **update publish job** that would put a
+new build in front of a human — is set out under
 [The M16 slices](#the-m16-slices).
 
 The `crypto` crate implements the format in `docs/format.md` — content-defined
@@ -188,8 +188,11 @@ directory entirely, and came back byte-identical.
   draws every remembered space that is not running as a dimmed locked row. *Unlock* asks
   for the server password again — nothing was kept — then opens the vault window, or
   unlocks a sync space directly. One space still runs at a time.
+- **Leftover — the dark palette.** The agent's three windows share `theme.css`, carrying the
+  light column the references draw and the dark column they drafted. A window follows the
+  desktop unless Settings → About → Appearance pins System / Light / Dark in `prefs.json`;
+  the main window follows the pref on its poll, the unlock window reads it when it opens.
 - **Left:**
-  - the drafted **dark palette**;
   - **placeholder / on-demand files** — the OneDrive baseline's *Files On Demand*: every file
     shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
     200 GB of disk only if the human reads all of it. Half of it is already true — the index
