@@ -206,9 +206,10 @@ directory entirely, and came back byte-identical.
     half on a `desktop-v*` tag: build with `createUpdaterArtifacts`, sign each bundle,
     write `update.json`, attach it all to a Release, and — when `APT_SIGNING_KEY` is
     set — a flat signed apt repo so a `.deb` updates through `apt-daily` with the app
-    closed. It has not run — there is no minisign keypair, so no public key sits in the
-    config and nothing fetches. What is left is the settings window's **About row**, and
-    the keys. The manifest is keyed by `{os}-{arch}-{bundle}`
+    closed. The minisign and apt keys are stored as Actions secrets, and the updater's
+    public half is in `tauri.conf.json`; cutting a `desktop-v*` tag is what runs it. What
+    is left is the settings window's **About row**. The manifest is keyed by
+    `{os}-{arch}-{bundle}`
     (`linux-x86_64-appimage`, `linux-x86_64-deb`, `darwin-x86_64-app`), falling back to
     `{os}-{arch}`, and `tauri-plugin-updater` is the client half for all of it. Two keys
     that do not substitute: the apt key signs the repo's `Release`, minisign signs what
