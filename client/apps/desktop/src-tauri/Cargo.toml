@@ -1,9 +1,11 @@
 [package]
 name = "syncbox-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Syncbox desktop app (Tauri v2 shell over the sync agent)"
 edition = "2021"
-rust-version = "1.85"
+# Tauri 2.12 and tauri-plugin-updater 2.14 both declare 1.90. The Tauri-free
+# crates keep the workspace's 1.85; only this shell needs the newer compiler.
+rust-version = "1.90"
 license = "MIT"
 
 # This crate is a MEMBER of the client workspace (see client/Cargo.toml): a plain
@@ -31,6 +33,10 @@ libloading = "0.8"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
+# 2.14 is the first line with `requireSignedVersion`, which pins the artifact to
+# the version the update manifest announces. The release workflow signs the
+# bundle with that version in the trusted comment.
+tauri-plugin-updater = "2.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

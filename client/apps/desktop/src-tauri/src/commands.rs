@@ -4,11 +4,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use tauri::{command, AppHandle, Manager as _, State};
+use tauri::{command, AppHandle, Emitter as _, Manager as _, State};
 
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_opener::OpenerExt as _;
+use tauri_plugin_updater::UpdaterExt as _;
 
 use syncbox_agent::{index_path_for, SyncEvent};
 use syncbox_index::{Index as _, SqliteIndex};
@@ -251,6 +253,71 @@ const SETTINGS_WINDOW: &str = "settings";
 pub fn settings_info(shared: State<'_, Shared>) -> Result<dto::SettingsInfo, String> {
     let state = shared.lock().map_err(|e| e.to_string())?;
     Ok(dto::settings_info(state.running()))
+}
+
+/// Checks the update manifest at the endpoint in tauri.conf.json. The check is
+/// deliberately on demand — the settings window's button — not a background
+/// poll: nothing here touches the network until a human asks.
+#[command]
+pub async fn check_for_updates(app: AppHandle) -> Result<dto::UpdateInfo, String> {
+    let updater = app
+        .updater_builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    let current_version = app.package_info().version.to_string();
+    Ok(match update {
+        Some(update) => dto::UpdateInfo {
+            current_version,
+            available: true,
+            version: Some(update.version),
+            notes: update.body,
+            installer: Some(dto::installer_for(update.download_url.as_str())),
+        },
+        None => dto::UpdateInfo {
+            current_version,
+            available: false,
+            version: None,
+            notes: None,
+            installer: None,
+        },
+    })
+}
+
+/// Downloads and installs the update the check announced, then restarts into
+/// it. A `.deb` installation goes through `dpkg -i` (and so usually needs
+/// privileges); the About page steers those users to apt instead. Progress is
+/// emitted as `update-progress` for the row's one line of feedback.
+#[command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    let updater = app
+        .updater_builder()
+        .timeout(Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let Some(mut update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Err("no update is available".into());
+    };
+    // The plugin's `Update` starts with no request timeout; the builder's
+    // timeout covers the check, not the artifact download.
+    update.timeout = Some(Duration::from_secs(600));
+
+    let progress_app = app.clone();
+    let mut downloaded = 0_u64;
+    update
+        .download_and_install(
+            move |chunk, total| {
+                downloaded = downloaded.saturating_add(chunk as u64);
+                let _ =
+                    progress_app.emit("update-progress", dto::UpdateProgress { downloaded, total });
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    app.restart();
 }
 
 /// Opens the settings window from the gear menu. The reference gives it a window

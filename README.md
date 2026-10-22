@@ -192,6 +192,18 @@ directory entirely, and came back byte-identical.
   light column the references draw and the dark column they drafted. A window follows the
   desktop unless Settings → About → Appearance pins System / Light / Dark in `prefs.json`;
   the main window follows the pref on its poll, the unlock window reads it when it opens.
+- **Shipped — the update path.** `.github/workflows/release.yml` builds a `desktop-v*` tag
+  with `createUpdaterArtifacts`, signs the AppImage and `.deb`, writes `update.json`, cuts
+  a Release, and — because `APT_SIGNING_KEY` is set — attaches a flat signed apt repo
+  (`Packages`, `Packages.gz`, `Release.gpg`, `InRelease`, keyring). The minisign and apt
+  keys are Actions secrets, and the updater's public half is in `tauri.conf.json`.
+  `desktop-v0.1.0` is published and its artifacts verify. Settings → About checks
+  `releases/latest/download/update.json` on demand and installs the signed AppImage;
+  `requireSignedVersion` pins the artifact to the announced version, and a `.deb` is sent
+  to apt instead of the in-app installer. Two keys do not substitute: the apt key signs
+  the repo's `Release`, minisign signs what the plugin checks. **macOS** updates through
+  the `.app.tar.gz` and stays gated on M6 — the updater will not install a signature
+  mismatch.
 - **Left:**
   - **placeholder / on-demand files** — the OneDrive baseline's *Files On Demand*: every file
     shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
@@ -201,20 +213,7 @@ directory entirely, and came back byte-identical.
     dirtying the index (`Engine::hydrate`, reachable from the folder loop as
     `SyncWorker::hydrate`). Missing: a folder policy that writes placeholders instead of
     pulling every file, and outside the mount the platform's own open hook (FileProvider on
-    macOS, CFAPI on Windows). Until those exist the desktop still downloads everything;
-  - the **update publish job** — `.github/workflows/release.yml` now does the Release
-    half on a `desktop-v*` tag: build with `createUpdaterArtifacts`, sign each bundle,
-    write `update.json`, attach it all to a Release, and — when `APT_SIGNING_KEY` is
-    set — a flat signed apt repo so a `.deb` updates through `apt-daily` with the app
-    closed. The minisign and apt keys are stored as Actions secrets, and the updater's
-    public half is in `tauri.conf.json`; cutting a `desktop-v*` tag is what runs it. What
-    is left is the settings window's **About row**. The manifest is keyed by
-    `{os}-{arch}-{bundle}`
-    (`linux-x86_64-appimage`, `linux-x86_64-deb`, `darwin-x86_64-app`), falling back to
-    `{os}-{arch}`, and `tauri-plugin-updater` is the client half for all of it. Two keys
-    that do not substitute: the apt key signs the repo's `Release`, minisign signs what
-    the plugin checks. **macOS** updates through the `.app.tar.gz` and stays gated on
-    M6 — the updater will not install a signature mismatch.
+    macOS, CFAPI on Windows). Until those exist the desktop still downloads everything.
 
 ## License
 

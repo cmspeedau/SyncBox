@@ -7,12 +7,11 @@
     <!--
       The settings window, built to docs/reference-agent-settings.html: the
       OneDrive-shaped rail and page list, the footer bar's two app-wide
-      switches, and the About page's Appearance control. Only controls a
-      command already backs are drawn — no
-      Notifications page (its events are a backend that does not exist yet), no
-      choose-folders tree, no pause durations, no auto-lock timer, no device id
-      or update check. What the reference badges `new` is left out, not drawn
-      dead; what it badges `today` is here.
+      switches, and the About page's Appearance and update controls. Only
+      controls a command already backs are drawn — no Notifications page (its
+      events are a backend that does not exist yet), no choose-folders tree, no
+      pause durations, no auto-lock timer, no device id. What the reference
+      badges `new` is left out, not drawn dead; what it badges `today` is here.
 
       A preview exists for browsers outside Tauri: open with `?demo=1` and every
       invoke answers from fixtures, as in the other two windows. `&theme=dark`
@@ -63,6 +62,8 @@
       .chip { background: var(--synced-bg); color: var(--synced-ink); border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 600; }
       .mini { border: 1px solid var(--input-line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 6px 12px; font: 600 12px system-ui, sans-serif; cursor: pointer; }
       .mini:hover { background: var(--fill); }
+      .mini:disabled { opacity: .55; cursor: default; }
+      [hidden] { display: none !important; }
 
       /* System / Light / Dark: the one app-wide look, on the About page */
       .seg { display: inline-flex; background: var(--fill); border: 1px solid var(--input-line); border-radius: 999px; padding: 3px; gap: 3px; }
@@ -172,13 +173,26 @@
           </div>
 
           <div class="card">
+            <b>Updates</b>
+            <div class="crow">
+              <span class="lbl">Syncbox <span class="mono" id="updateCurrent">—</span><small id="updateNote">Check for a newer release</small></span>
+              <span class="sp"><button class="mini" id="checkUpdate" type="button">Check</button></span>
+            </div>
+            <div class="crow" id="updateOffer" hidden>
+              <span class="lbl"><span class="mono" id="updateVersion">—</span><small id="updateBody"></small></span>
+              <span class="sp"><button class="mini" id="installUpdate" type="button">Install</button></span>
+            </div>
+            <p class="cd" id="updateHelp" hidden></p>
+          </div>
+
+          <div class="card">
             <div class="crow"><span class="lbl">Agent version</span><span class="sp mono" id="agentVersion">—</span></div>
             <div class="crow"><span class="lbl">Platform</span><span class="sp mono" id="platform">—</span></div>
             <div class="crow"><span class="lbl">Licence</span><span class="sp mono" id="licence">—</span></div>
             <div class="crow needs-session"><span class="lbl">Space state folder<small>where this machine keeps the space's header and each folder's index</small></span><span class="sp"><button class="mini" id="openHdr" type="button">Open</button></span></div>
           </div>
 
-          <p class="fine">A device id to quote for support, the server's version, a logs folder and an update check are the reference's <i>new</i>-badged rows: they appear when something can answer for them.</p>
+          <p class="fine">A device id to quote for support, the server's version and a logs folder are the reference's <i>new</i>-badged rows: they appear when something can answer for them.</p>
         </section>
       </main>
     </div>
@@ -207,13 +221,20 @@
       function demoInvoke(cmd, args) {
         if (cmd === "settings_info")
           return Promise.resolve({
-            agentVersion: "0.1.0",
+            agentVersion: "0.1.1",
             platform: "linux x86_64",
             licence: "MIT",
             space: demo.unlocked
               ? { name: "Files synced", server: "https://sync.example.org", mode: "vault", vaultDir: "/home/you/.syncbox/demo" }
               : null,
           });
+        if (cmd === "check_for_updates")
+          return Promise.resolve(
+            params.has("update")
+              ? { currentVersion: "0.1.1", available: true, version: "0.1.2", notes: "A newer build is ready.", installer: "appimage" }
+              : { currentVersion: "0.1.1", available: false, version: null, notes: null, installer: null },
+          );
+        if (cmd === "install_update") return Promise.resolve(null);
         if (cmd === "status")
           return Promise.resolve(
             demo.unlocked
@@ -312,6 +333,86 @@
           setMsg(String(err));
         }
       });
+      /* ---------- updates ---------- */
+      // The check is a deliberate click, never a poll: the installed app only
+      // talks to the update endpoint when this button is pressed.
+      let availableUpdate = null;
+      let checkingUpdate = false;
+
+      async function checkForUpdates() {
+        if (checkingUpdate) return;
+        checkingUpdate = true;
+        availableUpdate = null;
+        $("checkUpdate").disabled = true;
+        $("checkUpdate").textContent = "Checking…";
+        $("updateOffer").hidden = true;
+        $("updateHelp").hidden = true;
+        $("updateNote").textContent = "Checking for a newer release…";
+        try {
+          const info = await invoke("check_for_updates");
+          $("updateCurrent").textContent = info.currentVersion;
+          if (info.available) {
+            availableUpdate = info;
+            $("updateVersion").textContent = `Syncbox ${info.version}`;
+            $("updateBody").textContent = info.notes || "A newer release is available.";
+            $("updateOffer").hidden = false;
+            $("updateNote").textContent = "An update is available";
+            const viaApt = info.installer === "deb";
+            $("installUpdate").hidden = viaApt;
+            $("updateHelp").hidden = !viaApt;
+            if (viaApt) {
+              $("updateHelp").textContent = "This .deb updates through apt: run sudo apt update && sudo apt upgrade.";
+            }
+          } else {
+            $("updateNote").textContent = "You are running the latest version";
+          }
+        } catch (err) {
+          $("updateNote").textContent = String(err);
+        } finally {
+          checkingUpdate = false;
+          $("checkUpdate").disabled = false;
+          $("checkUpdate").textContent = "Check";
+        }
+      }
+
+      async function installUpdate() {
+        if (!availableUpdate) return;
+        $("installUpdate").disabled = true;
+        $("checkUpdate").disabled = true;
+        $("updateNote").textContent = "Starting the download…";
+        try {
+          await invoke("install_update");
+          // A successful AppImage install restarts the app; reaching this line
+          // means the install returned without doing so.
+          $("updateNote").textContent = "The update was installed. Restart Syncbox to use it.";
+          $("installUpdate").hidden = true;
+        } catch (err) {
+          $("updateNote").textContent = String(err);
+          $("installUpdate").disabled = false;
+          $("checkUpdate").disabled = false;
+        }
+      }
+
+      $("checkUpdate").addEventListener("click", checkForUpdates);
+      $("installUpdate").addEventListener("click", installUpdate);
+
+      // The Rust command emits one event per downloaded chunk. A window that
+      // cannot listen still downloads; it just shows no percentage.
+      if (!DEMO && window.__TAURI__ && window.__TAURI__.event) {
+        window.__TAURI__.event
+          .listen("update-progress", (event) => {
+            const p = event.payload || {};
+            if (p.total) {
+              const pct = Math.min(100, Math.round((p.downloaded / p.total) * 100));
+              $("updateNote").textContent = `Downloading ${pct}%`;
+            } else {
+              const mb = Math.round((p.downloaded || 0) / (1024 * 1024));
+              $("updateNote").textContent = `Downloading ${mb} MB`;
+            }
+          })
+          .catch(() => {});
+      }
+
       // The switch reveals controls in the main window, so say which ones: the
       // one place that draws them should not be a mystery from here.
       function renderHiddenNote(on) {
@@ -367,6 +468,7 @@
         }
         if (info) {
           $("agentVersion").textContent = info.agentVersion;
+          $("updateCurrent").textContent = info.agentVersion;
           $("platform").textContent = info.platform;
           $("licence").textContent = info.licence;
         }
