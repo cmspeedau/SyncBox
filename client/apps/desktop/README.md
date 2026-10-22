@@ -150,9 +150,10 @@ the switches and the theme instead of owning them. No
 *Apply settings* button: everything shipped here writes as it is touched. The
 `new`-badged controls are left out rather than drawn dead — no Notifications
 page, choose-folders tree, pause durations, auto-lock timer, device id, server
-version, logs or update check — and "Remove vault from this computer" awaits a
-`forget_space` command (the remembered metadata now exists, but the row must
-never delete the sync folders).
+version or logs — and "Remove vault from this computer" awaits a `forget_space`
+command (the remembered metadata now exists, but the row must never delete the
+sync folders). The About page's update row is real: it checks the published
+`update.json` on demand and installs the signed AppImage.
 
 **M16 locked-rows specifics.** `spaces.json` in the config dir remembers every
 space this machine has unlocked — server, id, name, mode, state dir and folders,
@@ -201,19 +202,17 @@ when it opens. The browser previews take `&theme=dark` or `&theme=light`.
 pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
 (M16 S3), the settings window (M16 S4), the tray (M16 S5), remembered spaces
-drawn as locked rows (metadata only), and the dark palette with its Appearance
-control (M16 leftovers). **Still deferred:** **placeholder / on-demand files** —
-the engine and worker can hydrate one file on demand (`Engine::hydrate`,
+drawn as locked rows (metadata only), the dark palette with its Appearance
+control, and the About page's on-demand update check (M16 leftovers). The first
+signed release, `desktop-v0.1.0`, is published with `update.json`, both bundles,
+their signatures and the flat apt repo; this version (`0.1.1`) carries the
+update row. **Still deferred:** **placeholder / on-demand files** — the engine
+and worker can hydrate one file on demand (`Engine::hydrate`,
 `SyncWorker::hydrate`, without dirtying the index), but the folder still pulls
 every file, and a plain folder needs the platform's placeholder API
 (FileProvider, CFAPI) to create placeholders and ask for the hydrate —
-`syncbox mount` already serves files this way over FUSE; the **update publish
-job** — `release.yml` covers both halves (sign, cut a Release, write
-`update.json`, and a flat apt repo when its key is set), and the minisign and
-apt keys are stored with the updater's public half in `tauri.conf.json`; the
-client half (the About row) is still to come, and a `desktop-v*` tag runs the
-job; a Node/Svelte frontend behind `frontendDist` (instead of this static one);
-and code signing.
+`syncbox mount` already serves files this way over FUSE; a Node/Svelte frontend
+behind `frontendDist` (instead of this static one); and code signing.
 
 ## Building the app
 
@@ -275,15 +274,14 @@ runner, which carries the webkit dev libraries and lets tauri do the deb via `ar
 uploads them as build artifacts. They are unsigned, like everything here — publishing
 and signing stay deliberate acts, each to its own runner and identity.
 
-And until that tag is cut, nothing updates a running install: the PR job uploads
-artefacts and no manifest says which is newest. The publish half is
-`.github/workflows/release.yml`: a `desktop-v*` tag (or a manual run against one)
-builds with `createUpdaterArtifacts`, so tauri signs the AppImage and the `.deb` with a
-`.sig` beside each, writes `update.json` with `syncbox-release manifest`, and attaches
-bundles, signatures and manifest to a GitHub Release. When `APT_SIGNING_KEY` is set it
-also writes a flat apt repository into that release — `Packages`, `Packages.gz`, a
-signed `Release` (`Release.gpg` and `InRelease`) and the archive key — so an installed
-`.deb` updates with the app closed:
+The publish half is `.github/workflows/release.yml`: a `desktop-v*` tag (or a
+manual run against one) builds with `createUpdaterArtifacts`, so tauri signs the
+AppImage and the `.deb` with a `.sig` beside each, writes `update.json` with
+`syncbox-release manifest`, and attaches bundles, signatures and manifest to a
+GitHub Release. When `APT_SIGNING_KEY` is set it also writes a flat apt repository
+into that release — `Packages`, `Packages.gz`, a signed `Release` (`Release.gpg`
+and `InRelease`) and the archive key — so an installed `.deb` updates with the app
+closed:
 
 ```sources
 Types: deb
@@ -294,30 +292,32 @@ Signed-By: /etc/apt/keyrings/syncbox-archive-keyring.asc
 
 The repository is flat because a Release's assets cannot fake `dists/` and `pool/`:
 `Filename:` names an asset in the same release, and the keyring is
-`syncbox-archive-keyring.asc` from that URL. It has not run yet — no minisign keypair is
-stored, so `plugins.updater.pubkey` is unwritten and no client checks; the workflow takes
-the public key from a secret meanwhile, because the bundler refuses to sign without one.
-To cut a release: generate the keypair once (`cargo tauri signer generate
--w ~/.tauri/syncbox.key`), store the private key, its password and the public key as the
-three secrets named at the top of `release.yml` (plus the apt key and its passphrase if
-you want the repository), bump the version in `tauri.conf.json`, and push the matching
-`desktop-v<version>` tag. A client will read `releases/latest/download/update.json`; the
-tag is the switch, and PRs never publish.
-The client library is already there — `tauri-plugin-updater` covers `deb`, `rpm` and
-AppImage on Linux, NSIS and MSI on Windows, and macOS `.app` replacement, and
-`install()` knows how to apply each (`dpkg -i` with an escalation fallback, the `.app`
-swapped in place when the old and new signatures match, the AppImage replacing itself)
-— and because the manifest is keyed by target there is no per-format update script to
-write. Those keys carry the architecture as well as the bundle: `linux-x86_64-deb`,
-`linux-x86_64-appimage`, `darwin-x86_64-app` for this Intel mini, with a plain
-`{os}-{arch}` key as the fallback.
+`syncbox-archive-keyring.asc` from that URL. The first tag, `desktop-v0.1.0`, ran
+this end to end: the Release carries both bundles, their `.sig` files,
+`update.json`, the apt index and signatures, and the archive key. The minisign
+and apt private keys are Actions secrets, and `plugins.updater.pubkey` is
+committed so a client can verify. To cut the next release, bump the version in
+`tauri.conf.json` and this crate's `Cargo.toml`, then push the matching
+`desktop-v<version>` tag. PRs never publish.
+The client is wired: Settings → About's `check_for_updates` reads
+`releases/latest/download/update.json` on demand, and `install_update` downloads,
+verifies and installs the bundle before restarting. `requireSignedVersion` makes
+the plugin reject an artifact whose signed trusted comment names a different
+version. The row offers Install for the AppImage; a `.deb` is steered to apt,
+whose repo ships in the same release.
+`tauri-plugin-updater` covers `deb`, `rpm` and AppImage on Linux, NSIS and MSI on
+Windows, and macOS `.app` replacement, and `install()` knows how to apply each —
+and because the manifest is keyed by target there is no per-format update script
+to write. Those keys carry the architecture as well as the bundle:
+`linux-x86_64-deb`, `linux-x86_64-appimage`, `darwin-x86_64-app` for this Intel
+mini, with a plain `{os}-{arch}` key as the fallback.
 There is no delta channel — the plugin downloads the signed bundle whole; `.zsync`
 belongs to AppImageUpdate, which this is not. Each platform then takes its own road
 through that manifest — AppImage is the shortest (no root, no identity); `linux-x86_64-deb`
 rides `apt-daily` and `unattended-upgrades` through a signed repo (`dpkg-scanpackages` or
 `reprepro` publishing `Packages.gz` and a signed `Release`, one `.sources` file and a key
-for the user), with the plugin's in-app `dpkg -i` as the bootstrap for whoever has not
-added it — and that index now ships in the same release when the apt key is set;
+for the user), while the About row keeps the in-app `dpkg -i` out of the way and points
+a `.deb` at apt — and that index now ships in the same release when the apt key is set;
 `darwin-x86_64-app` updates through the `.app.tar.gz` and needs a Developer ID and
 notarisation first, since the updater will not install a signature mismatch and an
 unsigned `.dmg` download is a Gatekeeper refusal anyway. Two keys sign two different
@@ -328,8 +328,8 @@ belong regardless: the artefact pool refills after every PR and carries no reten
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
-| Any (updates) | signed `update.json` + bundles in a Release | `release.yml` added, not run — needs a minisign keypair, and the pubkey committed for clients |
-| Linux (repo) | `Packages.gz` + signed `Release` | `release.yml` added, unrun — built when `APT_SIGNING_KEY` is set |
+| Any (updates) | signed `update.json` + bundles in a Release | published — `desktop-v0.1.0`; `.sig` files and `update.json` verify against the committed pubkey |
+| Linux (repo) | `Packages.gz` + signed `Release` | published — `desktop-v0.1.0`, key fingerprint `7FBC D42F 01E0 C3B1 B13A 29C9 5562 CB69 B1CF 926F` |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
 | macOS (updates) | `.app.tar.gz` + `.sig` (notarised `.dmg` for the download) | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |

@@ -109,6 +109,64 @@ pub struct RunningSpace {
     pub vault_dir: String,
 }
 
+/// What one update check found, in the words the About page prints. The URL and
+/// signature stay in the updater plugin: the window only needs to know whether
+/// there is something newer, what it says, and whether this installation can
+/// apply it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// The version this running build reports.
+    pub current_version: String,
+    /// Whether the manifest announced a newer version.
+    pub available: bool,
+    /// The newer version, when one was announced.
+    pub version: Option<String>,
+    /// The release notes the manifest carried.
+    pub notes: Option<String>,
+    /// `"appimage"`, `"deb"`, `"rpm"`, or another bundle kind, inferred from
+    /// the artifact the manifest pointed at. A `.deb` is updated through apt,
+    /// not by the in-app installer.
+    pub installer: Option<&'static str>,
+}
+
+/// One progress tick while an update downloads. The webview turns it into a
+/// percentage; `total` is absent when the server sends no `Content-Length`.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateProgress {
+    /// Bytes received so far.
+    pub downloaded: u64,
+    /// The artifact's advertised size, when known.
+    pub total: Option<u64>,
+}
+
+/// Names the bundle kind from the artifact URL, so the About page can say that
+/// a `.deb` updates through apt. Purely a label; the updater picks the actual
+/// artifact itself.
+#[must_use]
+pub fn installer_for(download_url: &str) -> &'static str {
+    let path = download_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(download_url);
+    if path.ends_with(".deb") {
+        "deb"
+    } else if path.ends_with(".rpm") {
+        "rpm"
+    } else if path.ends_with(".AppImage") || path.ends_with(".AppImage.tar.gz") {
+        "appimage"
+    } else if path.ends_with(".app.tar.gz") {
+        "app"
+    } else if path.ends_with(".msi") || path.ends_with(".msi.zip") {
+        "msi"
+    } else if path.ends_with(".exe") || path.ends_with(".exe.zip") {
+        "nsis"
+    } else {
+        "bundle"
+    }
+}
+
 /// The settings window's one read: the build's facts plus the running space, if
 /// there is one.
 #[must_use]
@@ -817,6 +875,28 @@ mod tests {
         // The whole point of this read: it is safe to hand a window.
         assert!(json["space"]["password"].is_null());
         assert!(json["space"]["serverPassword"].is_null());
+    }
+
+    #[test]
+    fn an_update_names_the_bundle_from_its_url() {
+        assert_eq!(
+            installer_for("https://example/Syncbox_0.1.1_amd64.AppImage"),
+            "appimage"
+        );
+        assert_eq!(
+            installer_for("https://example/Syncbox_0.1.1_amd64.AppImage.tar.gz?x=1"),
+            "appimage"
+        );
+        assert_eq!(
+            installer_for("https://example/Syncbox_0.1.1_amd64.deb"),
+            "deb"
+        );
+        assert_eq!(
+            installer_for("https://example/Syncbox_0.1.1_x64-setup.exe#frag"),
+            "nsis"
+        );
+        assert_eq!(installer_for("https://example/Syncbox.app.tar.gz"), "app");
+        assert_eq!(installer_for("https://example/unknown"), "bundle");
     }
 
     #[test]

@@ -21,11 +21,11 @@ follows the pref instead of owning it.
 Everything badged `new` is **left out rather than drawn dead**, and the pages
 that would be all-`new` are not in the nav at all: no Notifications page, no
 choose-folders tree, no pause durations, no auto-lock timer, no device id, no
-server version, no logs folder, no update checker, and no *Apply settings*
-button (every shipped control takes effect as it is touched, so a button to
-commit them would do nothing). The `new` list at the bottom is still the
-settings slice of the agent roadmap; `6` (the hidden-tier pref) is the one item
-of it that shipped, in M16 S1. The rail's storage **bar** is absent too: the
+server version, no logs folder, and no *Apply settings* button (every shipped
+control takes effect as it is touched, so a button to commit them would do
+nothing). The `new` list at the bottom is still the settings slice of the agent
+roadmap; `6` (the hidden-tier pref) and the update row are the items that have
+shipped. The rail's storage **bar** is absent too: the
 agent has no quota to measure against, so the rail prints
 `1.8 GB · 412 files on this machine` and no proportion.
 
@@ -148,12 +148,12 @@ not where the window normally opens.
 2. Selective folder sync — per-device subtree selection.
 3. Vault auto-lock after inactivity.
 4. Notification preferences.
-5. Update checker — tracked as M16 work, and the missing half is publishing rather than
-   checking: `tauri-plugin-updater` already ships the client side for this window's About
-   row (`deb`, `rpm` and AppImage on Linux, `.app` replacement on macOS), but it has
-   nothing to fetch until a CI job signs the bundles, cuts a Release with an immutable URL
-   and writes the `update.json` manifest. The row stays unwritten until that exists, so it
-   never announces a version it cannot install.
+5. Update checker — shipped in the About row. `check_for_updates` reads
+   `releases/latest/download/update.json` on demand; `install_update` downloads, verifies
+   and installs the signed bundle, with `requireSignedVersion` pinning the artifact to the
+   announced version. `release.yml` publishes the manifest and bundles from a
+   `desktop-v*` tag; `desktop-v0.1.0` is the first. A `.deb` is sent to apt rather than
+   the in-app installer, and macOS remains gated on a Developer ID and notarisation.
 6. Files On Demand / placeholder files — also tracked as M16 work (the README's *The M16
    slices*): the engine and worker hydrate one file on demand (`Engine::hydrate`,
    `SyncWorker::hydrate`), but the folder still pulls every file. What remains is a

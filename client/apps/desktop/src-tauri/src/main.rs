@@ -54,6 +54,11 @@ fn main() {
         // webview calls our `open_folder`, never the plugin directly), so the
         // capability file stays empty.
         .plugin(tauri_plugin_opener::init())
+        // Checks `releases/latest/download/update.json` and installs the signed
+        // bundle when the About page asks. The public key and endpoint come from
+        // `plugins.updater` in tauri.conf.json; `requireSignedVersion` ties the
+        // artifact to the version the manifest announces.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // One setup: read the spaces this machine opened before (a missing or
         // broken file is simply no rows) before the first window polls, then
         // install the tray. The shared state is managed below, before setup
@@ -119,6 +124,8 @@ fn main() {
             commands::set_prefs,
             commands::get_autostart,
             commands::set_autostart,
+            commands::check_for_updates,
+            commands::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Syncbox");
