@@ -155,9 +155,11 @@ not where the window normally opens.
    and writes the `update.json` manifest. The row stays unwritten until that exists, so it
    never announces a version it cannot install.
 6. Files On Demand / placeholder files — also tracked as M16 work (the README's *The M16
-   slices*): a hydrate path in the folder loop, and FileProvider / CFAPI for a plain folder
-   rather than the FUSE mount. This is what would grow a *Free up space* affordance in the
-   Sync Files page.
+   slices*): the engine and worker hydrate one file on demand (`Engine::hydrate`,
+   `SyncWorker::hydrate`), but the folder still pulls every file. What remains is a
+   placeholder policy in the folder loop and FileProvider / CFAPI for a plain folder rather
+   than the FUSE mount. That is what would grow a *Free up space* affordance in the Sync
+   Files page.
 7. ~~Hidden-tier pref (`Show hidden`)~~ — **shipped** (M16 S1: the pref and the
    controls it gates; M16 S4: its switch, in this window's footer bar).
 

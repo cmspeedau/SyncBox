@@ -337,6 +337,109 @@ fn push_then_pull_reproduces_the_file() {
 }
 
 #[test]
+fn hydrate_restores_a_placeholder_without_dirtying_the_index() {
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "hello.txt", b"hello from a");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert_eq!(
+            read_client(b_root.path(), "hello.txt").as_deref(),
+            Some(&b"hello from a"[..])
+        );
+
+        // The placeholder the platform API would leave: the index still knows
+        // the file and its remote size, the folder holds an empty file.
+        write_client(b_root.path(), "hello.txt", b"");
+        b.hydrate(&mut b_client, "hello.txt").unwrap();
+        assert_eq!(
+            read_client(b_root.path(), "hello.txt").as_deref(),
+            Some(&b"hello from a"[..]),
+            "hydrate brings the bytes back"
+        );
+
+        // Hydration is not a sync: the index now matches what landed, so the
+        // next pass has nothing to upload or download.
+        let report = b.sync_once(&mut b_client, "2026-10-16").unwrap();
+        assert!(
+            report.is_quiet(),
+            "a hydrated placeholder is settled: {report:?}"
+        );
+    });
+}
+
+#[test]
+fn hydrate_refuses_to_overwrite_local_content() {
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let a_root = tempfile::tempdir().unwrap();
+        let b_root = tempfile::tempdir().unwrap();
+
+        let mut a = engine(a_root.path(), mode);
+        let mut a_client = client(&shared);
+        write_client(a_root.path(), "hello.txt", b"from a");
+        a.sync_once(&mut a_client, "2026-10-16").unwrap();
+
+        let mut b = engine(b_root.path(), mode);
+        let mut b_client = client(&shared);
+        b.sync_once(&mut b_client, "2026-10-16").unwrap();
+
+        // Not a placeholder: a local edit the next pass should carry up, so
+        // hydrating over it would lose the human's work.
+        write_client(b_root.path(), "hello.txt", b"local edit");
+        let error = b.hydrate(&mut b_client, "hello.txt").unwrap_err();
+        assert!(
+            error.to_string().contains("local content"),
+            "the refusal names the reason: {error}"
+        );
+        assert_eq!(
+            read_client(b_root.path(), "hello.txt").as_deref(),
+            Some(&b"local edit"[..])
+        );
+    });
+}
+
+#[test]
+fn hydrate_refuses_paths_outside_the_folder() {
+    both_modes(|mode| {
+        let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+        let root = tempfile::tempdir().unwrap();
+        let mut engine = engine(root.path(), mode);
+        let mut client = client(&shared);
+
+        for path in ["../escape.txt", "/etc/passwd", "a/../../escape.txt"] {
+            let error = engine.hydrate(&mut client, path).unwrap_err();
+            assert!(
+                error.to_string().contains("not a path inside the folder"),
+                "{path:?} was refused with {error}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_folderless_engine_has_nothing_to_hydrate_into() {
+    let shared = Shared(Rc::new(RefCell::new(FakeServer::default())));
+    let root = tempfile::tempdir().unwrap();
+    let mut engine = engine(root.path(), SpaceMode::Vault).folderless();
+    let mut client = client(&shared);
+
+    let error = engine.hydrate(&mut client, "hello.txt").unwrap_err();
+    assert!(
+        error.to_string().contains("no plaintext folder"),
+        "the refusal names the reason: {error}"
+    );
+}
+
+#[test]
 fn an_early_edit_uploads_only_the_chunks_that_changed() {
     both_modes(|mode| {
         use syncbox_crypto::content::{CHUNK_MIN, CHUNK_TARGET};

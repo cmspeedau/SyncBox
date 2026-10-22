@@ -197,8 +197,11 @@ directory entirely, and came back byte-identical.
     shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
     200 GB of disk only if the human reads all of it. Half of it is already true — the index
     knows every file without holding its content, and `syncbox mount` (M5) serves exactly
-    that over FUSE. Missing: a hydrate path in the folder loop, and outside the mount the
-    platform's own placeholder API (FileProvider on macOS, CFAPI on Windows);
+    that over FUSE. The engine can now hydrate one placeholder from the server without
+    dirtying the index (`Engine::hydrate`, reachable from the folder loop as
+    `SyncWorker::hydrate`). Missing: a folder policy that writes placeholders instead of
+    pulling every file, and outside the mount the platform's own open hook (FileProvider on
+    macOS, CFAPI on Windows). Until those exist the desktop still downloads everything;
   - the **update publish job** — `.github/workflows/release.yml` now does the Release
     half on a `desktop-v*` tag: build with `createUpdaterArtifacts`, sign each bundle,
     write `update.json`, attach it all to a Release, and — when `APT_SIGNING_KEY` is
