@@ -208,10 +208,12 @@ the engine and worker can hydrate one file on demand (`Engine::hydrate`,
 every file, and a plain folder needs the platform's placeholder API
 (FileProvider, CFAPI) to create placeholders and ask for the hydrate —
 `syncbox mount` already serves files this way over FUSE; the **update publish
-job** — `release.yml` now covers both halves (sign, cut a Release, write
-`update.json`, and a flat apt repo when its key is set) but has not run: no
-minisign keypair is stored, so no public key sits in the config; a Node/Svelte
-frontend behind `frontendDist` (instead of this static one); and code signing.
+job** — `release.yml` covers both halves (sign, cut a Release, write
+`update.json`, and a flat apt repo when its key is set), and the minisign and
+apt keys are stored with the updater's public half in `tauri.conf.json`; the
+client half (the About row) is still to come, and a `desktop-v*` tag runs the
+job; a Node/Svelte frontend behind `frontendDist` (instead of this static one);
+and code signing.
 
 ## Building the app
 
