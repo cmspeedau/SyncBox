@@ -152,8 +152,9 @@ not where the window normally opens.
    `releases/latest/download/update.json` on demand; `install_update` downloads, verifies
    and installs the signed bundle, with `requireSignedVersion` pinning the artifact to the
    announced version. `release.yml` publishes the manifest and bundles from a
-   `desktop-v*` tag; `desktop-v0.1.0` is the first. A `.deb` is sent to apt rather than
-   the in-app installer, and macOS remains gated on a Developer ID and notarisation.
+   `desktop-v*` tag; `desktop-v0.1.0` is the first release, and `0.1.1` adds this row.
+   A `.deb` is sent to apt rather than the in-app installer, and macOS remains gated on
+   a Developer ID and notarisation.
 6. Files On Demand / placeholder files — also tracked as M16 work (the README's *The M16
    slices*): the engine and worker hydrate one file on demand (`Engine::hydrate`,
    `SyncWorker::hydrate`), but the folder still pulls every file. What remains is a

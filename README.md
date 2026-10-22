@@ -197,7 +197,8 @@ directory entirely, and came back byte-identical.
   a Release, and — because `APT_SIGNING_KEY` is set — attaches a flat signed apt repo
   (`Packages`, `Packages.gz`, `Release.gpg`, `InRelease`, keyring). The minisign and apt
   keys are Actions secrets, and the updater's public half is in `tauri.conf.json`.
-  `desktop-v0.1.0` is published and its artifacts verify. Settings → About checks
+  `desktop-v0.1.1` is published (following `desktop-v0.1.0`) and its artifacts
+  verify. Settings → About checks
   `releases/latest/download/update.json` on demand and installs the signed AppImage;
   `requireSignedVersion` pins the artifact to the announced version, and a `.deb` is sent
   to apt instead of the in-app installer. Two keys do not substitute: the apt key signs

@@ -203,10 +203,10 @@ pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
 (M16 S3), the settings window (M16 S4), the tray (M16 S5), remembered spaces
 drawn as locked rows (metadata only), the dark palette with its Appearance
-control, and the About page's on-demand update check (M16 leftovers). The first
-signed release, `desktop-v0.1.0`, is published with `update.json`, both bundles,
-their signatures and the flat apt repo; this version (`0.1.1`) carries the
-update row. **Still deferred:** **placeholder / on-demand files** — the engine
+control, and the About page's on-demand update check (M16 leftovers). The signed
+releases `desktop-v0.1.0` and `desktop-v0.1.1` are published with `update.json`,
+both bundles, their signatures and the flat apt repo; 0.1.1 carries the update
+row. **Still deferred:** **placeholder / on-demand files** — the engine
 and worker can hydrate one file on demand (`Engine::hydrate`,
 `SyncWorker::hydrate`, without dirtying the index), but the folder still pulls
 every file, and a plain folder needs the platform's placeholder API
@@ -292,9 +292,10 @@ Signed-By: /etc/apt/keyrings/syncbox-archive-keyring.asc
 
 The repository is flat because a Release's assets cannot fake `dists/` and `pool/`:
 `Filename:` names an asset in the same release, and the keyring is
-`syncbox-archive-keyring.asc` from that URL. The first tag, `desktop-v0.1.0`, ran
-this end to end: the Release carries both bundles, their `.sig` files,
-`update.json`, the apt index and signatures, and the archive key. The minisign
+`syncbox-archive-keyring.asc` from that URL. The tags `desktop-v0.1.0` and
+`desktop-v0.1.1` ran this end to end: each Release carries both bundles, their
+`.sig` files, `update.json`, the apt index and signatures, and the archive key.
+`0.1.1` is the latest and carries the About update row. The minisign
 and apt private keys are Actions secrets, and `plugins.updater.pubkey` is
 committed so a client can verify. To cut the next release, bump the version in
 `tauri.conf.json` and this crate's `Cargo.toml`, then push the matching
@@ -328,8 +329,8 @@ belong regardless: the artefact pool refills after every PR and carries no reten
 | Platform | Artefacts | Status |
 | --- | --- | --- |
 | Linux | AppImage, `.deb` | built by CI, uploaded as artifacts |
-| Any (updates) | signed `update.json` + bundles in a Release | published — `desktop-v0.1.0`; `.sig` files and `update.json` verify against the committed pubkey |
-| Linux (repo) | `Packages.gz` + signed `Release` | published — `desktop-v0.1.0`, key fingerprint `7FBC D42F 01E0 C3B1 B13A 29C9 5562 CB69 B1CF 926F` |
+| Any (updates) | signed `update.json` + bundles in a Release | published — `desktop-v0.1.1` (and `0.1.0`); `.sig` files and `update.json` verify against the committed pubkey |
+| Linux (repo) | `Packages.gz` + signed `Release` | published — `desktop-v0.1.1`, key fingerprint `7FBC D42F 01E0 C3B1 B13A 29C9 5562 CB69 B1CF 926F` |
 | macOS | universal `.dmg` | deferred — needs a macOS runner + notarization identity |
 | macOS (updates) | `.app.tar.gz` + `.sig` (notarised `.dmg` for the download) | deferred — the updater refuses mismatched signatures, so no identity means no installable update |
 | Windows | `.msi`, NSIS `.exe` | deferred — needs a Windows runner + signing identity |
