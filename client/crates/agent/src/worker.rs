@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -45,6 +46,15 @@ struct Inner {
     /// is left standing rather than consumed, so resuming runs that pass at
     /// once instead of at the end of an interval.
     paused: bool,
+    /// One-file reads waiting for the loop's exclusive agent. Hydration is a
+    /// read, so it is served even while passes are paused.
+    hydrate: Vec<Hydrate>,
+}
+
+/// One placeholder waiting to be filled, and the channel the caller blocks on.
+struct Hydrate {
+    path: String,
+    reply: Sender<std::result::Result<(), String>>,
 }
 
 impl Shared {
@@ -56,6 +66,7 @@ impl Shared {
                 dirty: false,
                 stop: false,
                 paused: false,
+                hydrate: Vec::new(),
             }),
             wake: Condvar::new(),
         }
@@ -86,16 +97,47 @@ impl Shared {
         inner.stop = true;
         self.wake.notify_all();
     }
+
+    /// Takes every waiting hydrate request, so the loop can answer them without
+    /// holding the lock across a network call.
+    fn take_hydrates(&self) -> Vec<Hydrate> {
+        let mut inner = self.inner.lock().expect("sync state lock poisoned");
+        std::mem::take(&mut inner.hydrate)
+    }
+
+    /// Answers anything still waiting when the loop ends, so a caller never
+    /// blocks on a thread that is already gone.
+    fn fail_hydrates(&self, reason: &str) {
+        for request in self.take_hydrates() {
+            let _ = request.reply.send(Err(reason.to_owned()));
+        }
+    }
 }
 
-/// Waits out the interval, or until a stop, a manual sync request, or a resume
-/// arrives. Returns `true` if the loop should stop.
-fn wait_next_tick(shared: &Shared, interval: Duration) -> bool {
+/// Why the loop woke.
+enum Next {
+    /// The handle asked the loop to end.
+    Stop,
+    /// Run a sync pass now.
+    Pass,
+    /// Answer the queued one-file reads before waiting again.
+    Hydrate,
+}
+
+/// Waits out the interval, or until a stop, a manual sync request, a hydrate
+/// request, or a resume arrives.
+fn wait_next_tick(shared: &Shared, interval: Duration) -> Next {
     let mut inner = shared.inner.lock().expect("sync state lock poisoned");
     let mut started = Instant::now();
     loop {
         if inner.stop {
-            return true;
+            return Next::Stop;
+        }
+        // Hydration is a read, not a pass: serve it even while the loops are
+        // paused. Checking before `paused` is what lets an opened placeholder
+        // fill while syncing is held.
+        if !inner.hydrate.is_empty() {
+            return Next::Hydrate;
         }
         // Paused: no pass, however the clock stands. Waiting on the same
         // condvar means a resume (or stop) is seen at once, and restarting the
@@ -113,11 +155,11 @@ fn wait_next_tick(shared: &Shared, interval: Duration) -> bool {
         }
         if inner.dirty {
             inner.dirty = false;
-            return false; // run the next pass immediately
+            return Next::Pass; // run the next pass immediately
         }
         let elapsed = started.elapsed();
         if elapsed >= interval {
-            return false; // the interval elapsed; run the next pass
+            return Next::Pass; // the interval elapsed; run the next pass
         }
         let (guard, _waited) = shared
             .wake
@@ -153,11 +195,35 @@ fn run<I, H, F, N>(
     F: FnMut() -> Client<H>,
     N: Fn() -> String,
 {
+    // The first pass runs at once, as it always has.
+    let mut client = factory();
+    run_pass(&mut agent, shared, &mut client, &now_fn);
     loop {
-        let mut client = factory();
-        run_pass(&mut agent, shared, &mut client, &now_fn);
-        if wait_next_tick(shared, interval) {
-            break;
+        match wait_next_tick(shared, interval) {
+            Next::Stop => {
+                shared.fail_hydrates("the sync loop stopped");
+                break;
+            }
+            Next::Pass => {
+                let mut client = factory();
+                run_pass(&mut agent, shared, &mut client, &now_fn);
+            }
+            Next::Hydrate => {
+                let requests = shared.take_hydrates();
+                if requests.is_empty() {
+                    continue;
+                }
+                let mut client = factory();
+                for request in requests {
+                    let outcome = agent
+                        .hydrate(&mut client, &request.path)
+                        .map_err(|error| error.to_string());
+                    let _ = request.reply.send(outcome);
+                }
+                // Hydration does not move the sync state, but publishing wakes
+                // any reader waiting on the snapshot the loop has been holding.
+                shared.publish(&agent);
+            }
         }
     }
 }
@@ -260,6 +326,46 @@ impl SyncWorker {
         let mut inner = self.shared.inner.lock().expect("sync state lock poisoned");
         inner.dirty = true;
         self.shared.wake.notify_all();
+    }
+
+    /// Fetches one placeholder's bytes from the server, blocking until the
+    /// worker answers.
+    ///
+    /// The agent is owned by the loop thread, so a platform placeholder API
+    /// (FileProvider, CFAPI) hands the path here rather than reaching into the
+    /// engine. Hydration is a read: it runs even while the loops are paused and
+    /// does not start a sync pass. The worker's current pass, if any, finishes
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// The agent's reason (unknown path, an unsettled entry, a file with local
+    /// content, a revision the server no longer lists) as text, or a timeout if
+    /// the loop never answers.
+    pub fn hydrate(&self, path: &str) -> Result<(), String> {
+        // A large placeholder can take minutes on a slow link; the timeout is
+        // only the backstop for a loop that has gone away without draining.
+        self.hydrate_with_timeout(path, Duration::from_secs(600))
+    }
+
+    /// [`SyncWorker::hydrate`] with a caller-chosen wait, so tests never hang on
+    /// a regression in the wake-up path.
+    fn hydrate_with_timeout(&self, path: &str, timeout: Duration) -> Result<(), String> {
+        let (reply, answer) = mpsc::channel();
+        {
+            let mut inner = self.shared.inner.lock().expect("sync state lock poisoned");
+            if inner.stop {
+                return Err("the sync loop is stopping".into());
+            }
+            inner.hydrate.push(Hydrate {
+                path: path.to_owned(),
+                reply,
+            });
+            self.shared.wake.notify_all();
+        }
+        answer
+            .recv_timeout(timeout)
+            .map_err(|_| "the sync loop did not answer the hydrate request".to_owned())?
     }
 
     /// Holds the loop's passes (or lets them run again).
@@ -498,6 +604,33 @@ mod tests {
             .wait_until(|s| s.passes > held.passes, Duration::from_secs(2))
             .expect("resume runs the standing request");
         assert!(!resumed.paused);
+
+        worker.stop();
+    }
+
+    #[test]
+    fn hydrate_is_answered_while_paused_and_is_not_a_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = idle_agent(dir.path());
+        let worker = agent.spawn_loop(Duration::from_secs(30), quiet_factory(), today());
+        let first = worker
+            .wait_until(|s| s.passes >= 1, Duration::from_secs(2))
+            .expect("first pass");
+        worker.set_paused(true);
+        worker
+            .wait_until(|s| s.paused, Duration::from_secs(2))
+            .expect("pause published");
+
+        // The idle index knows nothing, so this fails before any network call —
+        // the point is that the paused loop answers it at all, without running
+        // a pass.
+        let error = worker
+            .hydrate_with_timeout("missing.txt", Duration::from_secs(2))
+            .unwrap_err();
+        assert!(error.contains("knows no file"), "reason: {error}");
+        let after = worker.status();
+        assert_eq!(after.passes, first.passes, "hydration is not a sync pass");
+        assert!(after.paused, "and the pause is still on");
 
         worker.stop();
     }

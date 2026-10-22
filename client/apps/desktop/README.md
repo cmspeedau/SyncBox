@@ -202,14 +202,16 @@ pointing at server-named vaults (M10), sync-space modes (M11), the reference
 main window (M16 S1), the pause (M16 S2), the separate unlock window
 (M16 S3), the settings window (M16 S4), the tray (M16 S5), remembered spaces
 drawn as locked rows (metadata only), and the dark palette with its Appearance
-control (M16 leftovers). **Still deferred:** **placeholder / on-demand files**,
-which want a hydrate path in the folder loop and the platform's placeholder API
-(FileProvider, CFAPI) for a plain folder — `syncbox mount` already serves files
-this way over FUSE; the **update publish job** — `release.yml` now covers both
-halves (sign, cut a Release, write `update.json`, and a flat apt repo when its key
-is set) but has not run: no minisign keypair is stored, so no public key sits in
-the config; a Node/Svelte frontend behind `frontendDist` (instead of this static
-one); and code signing.
+control (M16 leftovers). **Still deferred:** **placeholder / on-demand files** —
+the engine and worker can hydrate one file on demand (`Engine::hydrate`,
+`SyncWorker::hydrate`, without dirtying the index), but the folder still pulls
+every file, and a plain folder needs the platform's placeholder API
+(FileProvider, CFAPI) to create placeholders and ask for the hydrate —
+`syncbox mount` already serves files this way over FUSE; the **update publish
+job** — `release.yml` now covers both halves (sign, cut a Release, write
+`update.json`, and a flat apt repo when its key is set) but has not run: no
+minisign keypair is stored, so no public key sits in the config; a Node/Svelte
+frontend behind `frontendDist` (instead of this static one); and code signing.
 
 ## Building the app
 

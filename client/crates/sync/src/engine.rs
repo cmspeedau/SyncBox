@@ -26,7 +26,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -172,6 +172,115 @@ impl<I: Index> Engine<I> {
             .filter(|entry| entry.remote_dirty)
             .map(|entry| entry.path)
             .collect()
+    }
+
+    /// Fetches the bytes behind one index entry into the plaintext folder.
+    ///
+    /// This is the read half of on-demand sync: a file the index knows but the
+    /// folder holds as an empty placeholder is downloaded only when it is
+    /// opened. The entry must be settled, and the file on disk must be either
+    /// the complete file already or an empty placeholder; hydrating over local
+    /// content would lose an edit, so that is refused.
+    ///
+    /// The index entry keeps its revision but takes the size and mtime the
+    /// bytes landed with, so the next scan sees the hydrated file as settled
+    /// rather than as a fresh local change to upload. The content must still be
+    /// the revision the index records; if the server's log no longer carries it,
+    /// the call fails rather than silently writing a different version.
+    ///
+    /// # Errors
+    ///
+    /// A folderless session has no plaintext folder; a path outside the folder,
+    /// an unknown or unsettled entry, a missing or non-empty placeholder, a
+    /// revision the server no longer lists, and any transport, crypto, or
+    /// filesystem failure.
+    pub fn hydrate<H: Http>(&mut self, client: &mut Client<H>, path: &str) -> Result<()> {
+        if self.folderless {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "a folderless session has no plaintext folder to hydrate into",
+            )));
+        }
+        let rel = Path::new(path);
+        if rel.as_os_str().is_empty()
+            || rel.is_absolute()
+            || rel
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{path:?} is not a path inside the folder"),
+            )));
+        }
+        let Some(entry) = self.index.file(path) else {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("the index knows no file at {path}"),
+            )));
+        };
+        if entry.local_dirty || entry.remote_dirty {
+            return Err(SyncError::Io(std::io::Error::other(format!(
+                "{path} is not settled; sync it before hydrating"
+            ))));
+        }
+        let Some((size, _)) = stat_local(self.vault.plaintext_root(), path) else {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{path} has no placeholder file to hydrate"),
+            )));
+        };
+        // A complete file (including a genuinely empty one) needs no network;
+        // anything between zero and the recorded size is a local edit, not a
+        // placeholder.
+        if size == entry.size {
+            return Ok(());
+        }
+        if size != 0 {
+            return Err(SyncError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{path} has local content; refusing to overwrite it"),
+            )));
+        }
+
+        let vault_id = self.vault.vault_id().to_owned();
+        let page = client.revisions(&vault_id, 0)?;
+        let revision = page
+            .revisions
+            .into_iter()
+            .find(|revision| {
+                revision.revision == entry.revision
+                    && revision.dir_id == entry.dir_id.as_str()
+                    && revision.cipher_name == entry.cipher_name
+                    && !revision.deleted
+            })
+            .ok_or_else(|| {
+                SyncError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "the server no longer lists revision {} of {path}",
+                        entry.revision
+                    ),
+                ))
+            })?;
+        let manifest = BASE64
+            .decode(&revision.manifest)
+            .map_err(|_| SyncError::Integrity("manifest is not valid base64"))?;
+        let (size, modified_unix, chunk_ids, _resumed) = self.download_to_folder(
+            client,
+            &vault_id,
+            &entry.dir_id,
+            &entry.cipher_name,
+            &manifest,
+            path,
+        )?;
+        self.index.put_file(FileEntry {
+            size,
+            modified_unix,
+            chunk_ids,
+            ..entry
+        });
+        Ok(())
     }
 
     /// Files dirty on both sides, which is what a conflict looks like before it
@@ -355,76 +464,56 @@ impl<I: Index> Engine<I> {
             // backed by the same store serves the file without fetching it again.
             // With no store the download path is byte-identical to a plain folder
             // sync.
-            let mut store = self.store.0.as_mut();
-            let mut fetch = |id: &ChunkId| -> Result<Vec<u8>> {
-                if let Some(store) = store.as_mut() {
-                    if let Some(stored) = store.chunk(id) {
-                        report.resumed_chunks += 1;
-                        return Ok(stored);
-                    }
-                    let stored = client
-                        .download_chunk(vault_id, id)
-                        .map_err(SyncError::from)?;
-                    store.cache_chunk(id, &stored)?;
-                    return Ok(stored);
-                }
-                client.download_chunk(vault_id, id).map_err(SyncError::from)
-            };
             // Reassembly streams chunk by chunk — a 4 GiB pull costs a chunk of
             // RAM, not a file. Folder mode lands through the tree's staging
             // directory and a rename, so a half-pull is never a file the folder
             // (or the next scan) can see; folderless mode has no plaintext to
             // land, and the sink only accumulates the byte count the record needs.
-            let mut plaintext_size = 0u64;
-            let chunk_ids = if self.folderless {
-                self.vault.open_stream(
-                    &dir_id,
-                    &revision.cipher_name,
-                    &manifest,
-                    &mut fetch,
-                    &mut |bytes| {
-                        plaintext_size += bytes.len() as u64;
-                        Ok(())
-                    },
-                )?
-            } else {
-                let full = full_path(self.vault.plaintext_root(), &path);
-                if let Some(parent) = full.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let stage_dir = self.vault.plaintext_root().join(STAGING_DIR);
-                std::fs::create_dir_all(&stage_dir)?;
-                // Staging is inside the tree on purpose: same filesystem, so the
-                // promotion is a rename, never a copy across mount points.
-                let stage =
-                    stage_dir.join(format!("{}-{}.part", dir_id.as_str(), revision.cipher_name));
-                let ids = {
-                    let mut out = std::fs::File::create(&stage)?;
-                    let mut sink = |bytes: &[u8]| -> Result<()> {
-                        plaintext_size += bytes.len() as u64;
-                        out.write_all(bytes).map_err(SyncError::Io)
+            let (size, mtime, chunk_ids) = if self.folderless {
+                let (chunk_ids, plaintext_size) = {
+                    let mut store = self.store.0.as_mut();
+                    let mut fetch = |id: &ChunkId| -> Result<Vec<u8>> {
+                        if let Some(store) = store.as_mut() {
+                            if let Some(stored) = store.chunk(id) {
+                                report.resumed_chunks += 1;
+                                return Ok(stored);
+                            }
+                            let stored = client
+                                .download_chunk(vault_id, id)
+                                .map_err(SyncError::from)?;
+                            store.cache_chunk(id, &stored)?;
+                            return Ok(stored);
+                        }
+                        client.download_chunk(vault_id, id).map_err(SyncError::from)
                     };
-                    self.vault.open_stream(
+                    let mut plaintext_size = 0u64;
+                    let chunk_ids = self.vault.open_stream(
                         &dir_id,
                         &revision.cipher_name,
                         &manifest,
                         &mut fetch,
-                        &mut sink,
-                    )?
+                        &mut |bytes| {
+                            plaintext_size += bytes.len() as u64;
+                            Ok(())
+                        },
+                    )?;
+                    (chunk_ids, plaintext_size)
                 };
-                std::fs::rename(&stage, &full)?;
-                ids
-            };
-            if let Some(store) = self.store.0.as_mut() {
-                store.cache_manifest(&dir_id, &revision.cipher_name, &manifest)?;
-            }
-            // Folder mode records the mtime the filesystem actually landed, so the
-            // next scan sees this file as unchanged rather than freshly touched;
-            // folderless has no filesystem copy, so it echoes the revision's own time.
-            let (size, mtime) = if self.folderless {
-                (plaintext_size, revision.modified_unix)
+                if let Some(store) = self.store.0.as_mut() {
+                    store.cache_manifest(&dir_id, &revision.cipher_name, &manifest)?;
+                }
+                (plaintext_size, revision.modified_unix, chunk_ids)
             } else {
-                stat_local(self.vault.plaintext_root(), &path).unwrap_or((plaintext_size, 0))
+                let (size, mtime, chunk_ids, resumed) = self.download_to_folder(
+                    client,
+                    vault_id,
+                    &dir_id,
+                    &revision.cipher_name,
+                    &manifest,
+                    &path,
+                )?;
+                report.resumed_chunks += resumed;
+                (size, mtime, chunk_ids)
             };
             self.index.put_file(FileEntry {
                 path,
@@ -441,6 +530,66 @@ impl<I: Index> Engine<I> {
         }
 
         Ok(head)
+    }
+
+    /// Downloads one file's chunks through the local store, assembles them in
+    /// the tree's staging directory, and renames the result into place. Shared
+    /// by a normal pull and an on-demand [`Engine::hydrate`], so both land a
+    /// file the same way and both leave the same cache behind.
+    ///
+    /// Returns the bytes' landed size and mtime, the manifest's chunk ids, and
+    /// how many chunks came from the store instead of the server.
+    fn download_to_folder<H: Http>(
+        &mut self,
+        client: &mut Client<H>,
+        vault_id: &str,
+        dir_id: &DirId,
+        cipher_name: &str,
+        manifest: &[u8],
+        path: &str,
+    ) -> Result<(u64, i64, Vec<ChunkId>, usize)> {
+        let root = self.vault.plaintext_root().to_path_buf();
+        let full = full_path(&root, path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let stage_dir = root.join(STAGING_DIR);
+        std::fs::create_dir_all(&stage_dir)?;
+        // Staging is inside the tree on purpose: same filesystem, so the
+        // promotion is a rename, never a copy across mount points.
+        let stage = stage_dir.join(format!("{}-{cipher_name}.part", dir_id.as_str()));
+        let mut resumed = 0usize;
+        let mut plaintext_size = 0u64;
+        let ids = {
+            let mut store = self.store.0.as_mut();
+            let mut fetch = |id: &ChunkId| -> Result<Vec<u8>> {
+                if let Some(store) = store.as_mut() {
+                    if let Some(stored) = store.chunk(id) {
+                        resumed += 1;
+                        return Ok(stored);
+                    }
+                    let stored = client
+                        .download_chunk(vault_id, id)
+                        .map_err(SyncError::from)?;
+                    store.cache_chunk(id, &stored)?;
+                    return Ok(stored);
+                }
+                client.download_chunk(vault_id, id).map_err(SyncError::from)
+            };
+            let mut out = std::fs::File::create(&stage)?;
+            let mut sink = |bytes: &[u8]| -> Result<()> {
+                plaintext_size += bytes.len() as u64;
+                out.write_all(bytes).map_err(SyncError::Io)
+            };
+            self.vault
+                .open_stream(dir_id, cipher_name, manifest, &mut fetch, &mut sink)?
+        };
+        std::fs::rename(&stage, &full)?;
+        if let Some(store) = self.store.0.as_mut() {
+            store.cache_manifest(dir_id, cipher_name, manifest)?;
+        }
+        let (size, mtime) = stat_local(&root, path).unwrap_or((plaintext_size, 0));
+        Ok((size, mtime, ids, resumed))
     }
 
     /// Sends every changed local file, committing each against the running head,

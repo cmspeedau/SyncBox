@@ -351,6 +351,21 @@ impl<I: Index> Agent<I> {
         }
     }
 
+    /// Fetches one placeholder's bytes from the server into the folder.
+    ///
+    /// See [`Engine::hydrate`] for the rules: the index entry must be settled
+    /// and the local file must be empty or already complete. This is the call a
+    /// platform placeholder API makes when a file is opened; it is not a sync
+    /// pass and does not change the tray's status.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::hydrate`].
+    pub fn hydrate<H: Http>(&mut self, client: &mut Client<H>, path: &str) -> Result<()> {
+        self.engine.hydrate(client, path)?;
+        Ok(())
+    }
+
     /// Appends an event, keeping only the last [`HISTORY_LIMIT`].
     fn push_event(&mut self, event: SyncEvent) {
         self.history.push(event);
