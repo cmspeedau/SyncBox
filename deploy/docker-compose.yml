@@ -1,63 +1,11 @@
-# A Syncbox server on one host.
-#
-#   cp deploy/.env.example .env   # then fill in the two secrets
-#   docker compose -f deploy/docker-compose.yml up --build
-#
-# The API is published on loopback only. Put the tls profile in front of it, or
-# your own reverse proxy, before it faces a network.
+# SyncBox Deploy
 
-services:
-  syncboxd:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-    image: syncbox/server:dev
-    restart: unless-stopped
-    environment:
-      SYNCBOX_LISTEN_ADDR: 0.0.0.0:8080
-      SYNCBOX_DATA_DIR: /data
-      SYNCBOX_BACKUP_TARGET: /backups
-      # Object storage works as a target too — set the target to
-      # s3://bucket[/prefix] and supply credentials the way every env here is
-      # supplied (.env); SYNCBOX_S3_ENDPOINT points at MinIO/R2/Wasabi, omit it
-      # for AWS. The bucket needs object lock enabled at creation; sealing then
-      # means COMPLIANCE retention the service enforces, not a permission bit.
-      # And SYNCBOX_BACKUP_POST names a command run after every sealed snapshot
-      # (restic/rsync/borg carry it offsite). See docs/backup.md.
-      SYNCBOX_BACKUP_SCHEDULE: ${SYNCBOX_BACKUP_SCHEDULE:-1h}
-      # No defaults here on purpose. Compose refuses to start rather than bringing
-      # up a server with a generated credential that vanishes on the next restart.
-      SYNCBOX_PASSWORD: ${SYNCBOX_PASSWORD:?set SYNCBOX_PASSWORD in .env}
-      SYNCBOX_TOKEN_SECRET: ${SYNCBOX_TOKEN_SECRET:?set SYNCBOX_TOKEN_SECRET in .env}
-    volumes:
-      - syncbox-data:/data
-      - syncbox-backups:/backups
-    ports:
-      - "127.0.0.1:8080:8080"
-    labels:
-      - "syncbox.backup.target=/backups"
+Docker Compose configuration for running SyncBox in production.
 
-  # Enable with: docker compose -f deploy/docker-compose.yml --profile tls up
-  # Caddy asks Let's Encrypt for a certificate for SYNCBOX_DOMAIN and terminates
-  # TLS, which is what the vault's "in transit as well as at rest" claim needs.
-  caddy:
-    image: caddy:2-alpine
-    profiles: ["tls"]
-    restart: unless-stopped
-    depends_on:
-      - syncboxd
-    environment:
-      SYNCBOX_DOMAIN: ${SYNCBOX_DOMAIN:?set SYNCBOX_DOMAIN in .env}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
+## Quick Start
 
-volumes:
-  syncbox-data:
-  syncbox-backups:
-  caddy-data:
-  caddy-config:
+```bash
+cp .env.example .env
+# Edit .env with your configuration
+docker compose up -d
+```
