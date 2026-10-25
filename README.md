@@ -8,6 +8,8 @@ either a **sync** space, kept in the clear so the server can index and serve
 it, or a **vault**, encrypted on the client before anything leaves the machine,
 so the server stores opaque blobs and bookkeeping it can never read.
 
+> **Canonical Roadmap:** For the complete engineering roadmap, architectural milestones (M0–M21), and ongoing work, see [ROADMAP.md](ROADMAP.md).
+
 ## How it works
 
 ```
@@ -82,139 +84,17 @@ syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
                   --vault ~/.local/state/syncbox/files --folder ~/Files
 ```
 
-## Status
+## Current Status
 
-Milestones **M1–M8** are in place (packaging's macOS/Windows signing is
-deferred with the runners and identities they need); **M10** through **M15** —
-the operator console, the sync-space surfaces, first-run bring-up (seal and
-rotate the server password), and settings driven from the console (a live
-snapshot schedule, a read-only About panel), the console flagging a setting that
-reverts on a restart, and uptime plus password age on that panel — are in as
-well. **M16**, rebuilding the desktop agent UI on its references, has landed all
-five slices, the remembered-space rows and the dark palette. What's left of it —
-**placeholder (on-demand) files** and the **update publish job** that would put a
-new build in front of a human — is set out under
-[The M16 slices](#the-m16-slices).
+**Active Version:** `v0.4.x` / Desktop `desktop-v0.1.1`  
+**Current Milestone Focus:** Completing **M16** (Desktop UI Overhaul & On-Demand Hydration) and preparing for **M17** (Real-Time Push Sync).
 
-The `crypto` crate implements the format in `docs/format.md` — content-defined
-(FastCDC) chunking, content-derived chunk keys, and an authenticated per-file
-manifest — with published vectors pinned by tests. The Go server runs on a
-SQLite metadata store and a content-addressed chunk store, snapshots with GFS
-retention, and rate-limits per IP. The `sync` engine pushes each changed file
-uploading **only the chunks an edit did not touch**, reconciles both-sides edits
-into conflicted copies so neither client loses work, and mirrors deletes as
-tombstones; the durable `index` crate lets a restart resume without a rescan.
+- **Core & Storage (M1–M8, M10–M15):** Complete. Implemented Argon2id/AES-SIV/FastCDC crypto, Go server daemon with SQLite metadata and content-addressed storage, S3 object-lock snapshots, admin console, dynamic schedule controls, configuration drift detection, and process uptime/credential age auditing.
+- **Client & Mount (M3–M5, M7):** Complete. Rust CLI, FastCDC delta transfers, conflict resolution branches, staged resumable transfers, client-side GC, and Linux FUSE mount (`--writable` seals writes directly into the vault).
+- **Desktop UI (M16):** Active. Shipped all 5 slices (main window, pause flow, dual password isolation modal, settings window, native system tray), remembered space registry, light/dark themes, and signed release updater with APT repo (`desktop-v0.1.1`).
+- **Next Up:** On-demand placeholder files (M16 final slice), followed by Real-Time Push Sync (M17), Merkle Commits & OCC (M18), Batch Pipelines (M19), Zero-Knowledge Web Share Links (M20), and Server-Side Garbage Collection (M21).
 
-The desktop app (M4) is a thin Tauri shell over `crates/agent`, a Tauri-free
-controller whose states are unit-tested against an in-process fake server. Its UI
-(M16) is three windows and a tray, each built to its own reference in `docs/`: the
-main window's status bar, per-folder rows and first-run card; a separate top-level
-window for the vault password, which is the only place that secret is ever typed;
-the settings window; and a tray icon whose native menu is the agent's presence
-while no window is open — relabelled from the same status the window polls, with
-the glyph's corner badge painted from it. One rule held across all five slices: a
-control is drawn only when a command backs it, so the reference controls that have
-no command yet are left out rather than drawn dead.
-`syncbox mount` (M5) serves the vault as a FUSE filesystem — read-only by
-default, and `--writable` seals writes into the vault so nothing on disk is
-ever plaintext; with no folder, `sync once` runs folderless, relaying dirty
-records straight out of the local chunk store. Packaging (M6) ships Linux
-`.deb` + `.AppImage` from self-hosted CI; artifacts are deliberately unsigned,
-and macOS/Windows builds are deferred with the runners and identities they
-need. M7 hardening so far: client-side ciphertext GC whose liveness derives
-from the index alone, a defined conflict policy (a local edit outranks a newer
-revision or a tombstone), snapshot verification plus a live restore drill,
-resumable transfers (chunks staged as they arrive; content-addressed dedup makes
-pushes resume for free), the server's per-IP rate limiter, streaming at
-both ends so a 4 GiB file costs a chunk-sized window of RAM, not 4 GiB, and an
-automatic GC policy (`--gc 1d` on every sync pass — and a GC never runs in
-front of a live mount). Backups now reach object storage: an `s3://` snapshot
-target seals every object version under COMPLIANCE object lock, and the drill
-watched the service itself refuse root's attempt to destroy a sealed version.
-`SYNCBOX_BACKUP_POST` hands each sealed snapshot to restic, rsync, or borg as
-a consumer; the drill carried a bundle through restic, lost the target
-directory entirely, and came back byte-identical.
-
-| Milestone | Scope | Done |
-| --- | --- | --- |
-| M0 | Scaffolding: workspaces, compose, CI | ✅ |
-| M1 | Crypto crate + vault format + test vectors | ✅ |
-| M2 | Server core + snapshot engine + Docker image | ✅ |
-| M3 | Client core + CLI sync harness | ✅ |
-| M4 | Tauri desktop app | ✅ |
-| M5 | Mount: FUSE (macFUSE / WinFsp deferred) | ✅ |
-| M6 | Packaging: Linux ✅; mac/win + signing deferred | 🟡 |
-| M7 | Hardening: conflicts, GC + auto policy, verification, restore drills, resume, rate limits, streaming | ✅ |
-| M8 | Backup targets: S3 object-lock + restic/rsync/borg consumer hook | ✅ |
-| M10 | Operator console (one embedded page): vault registry, clients point at the server, snapshots page, commit enforcement, server-side vault location | ✅ |
-| M11 | Space modes: a space is a sync space or a vault; the client syncs in the clear when the mode says so; browse/share/recycle-bin API; and the console browses, shares, and restores a sync space | ✅ |
-| M12 | First-run bring-up: a fresh server with no password awaits one and seals it with Argon2id; the console sets it in place of a logged secret and can rotate it; env-provided passwords behave exactly as before | ✅ |
-| M13 | Settings: the console sets the snapshot schedule live (`GET/PUT /admin/backups/config`; a restart falls back to `SYNCBOX_BACKUP_SCHEDULE`), reports backup freshness (newest snapshot's age and when the next one is due, via `next_due_unix`), and a read-only **About this server** panel (`GET /admin/about`) shows storage, data directory, backup target, share TTL and recycle retention | ✅ |
-| M14 | Settings continuity: because the live schedule is not persisted, the console flags when it differs from the boot value — `GET /admin/backups/config` reports `boot_interval_seconds`/`boot_schedule` and a `drifted` flag, so an operator sees that a change made in the console reverts on restart — and the **About** panel reports the environment's security posture (session-token lifetime, rate limit, the unknown-vault commit gate) and how the sign-in password is managed (`password_source`: env vs stored, which decides whether the console can rotate it) | ✅ |
-| M15 | Uptime visibility: the **About** panel reports when the process came up (`started_unix`) and how long it has run (`uptime_seconds`), so an operator can tell at a glance whether an unpersisted setting has already reverted on a restart; a stored password also reports its age (`password_changed_unix`, the credential file's mtime — the durable counterpart to `password_source`, omitted for an environment password) | ✅ |
-| M16 | Agent UI rebuilt on the references, in five slices ([the details](#the-m16-slices) below) | 🟡 |
-
-### The M16 slices
-
-- **S1 — the main window** (`index.html`), built on the mock: a tinted status bar, a gear
-  click menu carrying only what exists (Settings…, Sync now, Pause syncing, Lock vault,
-  Quit), a first-run card that connects → picks a space from the server → takes the folder
-  the server derives → unlocks, per-folder rows with state chips, and a usage line fed by
-  the new `usage` IPC (`Index::files()`, `referenced_bytes()`). The desktop unlocks sync
-  spaces too (`open_folders` by mode, so the default flow needs no vault header), derives
-  each space's state dir (`~/.syncbox/<id>`), and carries a `?demo=…` browser preview for
-  checking it against the mock.
-- **S2 — the pause.** `set_paused` flips an `AgentStatus.paused` flag that every folder
-  loop honours: no passes while held, and a resume runs the queued pass at once. Drawn as
-  the amber dot and banner, with *Sync now* refused while paused.
-- **S3 — the two passwords split.** The server password stays in the main window's card;
-  the vault password is typed only in its own top-level window (`unlock.html`,
-  `open_unlock_window` / `unlock_pending` / `pending_unlock` / `cancel_unlock`) with the
-  main window waiting on it — and a sync space, having no header to unlock, skips it.
-- **S4 — the settings window** (`settings.html`, 640×560) as the reference's
-  `today`-badged subset: the rail's space card and usage line, Sync Files (each folder with
-  `open_folder`, *Change…* which locks and re-runs first run, the pause as a switch),
-  Account (server and space, read-only, from the new `settings_info`), About (version,
-  platform, licence, state folder), and the footer's Run-at-login and Show-hidden switches
-  — which is why the main window's temporary footer bar left.
-- **S5 — the tray** (`src-tauri/src/tray.rs`, a native menu and no HTML): the reference's
-  rows built once and relabelled from `current_status` on the window's own 2 s rhythm, the
-  glyph's corner badge painted from the state, and closing the main window hiding it while
-  a tray exists to raise it again. Where the desktop carries no indicator library it stays
-  windows-only with no crash — the backend `dlopen`s libayatana-appindicator, so the build
-  needs no package and CI is unaffected.
-- **Leftover — remembered spaces.** Each opened space is written to `spaces.json` (server,
-  id, name, mode, state dir and folders; never a password or token), and the main window
-  draws every remembered space that is not running as a dimmed locked row. *Unlock* asks
-  for the server password again — nothing was kept — then opens the vault window, or
-  unlocks a sync space directly. One space still runs at a time.
-- **Leftover — the dark palette.** The agent's three windows share `theme.css`, carrying the
-  light column the references draw and the dark column they drafted. A window follows the
-  desktop unless Settings → About → Appearance pins System / Light / Dark in `prefs.json`;
-  the main window follows the pref on its poll, the unlock window reads it when it opens.
-- **Shipped — the update path.** `.github/workflows/release.yml` builds a `desktop-v*` tag
-  with `createUpdaterArtifacts`, signs the AppImage and `.deb`, writes `update.json`, cuts
-  a Release, and — because `APT_SIGNING_KEY` is set — attaches a flat signed apt repo
-  (`Packages`, `Packages.gz`, `Release.gpg`, `InRelease`, keyring). The minisign and apt
-  keys are Actions secrets, and the updater's public half is in `tauri.conf.json`.
-  `desktop-v0.1.1` is published (following `desktop-v0.1.0`) and its artifacts
-  verify. Settings → About checks
-  `releases/latest/download/update.json` on demand and installs the signed AppImage;
-  `requireSignedVersion` pins the artifact to the announced version, and a `.deb` is sent
-  to apt instead of the in-app installer. Two keys do not substitute: the apt key signs
-  the repo's `Release`, minisign signs what the plugin checks. **macOS** updates through
-  the `.app.tar.gz` and stays gated on M6 — the updater will not install a signature
-  mismatch.
-- **Left:**
-  - **placeholder / on-demand files** — the OneDrive baseline's *Files On Demand*: every file
-    shows in the folder, the bytes arrive when a file is opened, so a 200 GB space costs
-    200 GB of disk only if the human reads all of it. Half of it is already true — the index
-    knows every file without holding its content, and `syncbox mount` (M5) serves exactly
-    that over FUSE. The engine can now hydrate one placeholder from the server without
-    dirtying the index (`Engine::hydrate`, reachable from the folder loop as
-    `SyncWorker::hydrate`). Missing: a folder policy that writes placeholders instead of
-    pulling every file, and outside the mount the platform's own open hook (FileProvider on
-    macOS, CFAPI on Windows). Until those exist the desktop still downloads everything.
+See [ROADMAP.md](ROADMAP.md) for detailed descriptions, architecture diagrams, and the master milestone matrix.
 
 ## License
 
