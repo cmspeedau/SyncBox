@@ -8,7 +8,7 @@ either a **sync** space, kept in the clear so the server can index and serve
 it, or a **vault**, encrypted on the client before anything leaves the machine,
 so the server stores opaque blobs and bookkeeping it can never read.
 
-> **Canonical Roadmap:** For the complete engineering roadmap, architectural milestones (M0–M21), and ongoing work, see [ROADMAP.md](ROADMAP.md).
+> **Canonical Roadmap:** For the complete engineering roadmap, architectural milestones (M0–M22), and ongoing work, see [ROADMAP.md](ROADMAP.md).
 
 ## How it works
 
@@ -92,7 +92,7 @@ syncbox sync once --server http://127.0.0.1:8080 --vault-name Files \
 - **Core & Storage (M1–M8, M10–M15):** Complete. Implemented Argon2id/AES-SIV/FastCDC crypto, Go server daemon with SQLite metadata and content-addressed storage, S3 object-lock snapshots, admin console, dynamic schedule controls, configuration drift detection, and process uptime/credential age auditing.
 - **Client & Mount (M3–M5, M7):** Complete. Rust CLI, FastCDC delta transfers, conflict resolution branches, staged resumable transfers, client-side GC, and Linux FUSE mount (`--writable` seals writes directly into the vault).
 - **Desktop UI (M16):** Active. Shipped all 5 slices (main window, pause flow, dual password isolation modal, settings window, native system tray), remembered space registry, light/dark themes, and signed release updater with APT repo (`desktop-v0.1.1`).
-- **Next Up:** On-demand placeholder files (M16 final slice), followed by Real-Time Push Sync (M17), Merkle Commits & OCC (M18), Batch Pipelines (M19), Zero-Knowledge Web Share Links (M20), and Server-Side Garbage Collection (M21).
+- **Next Up:** On-demand placeholder files (M16 final slice), followed by Real-Time Push Sync (M17), Merkle Commits & OCC (M18), Batch Pipelines (M19), Zero-Knowledge Web Share Links (M20), Server-Side Garbage Collection (M21), and **Native Files On-Demand & Sparse Block Hydration (M22)** — the cross-platform Files On-Demand work that adds CFAPI on Windows, FileProvider on macOS, sparse-file + FUSE enhancements on Linux, and range-based block hydration for vaults and sync spaces alike.
 
 See [ROADMAP.md](ROADMAP.md) for detailed descriptions, architecture diagrams, and the master milestone matrix.
 

@@ -33,6 +33,7 @@ SyncBox combines a single-binary Go server (`syncboxd`) with a Rust core engine 
 | **M19** | Batch Block Pipeline | FastCDC delta pipeline, multi-chunk batching, convergent chunk hashing | 🔷 **Planned** |
 | **M20** | Zero-Knowledge Sharing | URL `#fragment` keying, public share API, embedded WASM browser decryptor | 🔷 **Planned** |
 | **M21** | Server-Side GC | `syncboxd gc`, Mark-and-Sweep chunk cleaner with 24h upload grace period | 🔷 **Planned** |
+| **M22** | Native Files On-Demand | CFAPI (Windows), FileProvider (macOS), Linux sparse/FUSE, range-based block hydration | 🔷 **Planned** |
 
 ---
 
@@ -170,3 +171,63 @@ Rebuilding the desktop agent UI around dedicated operational references:
 - **Tooling:**
   - CLI maintenance command: `syncboxd gc --dry-run` and `syncboxd gc --prune`.
   - Background cron runner with telemetry emitted to the Operator Console.
+
+---
+
+### Milestone 22: Native Files On-Demand & Sparse Block Hydration (OneDrive / iCloud Drive Parity)
+*Target: Every file in a space is visible from a native file manager; bytes materialise only when something asks for them, so a 200 GB space stops costing 200 GB of disk by default.*
+
+- **Goals:**
+  - Eliminate the all-or-nothing hydrate-on-sync model by exposing the existing index (which already knows every file without its content) as the native OS browse experience.
+  - Reuse the FUSE mount shipped in M5 as the Linux surface and add the OS-native equivalents on Windows and macOS.
+  - Hydrate only the byte ranges a read actually requests; do not pull the whole chunk tree when one block is asked for.
+  - Keep vault and sync-space behaviour identical — placeholders carry real metadata, encryption keys are pulled only at the moment of decrypt, and the server never learns which file was opened.
+
+- **Cross-Cutting Plumbing (`client/crates/agent`, `client/crates/mount`, `client/crates/sync`, `client/crates/transport`):**
+  - **Folder Policy:**
+    - New `folder_policy` flag on the sync folder (`"materialised" | "on_demand"`, default `materialised`).
+    - The agent runs an initial hydration pass for `on_demand` folders that writes placeholders for every file in the index and pulls chunks only on demand.
+    - Existing folders flip policy on the next sync pass; a regression guard prevents accidental auto-hydration on policy change.
+  - **Sparse Placeholder File Format:**
+    - Each placeholder carries an extended attribute block: `{ space_id, file_id, size, chunk_count, chunk_manifest_hash, mode, mtime, content_hash }`.
+    - For vaults, the placeholder xattr never stores a chunk key or plaintext metadata — only the content-addressed chunk IDs.
+  - **Range-Based Block Hydration (`Engine::hydrate_range`, `SyncWorker::hydrate_range`):**
+    - New server route: `GET /api/v1/spaces/:id/chunks/:chunk_id?range=<start>-<end>` returns a single chunk's byte window with `Accept-Ranges: bytes` and `Content-Range`.
+    - The mount layer maps a read offset to the owning chunk and chunk-internal byte window before issuing the request, so a 4 KiB `read()` on a 4 GiB file costs one chunk query and one small response, not a whole-file pull.
+    - The transport crate caches the just-fetched chunk window in a bounded LRU keyed on `(space_id, chunk_id, range)`; cache pressure evicts oldest ranges first.
+  - **Placeholder State Machine:**
+    - `Hollow` (only xattr present, zero-byte body) → `Hydrating` (chunk windows cached locally, body still sparse) → `Hydrated` (file body fully materialised, xattr retained so the next policy flip can re-sparse it without a re-scan) → `Evicted` (body truncated to zero after policy reversion or manual free).
+
+- **Windows: Cloud Files API (CFAPI) Integration:**
+  - New crate `client/crates/cfapi` wrapping the Win32 `Cfapi.h` ABI:
+    - `CfRegisterSyncRoot` registers a sync root under `%USERPROFILE%\SyncBox\<space-id>` with the FILE_ATTRIBUTE_PINNED + FILE_ATTRIBUTE_UNPINNED placeholder flags.
+    - `CfConnectSyncRoot` opens the placeholder root and the agent feeds it `CF_CALLBACK_TYPE_FETCH_PLACEHOLDER` / `FETCH_DATA` callbacks as the OS requests file or range data.
+    - `CfUpdatePlaceholder` with `CF_SET_PIN_STATE.UNPINNED | REQUESTED` paints the placeholder icon overlay that File Explorer already knows how to render.
+  - The placeholder directory uses NTFS sparse files so a hydrated chunk window can be written in place without re-allocating the whole file.
+  - The CFAPI callbacks delegate straight to `Engine::hydrate_range`; no second transport path is introduced.
+  - **Security:** Vault decryption happens in the same in-process path as the existing FUSE driver; chunk keys are pulled into process memory only for the duration of a single `FETCH_DATA` callback.
+
+- **macOS: FileProvider Framework Integration:**
+  - New crate `client/crates/file_provider` exposing an `NSFileProviderReplicatedExtension` Objective-C++ shim:
+    - `item(for: identifier:)` returns the placeholder `NSFileProviderItem` (filename, size, capabilities, content type) sourced directly from the local index, so the Finder row exists before the bytes do.
+    - `fetchContents(for: version: request: completionBlock:)` maps the requested `NSFileProviderRequest` byte range to a `Engine::hydrate_range` call and writes the bytes back into the NSFileProviderManager-managed URL.
+  - `client/apps/desktop` (Tauri v2) installs and registers the FileProvider extension at first run; uninstall unregisters it cleanly so no orphan extension remains.
+  - The tray (M16 S5) gains a *Free up space* menu item that walks the NSFileProviderManager item graph and evicts `Evictable` items back to `Hollow`.
+  - **Parity with CFAPI:** The placeholder lifecycle, chunk-window caching and xattr-equivalent metadata block are identical so a later code review can compare both sides line-for-line.
+
+- **Linux: Sparse Files + FUSE Enhancement:**
+  - Extend `client/crates/mount` (the M5 driver) with:
+    - `fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)` on hydrate so the placeholder becomes a true sparse file — the kernel reports the placeholder size without allocating blocks.
+    - A `--on-demand` mount flag that flips the existing FUSE driver into `Hollow` default state, hydrating on `read()` and never on sync.
+  - Existing `--writable` writes already go through chunk sealing; placeholders and materialised files share that write path unchanged.
+  - New `syncboxctl placeholder set <path> --hollow` / `--hydrate` CLI subcommand for scripting without a desktop UI.
+
+- **Operator Console Surface (`server/internal/api/`, embedded web UI):**
+  - New endpoint `GET /api/v1/spaces/:id/placeholder_stats` returns `{ hollow_count, hydrating_count, hydrated_bytes, cached_range_count }` so an operator can see on-demand behaviour without a local agent.
+  - The space detail card in the Operator Console surfaces the same numbers as a small chip next to the space name.
+
+- **Testing & Test Vectors:**
+  - Cross-platform contract test suite under `client/crates/mount/tests/placeholder_contract.rs`:
+    - All three surfaces (CFAPI shim, FileProvider shim, FUSE driver) must pass identical fixture-driven assertions for: placeholder visibility before hydration, byte-exact round-trip after a range read, eviction restoring `Hollow` without deleting the xattr, and vault key confidentiality (chunk keys never appear in any cross-process IPC trace).
+  - Range-hydration fuzz harness over the chunk manifest (sparse reads at chunk boundaries, mid-chunk offsets, multi-chunk spans, last-chunk short reads).
+  - **Documentation:** `docs/on_demand.md` describes the placeholder lifecycle, the CFAPI/FileProvider/FUSE mapping table, and the operator-facing knobs.
