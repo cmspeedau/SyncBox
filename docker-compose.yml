@@ -1,0 +1,16 @@
+services:
+  syncbox:
+    build: .
+    image: syncbox:local
+    restart: unless-stopped
+    ports:
+      - "${SYNCBOX_PORT:-8080}:8080"
+    environment:
+      SYNCBOX_ADDR: ":8080"
+      SYNCBOX_DATA_DIR: /data
+      SYNCBOX_TOKEN: ${SYNCBOX_TOKEN:?Set SYNCBOX_TOKEN in your environment}
+    volumes:
+      - syncbox-data:/data
+
+volumes:
+  syncbox-data:
